@@ -16,6 +16,5 @@ build/
 downloads/
 .env
 .claude/settings.local.json
-# The global gitignore hides these; this repo versions its CLAUDE.md and the telegram skill.
+# The global gitignore hides this; this repo versions its CLAUDE.md.
 !CLAUDE.md
-!.claude/

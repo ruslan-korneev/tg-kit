@@ -2,8 +2,9 @@
 
 `tg`: a CLI that drives a Telegram **user** account over MTProto (Telethon), mainly so agents
 can test bots (send → `--wait` → `press`). It replaces the `mcp-telegram` MCP server. The agent
-skill is `.claude/skills/telegram/` (symlinked from `~/.claude/skills/telegram`, like linear-kit's
-skills). Keep it in step with the CLI.
+skill is `skills/telegram/` (Agent Skills format, installable into any agent with
+`npx skills add`; locally `~/.claude/skills/telegram` is a symlink to it). Keep it in step with
+the CLI and agent-neutral: no Claude-only syntax as the main instruction.
 
 ## Commands
 

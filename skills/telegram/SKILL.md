@@ -1,6 +1,6 @@
 ---
 name: telegram
-description: Read and send Telegram messages as the user's own account through the `tg` CLI (tg-kit). Use it to check a Telegram chat, channel or group, read or search messages, send a message or a file, download media, or call an MTProto method. Above all, use it to test a Telegram bot end to end (send a command, wait for the reply, press inline buttons, try inline mode, /start deep links). Prefer `tg` over any `mcp__telegram__*` tool.
+description: Read and send Telegram messages as the user's own account through the `tg` CLI (tg-kit). Use it to check a Telegram chat, channel or group, read or search messages, send a message or a file, download media, or call an MTProto method. Above all, use it to test a Telegram bot end to end (send a command, wait for the reply, press inline buttons, try inline mode, /start deep links). Prefer `tg` over any Telegram MCP tools.
 ---
 
 # Telegram via `tg`
@@ -8,20 +8,25 @@ description: Read and send Telegram messages as the user's own account through t
 `tg` acts as the user's **real Telegram account**, not as a bot. Everything it sends really
 comes from them, so where a message goes matters more than what it says.
 
-Prefer `tg` over `mcp__telegram__*` tools. Its output shows buttons, `--wait` catches the reply
-and in-place edits, and `press` handles callback data for you.
+Prefer `tg` over any Telegram MCP tools (such as `mcp__telegram__*`). Its output shows buttons,
+`--wait` catches the reply and in-place edits, and `press` handles callback data for you.
 
 ## Before the first command
 
 ```bash
-command -v tg || uv tool install --editable ~/pet-projects/tg-kit
+command -v tg || uv tool install 'git+https://github.com/ruslan-korneev/tg-kit'
 tg whoami
 ```
 
+Installing needs [uv](https://docs.astral.sh/uv/). Add the `[qr]` extra for QR-code login:
+`uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit'`.
+
 - **Exit 3** (not logged in): logging in is interactive and **only the user can do it**. Ask them
-  to type `! tg login` in this session, then retry. Never try to log in for them, and never copy
-  session files or auth keys from another tool.
-- **No app credentials**: ask the user to run `! tg auth set-app --api-id N`.
+  to run `tg login` in their own terminal (in Claude Code they can type `! tg login` in the
+  prompt), then retry. Never try to log in for them, and never copy session files or auth keys
+  from another tool.
+- **No app credentials**: ask the user to run `tg auth set-app --api-id N` in their
+  terminal (it prompts for the api_hash), with the app credentials from <https://my.telegram.org>.
 
 ## Testing a bot: the loop
 
@@ -132,7 +137,7 @@ the user said, in this conversation, to allow that peer. Check the printed
 | 0 | ok | |
 | 1 | unexpected error or timeout | read stderr. For a send that timed out, check `tg read PEER -n 3` before resending |
 | 2 | bad arguments | fix the command |
-| 3 | not logged in | ask the user to run `! tg login` |
+| 3 | not logged in | ask the user to run `tg login` in their terminal |
 | 4 | peer, message or button not found, or ambiguous | use the listing in the error, or `tg resolve` |
 | 5 | FLOOD_WAIT | wait the printed seconds; don't hammer |
 | 6 | `--wait` got no reply | report that the bot stayed silent |

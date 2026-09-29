@@ -80,7 +80,11 @@ def login(
     async def body(rt: Runtime) -> int:
         if not sys.stdin.isatty():
             msg = "tg login is interactive and needs a terminal"
-            raise AuthRequiredError(msg, hint="ask the account owner to type: ! tg login")
+            raise AuthRequiredError(
+                msg,
+                hint="the account owner runs tg login in their own terminal "
+                "(in Claude Code: ! tg login)",
+            )
         from tg_kit.client import login as do_login
 
         existing = rt.store.accounts()

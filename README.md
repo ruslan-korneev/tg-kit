@@ -10,9 +10,30 @@ goes through `tg raw`, which covers the whole MTProto API.
 ## Install
 
 ```bash
-uv tool install --editable ~/pet-projects/tg-kit      # puts `tg` on PATH
-uv tool install --editable '~/pet-projects/tg-kit[qr]' # + QR-code login
+uv tool install 'git+https://github.com/ruslan-korneev/tg-kit'                # puts `tg` on PATH
+uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit'   # + QR-code login
 ```
+
+From a local checkout, for development:
+
+```bash
+uv tool install --editable .          # or --editable '.[qr]'
+```
+
+## Use with any AI agent
+
+The agent skill lives in [`skills/telegram/`](skills/telegram/SKILL.md) and follows the
+[Agent Skills](https://agentskills.io) format, so the [`skills`](https://skills.sh) CLI installs it
+into Claude Code, Codex, Cursor, Gemini CLI, OpenCode and the other agents it supports:
+
+```bash
+npx skills add ruslan-korneev/tg-kit --skill telegram -g            # every detected agent, user-wide
+npx skills add ruslan-korneev/tg-kit --skill telegram -g -a claude-code -a codex   # chosen agents
+npx skills add ruslan-korneev/tg-kit --list                          # what the repo offers
+```
+
+Leave out `-g` to install into the current project instead (`.claude/skills/`, `.agents/skills/`,
+…). The skill needs the `tg` CLI on PATH (see Install) and a logged-in account (see Log in).
 
 ## Log in
 
