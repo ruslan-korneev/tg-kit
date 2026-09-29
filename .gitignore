@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+# Telegram sessions and caches never belong in the repo (they live in ~/.config/tg-kit anyway)
+*.session
+*.session-journal
+*.cache.db
+*.cache.db-*
+# downloads made while testing
+downloads/
+.env
+.claude/settings.local.json
+# The global gitignore hides these; this repo versions its CLAUDE.md and the telegram skill.
+!CLAUDE.md
+!.claude/

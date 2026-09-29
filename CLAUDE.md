@@ -1,0 +1,40 @@
+# tg-kit
+
+`tg`: a CLI that drives a Telegram **user** account over MTProto (Telethon), mainly so agents
+can test bots (send → `--wait` → `press`). It replaces the `mcp-telegram` MCP server. The agent
+skill is `.claude/skills/telegram/` (symlinked from `~/.claude/skills/telegram`, like linear-kit's
+skills). Keep it in step with the CLI.
+
+## Commands
+
+```bash
+uv run pytest                              # unit (no network)
+TG_KIT_LIVE=1 uv run pytest tests/live     # parallel tg runs against the logged-in account
+uv run ruff check src tests && uv run ruff format --check src tests
+uv run mypy                                # strict; Telethon is untyped (Any at the adapter edge)
+uv tool install --editable . --reinstall   # refresh the `tg` on PATH
+```
+
+## Where things are
+
+- **Contracts:** the output format and JSON schema are in `render.py` and README "Output". The
+  exit codes are in `errors.py`. The guard rules are in `guard.py`. `--wait` semantics are in
+  `waiter.py`. Changing any of them is a contract change: update the README and the skill in
+  the same change.
+- **Telethon boundary:** `client.py` (connect, errors → `TgError`), `session.py`, `peers.py`
+  (resolve), `convert.py` (Message → `MessageView`), `raw.py`, `plan.py` (execute). Nothing
+  else touches Telethon types. `render`, `buttons`, `guard`, `waiter.collect` and `texts` stay
+  pure.
+- **Writes:** every write builds a `WritePlan`. `--dry-run` prints that object, and the real run
+  executes the same object. Never add a write path that bypasses `make_plan` → `authorize`.
+- **State:** `~/.config/tg-kit/` (`TG_KIT_CONFIG_DIR`). `session.py` owns `sessions/`.
+  `allowlist.py` (via `tg allow`) owns `allow.toml`. tg only reads `config.toml`.
+
+## Rules for this repo
+
+- Telethon 1.45 / layer 229: buttons are `Keyboard[Inline]Button(text, type=…)`. Verify TL shapes
+  against the installed source, not from memory.
+- Never import an auth key from another client (AUTH_KEY_DUPLICATED). Login is a human action.
+- No real contacts, ids, phones or usernames in code, tests or docs. Use `@example_bot`.
+- Live tests message only `me`. BotFather gets read-only navigation. Other bots only when the
+  owner names them.
