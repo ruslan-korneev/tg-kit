@@ -27,9 +27,8 @@ The agent skill lives in [`skills/telegram/`](skills/telegram/SKILL.md) and foll
 into Claude Code, Codex, Cursor, Gemini CLI, OpenCode and the other agents it supports:
 
 ```bash
-npx skills add ruslan-korneev/tg-kit --skill telegram -g            # every detected agent, user-wide
-npx skills add ruslan-korneev/tg-kit --skill telegram -g -a claude-code -a codex   # chosen agents
-npx skills add ruslan-korneev/tg-kit --list                          # what the repo offers
+npx skills add ruslan-korneev/tg-kit -g                             # every detected agent, user-wide
+npx skills add ruslan-korneev/tg-kit -g -a claude-code -a codex     # chosen agents
 ```
 
 Leave out `-g` to install into the current project instead (`.claude/skills/`, `.agents/skills/`,
