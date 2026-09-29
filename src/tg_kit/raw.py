@@ -18,6 +18,7 @@ import binascii
 import difflib
 import inspect
 import re
+import typing
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from functools import cache
@@ -143,6 +144,14 @@ def _parse_annotation(annotation: object) -> tuple[bool, str]:
     return is_list, base
 
 
+def _nullable(annotation: object) -> bool:
+    """Whether the annotation admits None: `X | None` and `Optional[X]` alike.
+
+    Not by repr: Python 3.12/3.13 print `Optional[datetime]`, with no "None" in it.
+    """
+    return type(None) in typing.get_args(annotation)
+
+
 def _params(cls: type) -> dict[str, inspect.Parameter]:
     sig = inspect.signature(cls.__init__)  # type: ignore[misc]
     # Field-less constructors inherit `(self, /, *args, **kwargs)`: no params at all.
@@ -168,7 +177,7 @@ async def build_object(
                 # Required in the TL schema but with an obvious "unset" value:
                 # nullable → None, integers (offsets, ids, hash) → 0.
                 is_list, base = _parse_annotation(param.annotation)
-                if "None" in repr(param.annotation):
+                if _nullable(param.annotation):
                     kwargs[name] = None
                     continue
                 if base == "int" and not is_list:

@@ -10,15 +10,23 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 from telethon.tl import functions, types
 
 from tg_kit.errors import UsageError
 from tg_kit.peers import Peer
-from tg_kit.raw import build_object, find_method, is_read_method, method_name, to_jsonable
+from tg_kit.raw import (
+    _nullable,
+    build_object,
+    find_method,
+    is_read_method,
+    method_name,
+    to_jsonable,
+)
 
 BOT_PEER = Peer(
     id=123456,
@@ -237,3 +245,25 @@ def test_result_serialises_bytes_as_base64_and_dates_as_iso() -> None:
         "d": "2026-09-01T00:00:00+00:00",
         "l": [{"_": "PhotoSize", "type": "m", "w": 1, "h": 1, "size": 5}],
     }
+
+
+def _hint(request: type, param: str) -> object:
+    return inspect.signature(request.__init__).parameters[param].annotation  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("annotation", "nullable"),
+    [
+        (datetime | None, True),
+        (Optional[datetime], True),  # noqa: UP045 — the 3.12/3.13 spelling Telethon hints resolve to
+        # Telethon's own hints, as the running Python renders them:
+        (_hint(functions.messages.GetHistoryRequest, "offset_date"), True),
+        (_hint(functions.messages.ForwardMessagesRequest, "send_as"), True),
+        (_hint(functions.messages.GetHistoryRequest, "peer"), False),
+        ("TypeInputPeer", False),
+        (int, False),
+        (list[int], False),
+    ],
+)
+def test_nullable_is_detected_on_every_python_spelling(annotation: object, nullable: bool) -> None:
+    assert _nullable(annotation) is nullable
