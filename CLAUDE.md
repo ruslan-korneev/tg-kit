@@ -35,6 +35,11 @@ uv tool install --editable . --reinstall   # refresh the `tg` on PATH
 
 ## Rules for this repo
 
+- Releases: the version in `pyproject.toml` and `tg_kit/__init__.py` equals the git tag
+  (`v0.1.0`), and the install lines in `skills/telegram/SKILL.md` and README pin that tag
+  (`…/tg-kit@vX.Y.Z`). Bump all of them together, then push the commit and the tag;
+  `tests/unit/test_release_pins.py` fails on a mismatch.
+
 - Telethon 1.45 / layer 229: buttons are `Keyboard[Inline]Button(text, type=…)`. Verify TL shapes
   against the installed source, not from memory.
 - Never import an auth key from another client (AUTH_KEY_DUPLICATED). Login is a human action.

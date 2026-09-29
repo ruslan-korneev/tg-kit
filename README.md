@@ -10,8 +10,8 @@ goes through `tg raw`, which covers the whole MTProto API.
 ## Install
 
 ```bash
-uv tool install 'git+https://github.com/ruslan-korneev/tg-kit'                # puts `tg` on PATH
-uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit'   # + QR-code login
+uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.1.0'                # puts `tg` on PATH
+uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.1.0'   # + QR-code login
 ```
 
 From a local checkout, for development:
