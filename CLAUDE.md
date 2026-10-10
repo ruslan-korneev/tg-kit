@@ -26,8 +26,8 @@ uv tool install --editable . --reinstall   # refresh the `tg` on PATH
   the same change.
 - **Telethon boundary:** `client.py` (connect, errors → `TgError`), `session.py`, `peers.py`
   (resolve), `convert.py` (Message → `MessageView`), `raw.py`, `plan.py` (execute). Nothing
-  else touches Telethon types. `render`, `buttons`, `guard`, `waiter.collect` and `texts` stay
-  pure.
+  else touches Telethon types. `render`, `buttons`, `guard`, `folders`, `waiter.collect` and
+  `texts` stay pure.
 - **Writes:** every write builds a `WritePlan`. `--dry-run` prints that object, and the real run
   executes the same object. Never add a write path that bypasses `make_plan` → `authorize`.
 - **State:** `~/.config/tg-kit/` (`TG_KIT_CONFIG_DIR`). `session.py` owns `sessions/`.

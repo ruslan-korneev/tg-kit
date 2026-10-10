@@ -11,6 +11,13 @@ Compact, one line per message, buttons on indented lines under it:
 
     ~ 09-29 14:06 @example_bot: typing
     ✗ 09-29 14:07 deleted #677792 #677793
+
+`tg dialogs` prints one line per chat, `tg folders` one line per folder:
+
+    123456 bot @example_bot 📌 [2 unread] — Choose an option
+    -1000000000777 channel Example News 🔕 [5 unread, 1 mention] — post text
+    2 Work [3 unread]
+    5 Team Projects (shared)
 """
 
 from __future__ import annotations
@@ -19,7 +26,9 @@ from dataclasses import replace
 from datetime import UTC, datetime, tzinfo
 
 from tg_kit.buttons import format_grid
+from tg_kit.folders import Folder
 from tg_kit.model import (
+    DialogView,
     Media,
     MessageEvent,
     MessageView,
@@ -31,8 +40,12 @@ from tg_kit.model import (
 __all__ = [
     "LIST_TRUNCATE",
     "compact",
+    "dialog_json",
+    "dialog_line",
     "event_json",
     "event_lines",
+    "folder_json",
+    "folder_line",
     "message_json",
     "ready_json",
     "sender_label",
@@ -207,6 +220,57 @@ def message_json(view: MessageView) -> dict[str, object]:
 
 def _sender_json(s: Sender) -> dict[str, object]:
     return {"id": s.id, "kind": s.kind, "username": s.username, "name": s.name}
+
+
+# --- `tg dialogs`, `tg folders` ------------------------------------------------
+
+DIALOG_PREVIEW = 80
+
+
+def dialog_json(view: DialogView) -> dict[str, object]:
+    """One `tg dialogs --json` row (documented in README → JSON output)."""
+    return {
+        "id": view.id,
+        "kind": view.kind,
+        "title": view.title,
+        "username": view.username,
+        "unread": view.unread,
+        "mentions": view.mentions,
+        "pinned": view.pinned,
+        "muted": view.muted,
+        "last_id": view.last_id,
+        "last_date": view.last_date.isoformat() if view.last_date else None,
+        "last_text": view.last_text,
+    }
+
+
+def dialog_line(view: DialogView) -> str:
+    name = f"@{view.username}" if view.username else view.title
+    marks = (" 📌" if view.pinned else "") + (" 🔕" if view.muted else "")
+    counts = []
+    if view.unread:
+        counts.append(f"{view.unread} unread")
+    if view.mentions:
+        counts.append(f"{view.mentions} mention{'s' if view.mentions > 1 else ''}")
+    unread = f" [{', '.join(counts)}]" if counts else ""
+    preview = view.last_text.replace("\n", " ⏎ ")
+    if len(preview) > DIALOG_PREVIEW:
+        preview = preview[:DIALOG_PREVIEW] + "…"
+    return f"{view.id} {view.kind} {name}{marks}{unread} — {preview}"
+
+
+def folder_json(folder: Folder, unread: int | None = None) -> dict[str, object]:
+    """One `tg folders --json` entry; `unread` only with `--counts`."""
+    doc: dict[str, object] = {"id": folder.id, "title": folder.title, "kind": folder.kind}
+    if unread is not None:
+        doc["unread"] = unread
+    return doc
+
+
+def folder_line(folder: Folder, unread: int | None = None) -> str:
+    shared = " (shared)" if folder.kind == "shared" else ""
+    count = f" [{unread} unread]" if unread else ""
+    return f"{folder.id} {folder.title}{shared}{count}"
 
 
 # --- `tg watch` ---------------------------------------------------------------

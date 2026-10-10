@@ -109,7 +109,8 @@ every button. Pressing a button depends on its type:
 
 ```bash
 # read
-tg dialogs [-n 30] [--unread] [--query TEXT] [--archived]
+tg dialogs [-n 30] [--unread] [--query TEXT] [--archived | --folder ID|TITLE]
+tg folders [--counts]                    # Telegram folders in Telegram's order
 tg read PEER [-n 20] [--before ID] [--after ID] [--since 2h|2026-09-01] [--from PEER] [--reverse] [--full]
 tg msg PEER ID [ID…]                     # full messages, never truncated
 tg search PEER QUERY [--filter photo|video|doc|link|voice|music|gif|round|…] [--since …] [--from PEER]
@@ -231,12 +232,61 @@ Per command:
 | Command | Document |
 |---|---|
 | `read`, `msg`, `search` | a list of messages |
+| `dialogs` | a list of chats (below) |
+| `folders` | a list of folders (below) |
 | `send`, `send-file`, `edit`, `forward`, `start` | `{"sent": [...]}`, plus `"replies": [...]` with `--wait` |
 | `press` | `{"button": {...}, "answer": {"alert", "toast", "url"} \| null, "replies": [...]}` |
 | `raw` | the TL result's `to_dict()`, with bytes as base64 and dates as ISO |
 | `--dry-run` | the plan: `{"action", "target", "steps": [{"method", "params"}], "guard"}` |
 
 `tg watch` streams, so it takes `--jsonl` instead of `--json` (see below).
+
+### Dialogs and folders
+
+`tg dialogs` prints one chat per line: id, kind, `@username` or title, `📌` pinned, `🔕` muted,
+`[N unread, M mentions]`, then the last message. With `--json` each chat is:
+
+```json
+{"id": 123456, "kind": "bot", "title": "Example", "username": "example_bot",
+ "unread": 2, "mentions": 0, "pinned": true, "muted": false,
+ "last_id": 677791, "last_date": "2026-09-29T11:02:00+00:00", "last_text": "Choose an option"}
+```
+
+- `kind` is one of `self` `user` `bot` `group` `supergroup` `channel` `unknown`.
+- `mentions` is Telegram's count of unread mentions of you.
+- `muted`: the chat's own mute, or, when it has none, your default for that kind of chat
+  (private chats, groups, channels).
+- `pinned` is pinned in the list shown: the chat list, the archive (`--archived`), or the folder
+  (`--folder`).
+
+`tg folders` lists your Telegram folders in Telegram's order, All chats wherever you put it:
+
+```
+2 Work [3 unread]
+0 All chats [41 unread]
+11 Team Projects (shared)
+```
+
+```json
+[{"id": 2, "title": "Work", "kind": "folder", "unread": 3},
+ {"id": 0, "title": "All chats", "kind": "all", "unread": 41},
+ {"id": 11, "title": "Team Projects", "kind": "shared", "unread": 0}]
+```
+
+- `kind`: `all` (All chats, always id 0), `folder`, or `shared` (a folder joined or shared by an
+  invite link).
+- `unread` comes only with `--counts`: the folder's unread chats that are not muted. It looks at
+  the latest 500 chats plus the chats the folders list by name.
+- `tg dialogs --folder ID|TITLE` lists one folder's chats: its pinned chats first, in its order,
+  then by last message. A title matches exactly, then case-insensitively. An unknown folder exits
+  4 with the list of folders.
+- Membership follows Telegram's rule: pinned or included chats are in; excluded ones are out;
+  otherwise the folder's chat types (contacts, non-contacts, groups, channels, bots), minus muted,
+  read or archived chats when the folder says so. An unread mention keeps a muted or read chat
+  in. A shared folder holds only its listed chats. Chats joining by type come from the latest 500.
+- Listed chats are fetched by id, so an old one still shows. Telegram rate-limits that by chats:
+  about 180 in 30 seconds. Past that, tg sleeps out the FLOOD_WAIT or exits 5.
+- `--archived` is the Archive, which is not a folder, so it does not combine with `--folder`.
 
 ### `tg watch` (`--jsonl`)
 
