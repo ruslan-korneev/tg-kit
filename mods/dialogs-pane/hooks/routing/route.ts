@@ -343,8 +343,10 @@ export function draftOf(entry: LedgerEntry, answer: string): ReplyDraft | null {
  * The one `tg send` both steps run: with `--dry-run` it prints the WritePlan
  * and the guard's verdict; without, the same plan goes through `authorize`.
  * The text goes on stdin (`-`) and `--plain`, so it is sent as shown.
+ * `byOwner`: the owner sends it after reading it whole, so it passes `--yes`
+ * (design doc dialogs-pane-ux.md §9 decision 9) and the dry run's verdict says so.
  */
-export function draftArgv(draft: ReplyDraft, isDryRun: boolean): string[] {
+export function draftArgv(draft: ReplyDraft, isDryRun: boolean, byOwner = false): string[] {
   return [
     'tg',
     'send',
@@ -354,6 +356,7 @@ export function draftArgv(draft: ReplyDraft, isDryRun: boolean): string[] {
     String(draft.replyTo),
     '--plain',
     '--json',
+    ...(byOwner ? ['--yes'] : []),
     ...(isDryRun ? ['--dry-run'] : []),
   ]
 }

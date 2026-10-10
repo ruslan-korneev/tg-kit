@@ -161,6 +161,8 @@ describe('drafted replies', () => {
     const dry = draftArgv(reply, true)
     expect(dry).toEqual(['tg', 'send', '@contact_a', '-', '--reply-to', '5', '--plain', '--json', '--dry-run'])
     expect(draftArgv(reply, false)).toEqual(dry.slice(0, -1))
+    expect(draftArgv(reply, true, true)).toEqual([...dry.slice(0, -1), '--yes', '--dry-run'])
+    expect(draftArgv(reply, false, true)).toEqual([...dry.slice(0, -1), '--yes'])
   })
 
   test('plan and sent documents are narrowed, not trusted', () => {

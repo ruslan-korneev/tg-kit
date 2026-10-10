@@ -405,9 +405,9 @@ describe('auto', () => {
 })
 
 describe('draft and listen', () => {
-  test('draft: the band shows the reply; e edits, ⏎ sends it through the guard as yours', async ($, on) => {
+  test("draft outside allow.toml: the band shows the reply; e edits, ⏎ sends it as the owner's own, with --yes", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const seen = world(on, { model: () => answer({ action: 'reply', text: 'Tomorrow is packed, can I write after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
+    const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: 'Tomorrow is packed, can I write after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
     const { child } = await handOver($, clock, seen, '2')
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
@@ -418,10 +418,37 @@ describe('draft and listen', () => {
     expect(sends(seen)).toHaveLength(0)
     await band.press({ key: 'ap:draft:edit' })
     await band.input({ key: 'ap:draft:text', text: 'Tomorrow is packed, after 18?' })
+    expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ send')
     await band.press({ key: 'ap:draft:send' })
-    expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json'], stdin: 'Tomorrow is packed, after 18?' }])
+    expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: 'Tomorrow is packed, after 18?' }])
     expect(await band.find({ key: 'ap:draft:send' })).toBeUndefined()
     await band.unmount()
+  })
+
+  test('a draft the band cuts short: ⏎ opens its chat and shows it whole, sends nothing; ⏎ again sends it with --yes', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const long = 'Tomorrow is packed with reviews until late, but I can write after 18 or call on Friday morning.'
+    const seen = world(on, { model: () => answer({ action: 'reply', text: long, confidence: 0.62, topics: ['dates'], reason: '' }) })
+    const { ui, child } = await handOver($, clock, seen, '2')
+    watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    const reads = () => seen.runs.filter(one => one.argv[1] === 'read' && one.argv[2] === '1002').length
+    const readsBefore = reads()
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    expect(await band.find({ type: 'Text', text: /→ draft: "Tomorrow is packed with reviews.*…"$/ })).toBeDefined()
+    expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ open')
+    await band.press({ key: 'ap:draft:send' })
+    await clock.settle()
+    expect(sends(seen)).toEqual([])
+    expect(await band.find({ type: 'Text', text: long })).toBeDefined()
+    // As `o`: the pane opened the chat (openThread reads it).
+    expect(reads()).toBeGreaterThan(readsBefore)
+    expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ send')
+    await band.press({ key: 'ap:draft:send' })
+    expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: long }])
+    await band.unmount()
+    await ui.unmount()
   })
 
   test('listen: a summary in the band, nothing written', async ($, on) => {

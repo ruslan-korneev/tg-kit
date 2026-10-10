@@ -36,6 +36,14 @@ describe('settleWrite', () => {
 test('argv: press waits 5 s, send reads the text from stdin as typed', () => {
   expect(calls.press('@example_bot', 677791, 0, 1)).toEqual(['tg', 'press', '@example_bot', '677791', '--row', '0', '--col', '1', '--wait', '5s', '--json'])
   expect(calls.send('@example_bot')).toEqual(['tg', 'send', '@example_bot', '-', '--plain', '--wait', '10s', '--json'])
+  expect(calls.reply('1002')).toEqual(['tg', 'send', '1002', '-', '--plain', '--json'])
+})
+
+test("argv: the owner's own writes pass --yes; anyone else's leave it to allow.toml", () => {
+  expect(calls.press('@example_bot', 677791, 0, 1, true)).toEqual([...calls.press('@example_bot', 677791, 0, 1), '--yes'])
+  expect(calls.send('@example_bot', true)).toEqual([...calls.send('@example_bot'), '--yes'])
+  expect(calls.reply('1002', true)).toEqual([...calls.reply('1002'), '--yes'])
+  expect([calls.press('@example_bot', 1, 0, 0, false), calls.send('@example_bot', false), calls.reply('1002', false)].some(argv => argv.includes('--yes'))).toBe(false)
 })
 
 test('decodeAllow reads ids and rejects other shapes', () => {

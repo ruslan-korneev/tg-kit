@@ -564,6 +564,8 @@ describe('the Speaker in a delegate dialog', () => {
     expect(seen.asked.at(-1)?.prompt).toContain('<task status="asking"><summary>add a /health endpoint</summary><question>which port?</question></task>')
     expect(seen.sent).toEqual([{ to: WORKER, text: expect.stringContaining("The Speaker's reading: port 8080") }])
     expect(sends(seen)).toEqual(['on it', 'which port should it listen on?', 'thanks'])
+    // Delegate's replies are an agent's writes: allow.toml decides, never --yes (decision 9).
+    expect(seen.runs.filter(one => one.argv[1] === 'send').map(one => one.argv.includes('--yes'))).toEqual([false, false, false])
   })
 })
 
