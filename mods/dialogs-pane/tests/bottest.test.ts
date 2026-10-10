@@ -93,7 +93,7 @@ describe('pressable buttons', () => {
     await ui.press({ key: 'btn:677791:0:0' })
     await clock.settle()
     expect(writes(runs).map(run => run.argv)).toEqual([
-      ['tg', 'press', '@example_bot', '677791', '--row', '0', '--col', '0', '--wait', '5s', '--json'],
+      ['tg', 'press', '@example_bot', '677791', '--row', '0', '--col', '0', '--wait', '5s', '--json', '--yes'],
     ])
     expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('Settings saved')
     expect(await ui.find({ key: 'btn:677791:0:0' })).toBeUndefined()
@@ -101,24 +101,38 @@ describe('pressable buttons', () => {
     await ui.unmount()
   })
 
-  test('a peer not in the allowlist: chips dim with ro, a press explains tg allow add and runs nothing', async ($, on) => {
+  test("a chat outside allow.toml: the owner's press and n are their own writes, with --yes (decision 9)", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const { runs } = world(on, { allow: [] })
+    const { runs } = world(on, { allow: [], writes: () => out(0, { sent: [], replies: [] }) })
     const ui = await openBot($, clock)
-    expect((await ui.find({ key: 'chips:677791' }))?.text).toContain('ro')
+    expect((await ui.find({ key: 'chips:677791' }))?.text).not.toContain('ro')
     await ui.press({ key: 'btn:677791:0:0' })
     await clock.settle()
-    expect(writes(runs)).toEqual([])
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('`! tg allow add @example_bot --yes`')
+    const composing = ui.press({ key: 'bt:compose' })
+    await clock.advance(50)
+    await composing
+    await ui.input({ key: 'bt:send', text: '/start' })
+    await clock.settle()
+    expect(writes(runs)).toEqual([
+      { argv: ['tg', 'press', '@example_bot', '677791', '--row', '0', '--col', '0', '--wait', '5s', '--json', '--yes'] },
+      { argv: ['tg', 'send', '@example_bot', '-', '--plain', '--wait', '10s', '--json', '--yes'], stdin: '/start' },
+    ])
     await ui.unmount()
   })
 
-  test('BotFather is read-only even when allowlisted', async ($, on) => {
+  test('BotFather is read-only even when allowlisted: chips dim with ro, a press and n run nothing', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const dialogs = DIALOGS.map(one => (one.id === BOT_ID ? { ...one, username: 'BotFather', title: 'BotFather' } : one))
     const { runs } = world(on, { dialogs })
     const ui = await openBot($, clock)
+    expect((await ui.find({ key: 'chips:677791' }))?.text).toContain('ro')
     await ui.press({ key: 'btn:677791:0:0' })
+    await clock.settle()
+    expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('BotFather is read-only')
+    const composing = ui.press({ key: 'bt:compose' })
+    await clock.advance(50)
+    await composing
+    await ui.input({ key: 'bt:send', text: '/newbot' })
     await clock.settle()
     expect(writes(runs)).toEqual([])
     expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('BotFather is read-only')
@@ -174,7 +188,7 @@ describe('recorder', () => {
     await composing
     await ui.input({ key: 'bt:send', text: '/settings' })
     await clock.settle()
-    expect(writes(runs)[0]).toEqual({ argv: ['tg', 'send', '@example_bot', '-', '--plain', '--wait', '10s', '--json'], stdin: '/settings' })
+    expect(writes(runs)[0]).toEqual({ argv: ['tg', 'send', '@example_bot', '-', '--plain', '--wait', '10s', '--json', '--yes'], stdin: '/settings' })
     await ui.press({ key: 'btn:677801:0:0' })
     await clock.settle()
     expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('no reply within 5s')
@@ -189,6 +203,9 @@ describe('recorder', () => {
     expect(script).toContain('out1=$(tg send @example_bot /settings --plain --wait 10s)')
     expect(script).toContain('id=$(nth_id "$out1" 2)')
     expect(script).toContain('out2=$(tg press @example_bot "$id" --row 0 --col 0 --wait 5s) || [ $? -eq 6 ]')
+    // The live steps were the owner's (--yes); the script is an agent's to replay, so allow.toml gates it.
+    expect(writes(runs).every(run => run.argv.includes('--yes'))).toBe(true)
+    expect(script).not.toContain('--yes')
 
     expect(saved.bottest?.recorded?.steps.map(step => step.kind)).toEqual(['send', 'press'])
     expect(saved.bottest?.recorded?.path).toBe(path)

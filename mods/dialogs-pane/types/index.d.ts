@@ -418,9 +418,10 @@ export type ApEntry = {
   undo: ApUndo | null
 }
 
-export type ApDraftState = { kind: 'ready' } | { kind: 'editing' } | { kind: 'sending' } | { kind: 'failed'; reason: string }
+/** `unfolded`: the band shows the whole text after ⏎ found it cut short; only then does ⏎ send it. */
+export type ApDraftState = { kind: 'ready' } | { kind: 'unfolded' } | { kind: 'editing' } | { kind: 'sending' } | { kind: 'failed'; reason: string }
 
-/** A reply waiting for you in the band: ⏎ send, e edit, x drop, o open. */
+/** A reply waiting for you in the band: ⏎ send (or open, when the band cuts it short), e edit, x drop, o open. */
 export type ApDraft = {
   seq: number
   peer: PeerRef

@@ -2,7 +2,8 @@
 // writes", §5 idea 6), decided before any tg call. Pure.
 //
 // The guard (src/tg_kit/guard.py) is the real gate: this only keeps the pane from
-// asking for a write tg would refuse, and never passes --yes.
+// asking for a write tg would refuse. The owner's own writes pass --yes (calls.ts),
+// so for them only BotFather is refused here; readOnlyReason gates agents' writes.
 import { decodeBase64, printableUtf8, toHex } from '../packet/build'
 import type { Button } from '../packet/types'
 
@@ -28,7 +29,7 @@ export function isBotFather(arg: string): boolean {
 }
 
 /**
- * Whether the pane may write to `peer`: not BotFather, and its id in the allowlist.
+ * Whether an agent may write to `peer` without --yes: not BotFather, and its id in the allowlist.
  * `allow` is null when the allowlist could not be read; then nothing is written.
  */
 export function readOnlyReason(peer: WritePeer, allow: readonly number[] | null, allowError = 'not read yet'): ReadOnly | null {

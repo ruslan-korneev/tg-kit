@@ -21,12 +21,22 @@ export type WriteResult =
 
 type Ran = Pick<ProcessRunResult, 'exitCode' | 'stdout' | 'stderr'> | undefined
 
+/**
+ * `byOwner`: the owner's own key sent it (`n`, a press, ⏎ on a draft read whole), so it
+ * passes `--yes` and allow.toml does not gate it (design doc §9 decision 9). Agents' writes
+ * (auto, delegate, a replayed recording) leave it false: tg's guard and allow.toml decide.
+ * BotFather and `readonly = true` refuse either way: the first in the pane, the second in tg.
+ */
+const yes = (byOwner: boolean): string[] => (byOwner ? ['--yes'] : [])
+
 export const calls = {
-  press: (peer: string, id: number, row: number, col: number): string[] => [
-    'tg', 'press', peer, String(id), '--row', String(row), '--col', String(col), '--wait', `${PRESS_WAIT_S}s`, '--json',
+  press: (peer: string, id: number, row: number, col: number, byOwner = false): string[] => [
+    'tg', 'press', peer, String(id), '--row', String(row), '--col', String(col), '--wait', `${PRESS_WAIT_S}s`, '--json', ...yes(byOwner),
   ],
   /** The text goes on stdin (`-`), so a leading dash or newline needs no escaping. `--plain`: sent as typed. */
-  send: (peer: string): string[] => ['tg', 'send', peer, '-', '--plain', '--wait', `${SEND_WAIT_S}s`, '--json'],
+  send: (peer: string, byOwner = false): string[] => ['tg', 'send', peer, '-', '--plain', '--wait', `${SEND_WAIT_S}s`, '--json', ...yes(byOwner)],
+  /** A chat reply, autopilot's or delegate's or a draft's: as `send`, without waiting for an answer. */
+  reply: (peer: string, byOwner = false): string[] => ['tg', 'send', peer, '-', '--plain', '--json', ...yes(byOwner)],
   allowList: (): string[] => ['tg', 'allow', 'list', '--json'],
 }
 

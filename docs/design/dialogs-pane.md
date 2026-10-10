@@ -179,7 +179,7 @@ The Hidden band takes keys only after `ctrl+x tab` (engine limit); the band says
 | not logged in | "Run `! tg login` in the prompt" — login stays a human action |
 | loading | dim `…` rows, no spinner noise |
 | flood wait | `warn` row: "Telegram asks to wait 23 s", auto-retry countdown |
-| peer not allowed for writes | buttons drawn dim with `ro`; press → explains `tg allow add` |
+| BotFather | buttons drawn dim with `ro`; press or send → explains, runs nothing. Elsewhere the owner's own press, send and draft pass `--yes` ([dialogs-pane-ux.md](dialogs-pane-ux.md) §9, decision 9) |
 | empty lens | one line: what the lens filters, and how to change it |
 
 ## 5. Twenty ideas

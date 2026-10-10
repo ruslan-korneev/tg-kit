@@ -251,26 +251,64 @@ export function AutopilotRow(
 }
 
 /**
+ * The band's line for a draft, and whether it shows the whole draft. Decision 9
+ * (design doc §9): ⏎ sends only a draft the owner has read, so a draft cut short
+ * by `oneLine` or by the band's width is opened first.
+ */
+export function draftLine(draft: Pick<ApDraft, 'peer' | 'incoming' | 'text'>, width: number): { body: string; isWhole: boolean } {
+  const room = Math.max(12, Math.floor((width - draft.peer.label.length - 20) / 2))
+  const shown = oneLine(draft.text, room)
+  const body = `${draft.peer.label}: "${oneLine(draft.incoming, room)}"  → draft: "${shown}"`
+  return { body, isWhole: shown === oneLine(draft.text, Infinity) && cells(`${LEVEL_GLYPH.draft} ${body}`) <= width }
+}
+
+/** Terminal cells, erring wide: CJK, Hangul and emoji take two; `truncate-end` cuts by cells. */
+function cells(text: string): number {
+  let count = 0
+  for (const char of text) {
+    const point = char.codePointAt(0) ?? 0
+    count += (point >= 0x1100 && point <= 0x115f) || point >= 0x2e80 ? 2 : 1
+  }
+  return count
+}
+
+/**
  * A draft waiting for you (design §6 mockup); `e` swaps its second line for the
  * text field. Band keys reach it once the band holds them (ctrl+x tab), as the
- * triage band says too.
+ * triage band says too. ⏎ sends a draft shown whole; one cut short unfolds first.
  */
 export function DraftBand(
   els: Els,
-  props: { draft: ApDraft; more: number; width: number; onSend: () => void; onEdit: () => void; onSave: (text: string) => void; onDrop: () => void; onOpen: () => void },
+  props: {
+    draft: ApDraft
+    more: number
+    width: number
+    onSend: () => void
+    onUnfold: () => void
+    onEdit: () => void
+    onSave: (text: string) => void
+    onDrop: () => void
+    onOpen: () => void
+  },
 ): RenderElement {
   const { Box, Text, Button } = els
   const Input = 'Input' in els ? els.Input : undefined
   const { draft } = props
-  const room = Math.max(12, Math.floor((props.width - draft.peer.label.length - 20) / 2))
   const why = [...draft.reasons, ...(draft.confidence === null ? [] : [`conf ${draft.confidence.toFixed(2)}`])].join(' · ')
   const state = draft.state
+  const line = draftLine(draft, props.width)
+  const isUnfolded = state.kind === 'unfolded'
+  // ⏎ sends what the band shows whole; a draft cut short opens first (decision 9).
+  const canSend = line.isWhole || isUnfolded
   return (
     <Box key="ap:band:draft" flexDirection="column">
       <Text wrap="truncate-end">
         <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} `}</Text>
-        {`${draft.peer.label}: "${oneLine(draft.incoming, room)}"  → draft: "${oneLine(draft.text, room)}"`}
+        {line.body}
       </Text>
+      {isUnfolded && !line.isWhole ? (
+        <Text wrap="wrap">{draft.text}</Text>
+      ) : null}
       {state.kind === 'editing' && Input !== undefined ? (
         <Input key="ap:draft:text" label="draft" value={draft.text} submitLabel="save" autoFocus onSubmit={value => props.onSave(value)} />
       ) : (
@@ -279,8 +317,8 @@ export function DraftBand(
           {state.kind === 'sending' ? <Text dimColor>{`${GLYPH.working}sending`}</Text> : null}
           {state.kind === 'failed' ? <Text color={TOKEN.danger} wrap="truncate-end">{`${GLYPH.error} ${state.reason}`}</Text> : null}
           <Text dimColor>ctrl+x tab:</Text>
-          <Button key="ap:draft:send" plain autoFocus onPress={props.onSend}>
-            ⏎ send
+          <Button key="ap:draft:send" plain autoFocus onPress={canSend ? props.onSend : props.onUnfold}>
+            {canSend ? '⏎ send' : '⏎ open'}
           </Button>
           <Button key="ap:draft:edit" plain hotkey="e" dimColor onPress={props.onEdit}>
             edit

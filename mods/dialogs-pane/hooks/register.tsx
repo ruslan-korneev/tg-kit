@@ -1897,7 +1897,7 @@ import type { BotTest, Notice } from '../types'
 import { failureText } from './ui/model'
 import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, type WriteResult } from './bottest/calls'
 import { diffPair, replyDiff } from './bottest/diff'
-import { chipAction, readOnlyReason, readOnlyText, type ReadOnly } from './bottest/keyboard'
+import { chipAction, isBotFather, readOnlyText } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
 import { BotBar, ChipRow, DiffView, NoticeRow, SendBox, chipKey } from './bottest/ui'
@@ -1996,16 +1996,6 @@ async function loadAllow($: $): Promise<void> {
   await update($, bottest, value => ({ ...value, allow: result.ok ? { status: 'ok', value: result.value } : failed(result.failure, at) }))
 }
 
-async function readOnlyFor($: $, peer: PeerRef): Promise<ReadOnly | null> {
-  let allow = (await read($, bottest)).allow
-  if (allow.status === 'idle' || allow.status === 'error') {
-    await loadAllow($)
-    allow = (await read($, bottest)).allow
-  }
-  const error = allow.status === 'error' ? failureText(allow.failure, 0) : 'still loading'
-  return readOnlyReason(peer, allow.status === 'ok' ? allow.value : null, error)
-}
-
 /** openThread's hook: a fresh notice, diff and clocks per thread (stamps stay); a watch on bots. */
 async function bottestThreadOpened($: $, peer: PeerRef): Promise<void> {
   await update($, bottest, value => ({
@@ -2017,14 +2007,14 @@ async function bottestThreadOpened($: $, peer: PeerRef): Promise<void> {
   }))
   if ((await read($, bottest)).allow.status !== 'ok') {
     loadAllow($).catch(() => {
-      // loadAllow records its own failure; a press reads the allowlist again.
+      // loadAllow records its own failure; the autopilot card reads the allowlist again.
     })
   }
   if (peer.kind === 'bot') await startWatch($, peer)
   else await stopWatch($)
 }
 
-// --- writes: press and send, through tg's guard ---
+// --- writes: press and send, the owner's own: --yes, only BotFather refused here ---
 
 async function runWrite($: $, argv: readonly string[], stdin?: string): Promise<WriteResult> {
   try {
@@ -2043,10 +2033,8 @@ type Pending =
 async function finishWrite($: $, peer: PeerRef, pending: Pending, startedAt: number, result: WriteResult): Promise<void> {
   await update($, bottest, value => ({ ...value, busy: null }))
   if (!result.ok) {
-    const why = failureText(result.failure, startedAt)
-    // tg's guard is the real gate: when it refused over the allowlist, say how to add the peer.
-    const allow = result.isRefused && why.includes('allowlist') ? ` ${readOnlyText({ kind: 'not-allowed', arg: peer.arg })}` : ''
-    await say($, result.failure.kind === 'flood' ? 'warn' : 'danger', `${GLYPH.error} ${why}${allow}`)
+    // --yes leaves tg's guard no allowlist to refuse over; `readonly = true` says so itself.
+    await say($, result.failure.kind === 'flood' ? 'warn' : 'danger', `${GLYPH.error} ${failureText(result.failure, startedAt)}`)
     return
   }
   const brought = [...result.sent, ...result.replies]
@@ -2089,32 +2077,30 @@ async function recordStep($: $, peer: PeerRef, pending: Pending, at: number, res
   await update($, bottest, value => (value.recording === null ? value : { ...value, recording: addStep(value.recording, step) }))
 }
 
-/** A chip's press: shown, refused, or `tg press PEER ID --row R --col C --wait 5s --json`. */
+/** A chip's press: shown, refused, or `tg press PEER ID --row R --col C --wait 5s --json --yes`. */
 async function pressChip($: $, message: MessageView, button: KeyButton): Promise<void> {
   const open = await read($, thread)
   if (open === null) return
   const action = chipAction(button)
   if (action.kind !== 'press') return say($, action.kind === 'show' ? 'info' : 'warn', action.text)
-  const blocked = await readOnlyFor($, open.peer)
-  if (blocked !== null) return say($, 'warn', readOnlyText(blocked))
+  if (isBotFather(open.peer.arg)) return say($, 'warn', readOnlyText({ kind: 'botfather' }))
   if ((await read($, bottest)).busy !== null) return say($, 'info', 'tg is still running the last step; press again once it is done.')
   const at = await $.clock.now()
   await update($, bottest, value => ({ ...value, busy: `pressing "${button.text}"`, notice: null, timing: pressed(value.timing, at, message.id, []) }))
-  const result = await runWrite($, calls.press(open.peer.arg, message.id, button.row, button.col))
+  const result = await runWrite($, calls.press(open.peer.arg, message.id, button.row, button.col, true))
   await finishWrite($, open.peer, { kind: 'press', message, button, wait_s: PRESS_WAIT_S }, at, result)
 }
 
-/** The send box's submit: `tg send PEER - --plain --wait 10s --json`, the text on stdin. */
+/** The send box's submit: `tg send PEER - --plain --wait 10s --json --yes`, the text on stdin. */
 async function sendText($: $, text: string): Promise<void> {
   await update($, bottest, value => ({ ...value, composing: false }))
   const open = await read($, thread)
   if (open === null || text.trim() === '') return
-  const blocked = await readOnlyFor($, open.peer)
-  if (blocked !== null) return say($, 'warn', readOnlyText(blocked))
+  if (isBotFather(open.peer.arg)) return say($, 'warn', readOnlyText({ kind: 'botfather' }))
   if ((await read($, bottest)).busy !== null) return say($, 'info', 'tg is still running the last step; send again once it is done.')
   const at = await $.clock.now()
   await update($, bottest, value => ({ ...value, busy: `sending ${oneLine(text, 24)}`, notice: null, timing: sent(value.timing, at) }))
-  const result = await runWrite($, calls.send(open.peer.arg), text)
+  const result = await runWrite($, calls.send(open.peer.arg, true), text)
   await finishWrite($, open.peer, { kind: 'send', text, wait_s: SEND_WAIT_S }, at, result)
   // Hand the keys back to the thread, or j/k would type into nothing.
   const last = (await threadMessages($)).at(-1)
@@ -2198,9 +2184,8 @@ async function toggleDiff($: $): Promise<void> {
 /** MessageCard's bot-testing props: the latency stamp and pressable chips. */
 async function bottestCards($: $, peer: PeerRef, messages: readonly MessageView[], width: number) {
   const state = await read($, bottest)
-  const allow = state.allow.status === 'ok' ? state.allow.value : null
-  // Dim until the allowlist says otherwise: a chip that looks pressable must be.
-  const isReadOnly = readOnlyReason(peer, allow) !== null
+  // A press is the owner's own write (--yes): only BotFather's chips are read-only.
+  const isReadOnly = isBotFather(peer.arg)
   return (els: Els, message: MessageView) => {
     const stamp = stampFor(message, messages, state.timing)
     return {
@@ -2257,11 +2242,12 @@ async function drawBottest($: $, els: Els): Promise<RenderElement[]> {
 // A burst waits for its gap and for the other side to stop typing (60 s at
 // most); the Speaker, one $.model.complete call with no tools, writes; the
 // dialog is read again right before sending; a reply leaves through the
-// bottest write runner as `tg send PEER - --plain --json`, so tg's guard and
-// allow.toml decide, and nothing here passes --yes except `u`'s delete, which
-// the person's key press asks for. Pure rules are in ./autopilot; every `$`
-// call is here. Keys: q the card (pane), u undo (pane and band); a draft's
-// ⏎ e x o in the band. The kill switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
+// bottest write runner as `tg send PEER - --plain --json` (calls.reply), so tg's
+// guard and allow.toml decide. Only the owner's own keys pass --yes: ⏎ on a
+// draft the band shows whole, and `u`'s delete (design doc §9 decision 9).
+// Pure rules are in ./autopilot; every `$` call is here. Keys: q the card
+// (pane), u undo (pane and band); a draft's ⏎ e x o in the band. The kill
+// switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
 import type { PluginOptions } from 'claude-code'
 
 import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
@@ -2690,11 +2676,6 @@ async function apToDraft($: $, rt: ApRuntime, ids: readonly number[], said: Spok
   await apDone($, rt, ids, { kind: 'drafted', reasons })
 }
 
-/** `tg send PEER - --plain --json`: the text on stdin, sent as written; no --yes, so the guard decides. */
-function apSendArgv(peerArg: string): string[] {
-  return ['tg', 'send', peerArg, '-', '--plain', '--json']
-}
-
 function writeFailure(result: WriteResult & { ok: false }, peer: PeerRef, at: number): string {
   const why = failureText(result.failure, at)
   return result.isRefused ? `${why} ${readOnlyText({ kind: 'not-allowed', arg: peer.arg })}` : why
@@ -2711,7 +2692,7 @@ async function apSendReply($: $, rt: ApRuntime, turn: number, ids: readonly numb
   rt.isSending = true
   let result: WriteResult
   try {
-    result = await runWrite($, apSendArgv(rt.peer.arg), said.text)
+    result = await runWrite($, calls.reply(rt.peer.arg), said.text)
   } finally {
     rt.isSending = false
   }
@@ -2790,16 +2771,23 @@ async function apSetDraft($: $, seq: number, change: (draft: ApDraft) => ApDraft
   await update($, autopilot, value => ({ ...value, drafts: value.drafts.map(one => (one.seq === seq ? change(one) : one)) }))
 }
 
-/** ⏎ on a draft: your press sends it, through the same guard. */
+/**
+ * ⏎ on a draft the band shows whole: the owner has read it, so it is their own
+ * write and passes --yes (decision 9); BotFather stays read-only.
+ */
 async function apSendDraft($: $): Promise<void> {
   const draft = await apDraftOf($)
   if (draft === null || draft.state.kind === 'sending') return
+  if (isBotFather(draft.peer.arg)) {
+    await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) } }))
+    return
+  }
   await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'sending' } }))
   const rt = apRuntimes.get(draft.peer.id)
   if (rt !== undefined) rt.isSending = true
   let result: WriteResult
   try {
-    result = await runWrite($, apSendArgv(draft.peer.arg), draft.text)
+    result = await runWrite($, calls.reply(draft.peer.arg, true), draft.text)
   } finally {
     if (rt !== undefined) rt.isSending = false
   }
@@ -2829,6 +2817,12 @@ async function apDropDraft($: $): Promise<void> {
   await refreshStatus($)
 }
 
+/** ⏎ on a draft the band cuts short: the pane on its dialog, as `o`, and the band shows it whole; ⏎ then sends. */
+async function apUnfoldDraft($: $, draft: ApDraft): Promise<void> {
+  await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'unfolded' } }))
+  await apOpen($, draft.peer)
+}
+
 /** `o` on a draft or a summary: the pane, on that dialog. */
 async function apOpen($: $, peer: PeerRef): Promise<void> {
   if ((await read($, mode)) === 'hidden') await setMode($, defaultMode(undefined))
@@ -2851,6 +2845,7 @@ async function drawAutopilotBand($: $, els: Els, width: number): Promise<RenderE
       more: state.drafts.length - 1,
       width,
       onSend: () => apSendDraft($),
+      onUnfold: () => apUnfoldDraft($, draft),
       onEdit: () => apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'editing' } })),
       onSave: text => apSetDraft($, draft.seq, one => ({ ...one, text: text.trim() === '' ? one.text : text, state: { kind: 'ready' } })),
       onDrop: () => apDropDraft($),
@@ -3826,7 +3821,7 @@ async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
   if (rt !== undefined) rt.isSending = true
   let sent: WriteResult
   try {
-    sent = await runWrite($, apSendArgv(task.peer.arg), spoken.text)
+    sent = await runWrite($, calls.reply(task.peer.arg), spoken.text)
   } finally {
     if (rt !== undefined) rt.isSending = false
   }

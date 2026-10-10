@@ -5,6 +5,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { ApDialog, PeerRef } from '../../types'
 import { msg } from '../packet/fixtures'
 import { NO_BURST, afterCheck, gate, onIncoming, onTyping, wakeAt } from './burst'
+import { draftLine } from './components'
 import { defaultDialog, isQuiet, parseDialogs, parseQuiet, parseRate, stepGap, stepRate, stepThreshold, toggleTopic } from './config'
 import { parseChecked, parseSpoken, replyPrompt, speakerSystem } from './speaker'
 
@@ -125,5 +126,26 @@ describe('the Speaker', () => {
     expect(parseChecked('{"choice":"send_then_answer","reason":"new topic"}')).toEqual({ choice: 'send_then_answer', confidence: null, reason: 'new topic' })
     expect(parseChecked('{"choice":"regenerate","confidence":0.4}')).toMatchObject({ confidence: 0.4 })
     expect(parseChecked('{"choice":"maybe"}')).toBeNull()
+  })
+})
+
+describe('the band shows a draft whole or cut short (decision 9: ⏎ sends only what was read)', () => {
+  const draft = (text: string) => ({ peer: PEER, incoming: 'Can we call at 10?', text })
+
+  test('a short draft fits; newlines drawn as ⏎ still show all of it', () => {
+    expect(draftLine(draft('After 18?'), 120)).toEqual({ body: 'Dev Team: "Can we call at 10?"  → draft: "After 18?"', isWhole: true })
+    expect(draftLine(draft('After 18?\nOr Friday.'), 120).isWhole).toBe(true)
+  })
+
+  test('cut short by its room, or by the band width when the room is at its floor', () => {
+    expect(draftLine(draft('x'.repeat(47)), 120).isWhole).toBe(false)
+    expect(draftLine(draft('x'.repeat(46)), 120).isWhole).toBe(true)
+    // 40 columns: the room floors at 12, so the line outgrows the band and truncate-end cuts it.
+    expect(draftLine(draft('x'.repeat(12)), 40).isWhole).toBe(false)
+  })
+
+  test('wide characters count two cells', () => {
+    expect(draftLine(draft('明天很忙'.repeat(5)), 70).isWhole).toBe(false)
+    expect(draftLine(draft('Завтра занят'), 70).isWhole).toBe(true)
   })
 })
