@@ -65,6 +65,8 @@ function world(
   options: {
     tg?: (ran: Ran) => ProcessRunResult
     watch?: readonly string[]
+    /** A prompt.submit hook refuses every prompt with this reason. */
+    drop?: string
     /** Each watch prints `ready`, waits for this, then prints `watch` and exits. */
     gate?: Promise<void>
     store?: Record<string, unknown>
@@ -121,7 +123,7 @@ function world(
   on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
   on('prompt.submit', (_$, e) => {
     seen.prompts.push(e.text)
-    return { text: e.text }
+    return options.drop === undefined ? { text: e.text } : { drop: options.drop }
   })
   return seen
 }
@@ -144,11 +146,8 @@ async function openAndSelect($: Engine, clock: MockClock) {
   return ui
 }
 
-const textOf = (row: { message: { content: readonly unknown[] } }) =>
-  row.message.content.map(block => (typeof block === 'object' && block !== null && 'text' in block ? String(block.text) : '')).join('')
-
 describe('send to main', () => {
-  test('⏎ appends the packet as a user row, logs a line the person sees, and wakes an idle main', async ($, on) => {
+  test('⏎ submits the packet and its intent line as a visible prompt to main', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const session = mock.session(on)
     const seen = world(on)
@@ -157,15 +156,14 @@ describe('send to main', () => {
     expect((await ui.find({ key: 'intent' }))?.text).toContain('[Fix]')
     await ui.press({ key: 'send' })
 
-    const rows = session.appended()
-    const packet = rows.find(row => row.message.type === 'user')
-    expect(packet === undefined ? '' : textOf(packet)).toContain('<tg-packet v="1" intent="fix"')
-    expect(packet === undefined ? '' : textOf(packet)).toContain('<message id="677790"')
-    expect(packet === undefined ? '' : textOf(packet)).toContain('Intent: Fix')
-    expect(rows.map(row => row.message.type)).toEqual(['user'])
-    expect(seen.logs).toHaveLength(1)
-    expect(seen.logs[0]).toMatch(/^tg packet from @example_bot: #677791 · Fix · \+1 reply-chain · \d+ masked$/)
-    expect(seen.prompts).toEqual(['Act on the tg packet above (@example_bot #677791, intent Fix).'])
+    // One prompt, the packet whole: what the transcript shows is what the model reads.
+    expect(seen.prompts).toHaveLength(1)
+    expect(seen.prompts[0]).toMatch(/^<tg-packet v="1" intent="fix"/)
+    expect(seen.prompts[0]).toContain('<message id="677790"')
+    expect(seen.prompts[0]).toMatch(/\nIntent: Fix — /)
+    // No hidden row and no separate wake-up line.
+    expect(session.appended()).toEqual([])
+    expect(seen.logs).toEqual([])
     // The parent was in the thread: no tg msg ran.
     expect(seen.runs.some(one => one.argv[1] === 'msg')).toBe(false)
     // Delivered everywhere: the selection is cleared.
@@ -180,21 +178,33 @@ describe('send to main', () => {
     await ui.unmount()
   })
 
-  test('a busy main reads the row at its next step: no wake-up prompt', async ($, on) => {
+  test('a busy main gets the packet as its next prompt; the ledger waits for that turn', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    mock.session(on)
     const seen = world(on)
     const ui = await openAndSelect($, clock)
     await $.turn.start({ text: 'working on something', turnId: 't-0' })
     await ui.press({ key: 'send' })
-    expect(seen.prompts).toEqual([])
+    expect(seen.prompts).toHaveLength(1)
+    // The running turn ends: not the packet's turn, so the entry is still waiting.
+    await $.turn.complete({ answer: 'other work', durationMs: 1, isAborted: false, turnId: 't-0', reason: 'answer' })
+    await ui.press({ key: 'ledger' })
+    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('· sent')
+    await ui.unmount()
+  })
+
+  test('a prompt a hook drops marks the entry failed', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on, { drop: 'prompts are paused' })
+    const ui = await openAndSelect($, clock)
+    await ui.press({ key: 'send' })
+    await ui.press({ key: 'ledger' })
+    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('⚠ prompts are paused')
     await ui.unmount()
   })
 
   test('i cycles the intent; redaction shows what it masks and can be turned off', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const session = mock.session(on)
-    world(on)
+    const seen = world(on)
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'intent' })
     expect((await ui.find({ key: 'intent' }))?.text).toContain('[Reproduce]')
@@ -205,14 +215,12 @@ describe('send to main', () => {
     expect((await ui.find({ key: 'redact' }))?.text).toContain('off')
     expect(await ui.find({ type: 'Text', text: 'masked: ' })).toBeUndefined()
     await ui.press({ key: 'send' })
-    const packet = session.appended().find(row => row.message.type === 'user')
-    expect(packet === undefined ? '' : textOf(packet)).toContain('intent="reproduce" source="dialogs-pane" redacted="false"')
+    expect(seen.prompts[0]).toContain('intent="reproduce" source="dialogs-pane" redacted="false"')
     await ui.unmount()
   })
 
   test('a parent outside the thread is fetched with tg msg; exit 4 leaves it missing', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const session = mock.session(on)
     const orphan = { ...MESSAGES[2], id: 677793, reply_to: 600000 }
     const seen = world(on, {
       tg: ran => {
@@ -226,8 +234,7 @@ describe('send to main', () => {
     await ui.press({ key: 'hint:select' })
     await ui.press({ key: 'send' })
     expect(seen.runs.find(one => one.argv[1] === 'msg')?.argv).toEqual(['tg', 'msg', '@example_bot', '600000', '--json'])
-    const packet = session.appended().find(row => row.message.type === 'user')
-    expect(packet === undefined ? '' : textOf(packet)).toContain('<message id="677793"')
+    expect(seen.prompts[0]).toContain('<message id="677793"')
     await ui.press({ key: 'ledger' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('2 msgs')
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('1 parent not found')
@@ -277,7 +284,6 @@ describe('the route picker', () => {
 
   test('broadcast sends one packet with an intent per leg', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const session = mock.session(on)
     const seen = world(on)
     seen.agents.push(TESTER)
     const ui = await openAndSelect($, clock)
@@ -290,7 +296,7 @@ describe('the route picker', () => {
     await ui.press({ key: 'broadcast:done' })
     expect((await ui.find({ key: 'route' }))?.text).toContain('⇉ broadcast ×3')
     await ui.press({ key: 'send' })
-    expect(textOf(session.appended().find(row => row.message.type === 'user') ?? { message: { content: [] } })).toContain('intent="fix"')
+    expect(seen.prompts[0]).toContain('intent="fix"')
     expect(seen.sends[0]?.text).toContain('intent="reproduce"')
     expect(seen.spawned[0]).toContain('intent="draft_reply"')
     await ui.unmount()
@@ -379,8 +385,7 @@ describe('hidden band', () => {
   test('⏎ sends the newest message of the dialog that wrote to main', async ($, on) => {
     let unread = 2
     const clock = mock.clock(on, { now: NOW })
-    const session = mock.session(on)
-    world(on, {
+    const seen = world(on, {
       store: { mode: 'hidden' },
       tg: ran => (ran.argv[1] === 'dialogs' ? json(DIALOGS.map(d => (d.id === 1001 ? { ...d, unread } : d))) : tgAnswer(ran.argv)),
     })
@@ -391,8 +396,7 @@ describe('hidden band', () => {
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect((await band.find({ key: 'band:main' }))?.text).toContain('send to main')
     await band.press({ key: 'band:main' })
-    const packet = session.appended().find(row => row.message.type === 'user')
-    expect(packet === undefined ? '' : textOf(packet)).toContain('<message id="677792"')
+    expect(seen.prompts[0]).toContain('<message id="677792"')
     await band.unmount()
   })
 })

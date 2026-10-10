@@ -25,8 +25,6 @@ import {
   ledgerStatus,
   legsOf,
   nextIntent,
-  noticeText,
-  nudgeText,
   onMainTurnStart,
   onRadar,
   onTurnComplete,
@@ -1003,29 +1001,23 @@ async function markEntry($: $, seq: number, state: LedgerEntry['state']): Promis
 const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
- * Main gets the packet as a $.session.append user row (the human's decision).
- * The engine stores that row isMeta and does not draw it, and draws no plugin
- * `system` row either (checked live), so the person's visible trace is a
- * $.ui.log line naming the packet. An idle main is woken by a short prompt
- * naming the packet; a busy one reads the row at its next step.
+ * Main gets the packet as a prompt of its own (the human's decision): the
+ * transcript shows exactly what the model reads, the packet and its intent
+ * line, under this plugin's name. A busy main runs it once idle.
  */
 async function deliverMain($: $, base: Base, packet: Packet): Promise<void> {
-  const isBusy = await read($, isMainBusy)
   const at = await $.clock.now()
-  const seq = await addToLedger($, { ...base, at, to: { kind: 'main' }, state: { kind: isBusy ? 'working' : 'sent' } })
-  let appended: Awaited<ReturnType<typeof $.session.append>>
-  try {
-    appended = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: packet.text }] } })
-  } catch (error) {
+  const seq = await addToLedger($, { ...base, at, to: { kind: 'main' }, state: { kind: 'sent' } })
+  // $.prompt.submit resolves only when the packet's turn starts: a busy main
+  // would hold the press for its whole turn, so the send does not wait on it.
+  submitToMain($, seq, packet.text).catch(async (error: unknown) => {
     await markEntry($, seq, { kind: 'failed', reason: reasonOf(error) })
-    return
-  }
-  if (appended.deny !== undefined) {
-    await markEntry($, seq, { kind: 'failed', reason: appended.deny })
-    return
-  }
-  $.ui.log(noticeText(base))
-  if (!isBusy) await $.prompt.submit({ text: nudgeText(base) })
+  })
+}
+
+async function submitToMain($: $, seq: number, text: string): Promise<void> {
+  const submitted = await $.prompt.submit({ text })
+  if (submitted.drop !== undefined) await markEntry($, seq, { kind: 'failed', reason: submitted.drop })
 }
 
 async function deliverAgent($: $, base: Base, packet: Packet, agent: { agentId: string; label: string }): Promise<void> {

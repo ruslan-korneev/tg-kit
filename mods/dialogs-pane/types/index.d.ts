@@ -310,7 +310,7 @@ declare module 'claude-code' {
       isMaskShown: boolean
       overlay: Overlay
       radar: RadarEntry[]
-      /** Whether the main loop is in a turn: a packet sent to an idle main wakes it. */
+      /** Whether the main loop is in a turn: main's AgentChip in the route picker. */
       isMainBusy: boolean
       ledger: LedgerEntry[]
       pins: Pin[]

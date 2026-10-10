@@ -199,20 +199,6 @@ export function previewPacket(input: {
   })
 }
 
-/** The main loop's visible notice for a packet: what went, and what was masked. */
-export function noticeText(entry: Pick<LedgerEntry, 'peer' | 'messageIds' | 'intent' | 'parents' | 'masked'>): string {
-  const ids = entry.messageIds.map(id => `#${id}`).join(' ')
-  const parents = entry.parents === 0 ? '' : ` · +${entry.parents} reply-chain`
-  const masked = entry.masked === 0 ? '' : ` · ${entry.masked} masked`
-  return `tg packet from ${entry.peer.label}: ${ids} · ${intentLabel(entry.intent)}${parents}${masked}`
-}
-
-/** What wakes an idle main loop after the packet row: it names the row, never quotes chat text. */
-export function nudgeText(entry: Pick<LedgerEntry, 'peer' | 'messageIds' | 'intent'>): string {
-  const last = entry.messageIds.at(-1)
-  return `Act on the tg packet above (${entry.peer.label}${last === undefined ? '' : ` #${last}`}, intent ${intentLabel(entry.intent)}).`
-}
-
 /** A spawned agent's short description. */
 export function spawnDescription(intent: RouteIntent, messageIds: readonly number[]): string {
   const last = messageIds.at(-1)
