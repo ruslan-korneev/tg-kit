@@ -53,7 +53,16 @@ export function Header(
 
 export function LensBar(
   els: Els,
-  props: { lens: Lens; query: string; onLens: (lens: Lens) => void; onSearch: (query: string) => void },
+  props: {
+    lens: Lens
+    query: string
+    onLens: (lens: Lens) => void
+    onSearch: (query: string) => void
+    /** Drawn after the built-in tabs: saved lenses and the needs-you toggle. */
+    extra?: RenderElement
+    /** A saved lens is active, so no built-in tab is drawn as the current one. */
+    isSavedLens?: boolean
+  },
 ): RenderElement {
   const { Box, Text, Button } = els
   const Input = 'Input' in els ? els.Input : undefined
@@ -67,7 +76,7 @@ export function LensBar(
       <Box flexDirection="row" gap={1}>
         <Text dimColor>lens:</Text>
         {LENSES.map((lens, index) =>
-          lens === props.lens ? (
+          lens === props.lens && props.isSavedLens !== true ? (
             <Button key={`lens:${lens}`} plain hotkey={String(index + 1)} onPress={() => props.onLens(lens)}>
               <Text color={TOKEN.accent} bold>{`[${LENS_LABEL[lens]}]`}</Text>
             </Button>
@@ -77,6 +86,7 @@ export function LensBar(
             </Button>
           ),
         )}
+        {props.extra ?? null}
       </Box>
     </Box>
   )
@@ -84,7 +94,16 @@ export function LensBar(
 
 export function DialogRow(
   { Button, Text }: Els,
-  props: { dialog: TgDialog; isCursor: boolean; isOpen: boolean; width: number; now: number; onOpen: () => void },
+  props: {
+    dialog: TgDialog
+    isCursor: boolean
+    isOpen: boolean
+    width: number
+    now: number
+    onOpen: () => void
+    /** One glyph after `ro`: the watch mark. */
+    mark?: { text: string; color?: string }
+  },
 ): RenderElement {
   const { dialog } = props
   const { glyph, color } = dialogGlyph(dialog.kind)
@@ -104,6 +123,7 @@ export function DialogRow(
       <Text bold>{badge.padStart(3)} </Text>
       <Text dimColor>{time.padStart(9)} </Text>
       <Text color={TOKEN.warn}>{marks}</Text>
+      {props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>}
     </Button>
   )
 }
