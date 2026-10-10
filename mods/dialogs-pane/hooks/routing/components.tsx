@@ -184,7 +184,11 @@ export function RoutedTray(els: Els, props: TrayProps): RenderElement {
   )
 }
 
-/** The drafted reply: check (dry run, the WritePlan and the guard), then send, or drop. */
+/**
+ * The drafted reply: check (dry run, the WritePlan and the guard), then send, or drop.
+ * Planned, the text is drawn whole and wrapped above "send reply": the owner sends it
+ * with --yes as their own (decision 9), so they read all of it first; `edit` reopens it.
+ */
 function DraftRow(
   els: Els,
   props: { draft: ReplyDraft; width: number } & DraftHandlers,
@@ -203,7 +207,7 @@ function DraftRow(
       case 'planned':
         return step.isAllowed
           ? { text: `plan ok: ${step.reason}; send runs it`, color: TOKEN.ok }
-          : { text: `${GLYPH.error} the guard refuses: ${step.reason}. Run \`! tg allow add ${draft.peer.arg}\` if you trust it.`, color: TOKEN.danger }
+          : { text: `${GLYPH.error} the guard refuses: ${step.reason}; nothing is sent.`, color: TOKEN.danger }
       case 'sending':
         return { text: `${GLYPH.working} sending`, color: undefined }
       case 'sent':
@@ -212,13 +216,15 @@ function DraftRow(
         return { text: `${GLYPH.error} ${step.reason}`, color: TOKEN.danger }
     }
   })()
-  const isEditable = step.kind === 'draft' || step.kind === 'planned' || step.kind === 'failed'
+  const isEditable = step.kind === 'draft' || step.kind === 'failed'
   return (
     <Box key="draft" flexDirection="column">
       <Text color={TOKEN.accent} wrap="truncate-end">
         {head}
       </Text>
-      {Input !== undefined && isEditable ? (
+      {step.kind === 'planned' ? (
+        <Text wrap="wrap">{draft.text}</Text>
+      ) : Input !== undefined && isEditable ? (
         <Input key="draft:text" label="✎" value={draft.text} submitLabel="keep" onSubmit={value => props.onEdit(value)} />
       ) : (
         <Text wrap="truncate-end">{`"${oneLine(draft.text, Math.max(10, props.width - 4))}"`}</Text>
@@ -236,6 +242,11 @@ function DraftRow(
             check
           </Button>
         )}
+        {step.kind === 'planned' ? (
+          <Button key="draft:edit" plain dimColor onPress={() => props.onEdit(draft.text)}>
+            edit
+          </Button>
+        ) : null}
         <Button key="draft:drop" plain dimColor onPress={props.onDrop}>
           {step.kind === 'sent' ? 'close' : 'drop'}
         </Button>

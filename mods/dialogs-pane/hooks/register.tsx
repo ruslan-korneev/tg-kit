@@ -1834,7 +1834,7 @@ async function flushAgentPins($: $): Promise<void> {
   )
 }
 
-// --- drafted replies: dry run first, then the same tg send ---
+// --- drafted replies: dry run first, then the same tg send; the owner's, so --yes ---
 
 async function setDraftStep($: $, step: ReplyDraft['step']): Promise<void> {
   await update($, draft, value => (value === null ? null : { ...value, step }))
@@ -1842,7 +1842,8 @@ async function setDraftStep($: $, step: ReplyDraft['step']): Promise<void> {
 
 async function runDraft($: $, current: ReplyDraft, isDryRun: boolean) {
   try {
-    return await $.process.run(draftArgv(current, isDryRun), { stdin: current.text, timeoutMs: TG_TIMEOUT_MS })
+    // The owner checks and sends it after reading it whole: their own write (decision 9).
+    return await $.process.run(draftArgv(current, isDryRun, true), { stdin: current.text, timeoutMs: TG_TIMEOUT_MS })
   } catch (error) {
     await setDraftStep($, { kind: 'failed', reason: `tg did not run: ${reasonOf(error)}` })
     return null
@@ -1853,6 +1854,7 @@ async function runDraft($: $, current: ReplyDraft, isDryRun: boolean) {
 async function checkDraft($: $): Promise<void> {
   const current = await read($, draft)
   if (current === null) return
+  if (isBotFather(current.peer.arg)) return setDraftStep($, { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) })
   await setDraftStep($, { kind: 'checking' })
   const ran = await runDraft($, current, true)
   if (ran === null) return

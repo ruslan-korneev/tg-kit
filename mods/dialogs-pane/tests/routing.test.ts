@@ -404,20 +404,22 @@ describe('hidden band', () => {
 
 describe('drafted reply', () => {
   const draftRun = (plan: { allowed: boolean; reason: string }) => (ran: Ran) => {
+    // tg's guard: --yes confirms a target outside allow.toml; `readonly = true` refuses either way.
     if (ran.argv[1] !== 'send') return tgAnswer(ran.argv)
-    if (ran.argv.includes('--dry-run')) return json({ action: 'send', target: {}, steps: [], guard: plan })
+    const guard = plan.allowed || plan.reason.startsWith('readonly') || !ran.argv.includes('--yes') ? plan : { allowed: true, reason: 'confirmed with --yes' }
+    if (ran.argv.includes('--dry-run')) return json({ action: 'send', target: {}, steps: [], guard })
     return json({ sent: [{ id: 677900 }] })
   }
 
-  async function drafted($: Engine, on: On, plan: { allowed: boolean; reason: string }) {
+  async function drafted($: Engine, on: On, plan: { allowed: boolean; reason: string }, dialogs = DIALOGS, answer = 'On it, fixing now.') {
     const clock = mock.clock(on, { now: NOW })
-    const seen = world(on, { tg: draftRun(plan) })
+    const seen = world(on, { tg: ran => (ran.argv[1] === 'dialogs' ? json(dialogs) : draftRun(plan)(ran)) })
     const ui = await openAndSelect($, clock)
     for (let i = 0; i < 4; i++) await ui.press({ key: 'intent' })
     expect((await ui.find({ key: 'intent' }))?.text).toContain('[Draft reply]')
     await ui.press({ key: 'send' })
     await $.turn.start({ text: '', turnId: 't-1' })
-    await $.turn.complete({ answer: 'On it, fixing now.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
+    await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
     return { ui, seen }
   }
 
@@ -426,7 +428,7 @@ describe('drafted reply', () => {
     expect((await ui.find({ key: 'draft' }))?.text).toContain('reply to #677791 in @example_bot')
     await ui.press({ key: 'draft:check' })
     const dry = seen.runs.find(one => one.argv.includes('--dry-run'))
-    expect(dry?.argv).toEqual(['tg', 'send', '@example_bot', '-', '--reply-to', '677791', '--plain', '--json', '--dry-run'])
+    expect(dry?.argv).toEqual(['tg', 'send', '@example_bot', '-', '--reply-to', '677791', '--plain', '--json', '--yes', '--dry-run'])
     expect(dry?.stdin).toBe('On it, fixing now.')
     expect((await ui.find({ key: 'draft' }))?.text).toContain('plan ok: allowlisted')
     await ui.press({ key: 'draft:send' })
@@ -436,10 +438,38 @@ describe('drafted reply', () => {
     await ui.unmount()
   })
 
-  test('a peer the guard refuses gets no send button, only how to allow it', async ($, on) => {
-    const { ui, seen } = await drafted($, on, { allowed: false, reason: 'the target is not allowlisted' })
+  test("outside allow.toml: the owner's check and send carry --yes, the plan is allowed, and the whole text shows before send", async ($, on) => {
+    const long = 'On it: the handler crashed on an empty callback payload, the fix is merged and deployed, so please press Settings once more and tell me what you see.'
+    const { ui, seen } = await drafted($, on, { allowed: false, reason: 'target is not in the allowlist' }, DIALOGS, long)
     await ui.press({ key: 'draft:check' })
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('the guard refuses: the target is not allowlisted')
+    expect((await ui.find({ key: 'draft' }))?.text).toContain('plan ok: confirmed with --yes')
+    // Longer than the pane is wide: drawn whole and wrapped, not as a one-line field or a truncated line.
+    expect((await ui.find({ key: 'draft' }))?.children?.[1]).toMatchObject({ type: 'Text', props: { wrap: 'wrap' }, children: [long] })
+    expect(await ui.find({ key: 'draft:text' })).toBeUndefined()
+    await ui.press({ key: 'draft:send' })
+    expect(seen.runs.filter(one => one.argv[1] === 'send').map(one => one.argv.slice(-2))).toEqual([
+      ['--yes', '--dry-run'],
+      ['--json', '--yes'],
+    ])
+    expect((await ui.find({ key: 'draft' }))?.text).toContain('✓ sent #677900')
+    await ui.unmount()
+  })
+
+  test('BotFather: check and send run nothing, whatever the guard would say', async ($, on) => {
+    const dialogs = DIALOGS.map(one => (one.id === 1001 ? { ...one, username: 'BotFather', title: 'BotFather' } : one))
+    const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' }, dialogs)
+    await ui.press({ key: 'draft:check' })
+    expect((await ui.find({ key: 'draft' }))?.text).toContain('BotFather is read-only')
+    expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
+    expect(seen.runs.filter(one => one.argv[1] === 'send')).toEqual([])
+    await ui.unmount()
+  })
+
+  test('readonly = true: the guard refuses even with --yes; no send button, nothing sent', async ($, on) => {
+    const { ui, seen } = await drafted($, on, { allowed: false, reason: 'readonly = true in config.toml: every write is refused' })
+    await ui.press({ key: 'draft:check' })
+    expect((await ui.find({ key: 'draft' }))?.text).toContain('the guard refuses: readonly = true in config.toml: every write is refused; nothing is sent.')
+    expect((await ui.find({ key: 'draft' }))?.text).not.toContain('tg allow add')
     expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
     expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run'))).toEqual([])
     await ui.unmount()
