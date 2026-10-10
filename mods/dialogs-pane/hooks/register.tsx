@@ -158,7 +158,8 @@ export const register: Register = on => {
     const kept = await $.store.get(STORE_MODE)
     const target = named ?? (isMode(kept) && kept !== 'hidden' ? kept : defaultMode(e.presentation))
     await setMode($, target)
-    if (target !== 'hidden' && (await read($, dialogs)).status !== 'ok') {
+    // Hidden needs the list too: its status line counts the unread.
+    if ((await read($, dialogs)).status !== 'ok') {
       loadDialogs($).catch(() => {
         // loadDialogs records its own failures in state; nothing is left to report.
       })

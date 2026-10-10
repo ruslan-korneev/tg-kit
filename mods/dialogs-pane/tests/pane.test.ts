@@ -227,6 +227,15 @@ describe('states', () => {
 })
 
 describe('hidden mode', () => {
+  test('/tg hidden before any list loaded shows the real status, not tg …', async ($, on) => {
+    const clock = mock.clock(on, { now: 0 })
+    const { status } = world(on, happy, { mode: 'compact' })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(runTg('hidden'))
+    await clock.settle()
+    expect(status.at(-1)).toBe('tg ● 7 unread')
+  })
+
   test('a dialog whose unread count grows raises the band; x dismisses it', async ($, on) => {
     let unread = 5
     const clock = mock.clock(on, { now: 0 })
