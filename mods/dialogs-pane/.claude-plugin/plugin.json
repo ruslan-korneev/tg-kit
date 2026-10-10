@@ -2,5 +2,13 @@
   "name": "dialogs-pane",
   "version": "0.1.0",
   "description": "Telegram dialogs and messages in a pane, read through the tg CLI",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "speakerModel": {
+      "title": "Autopilot model",
+      "description": "The model that writes autopilot replies as you (an alias or a full id, as --model takes)",
+      "type": "string",
+      "default": "claude-sonnet-5-5"
+    }
+  }
 }

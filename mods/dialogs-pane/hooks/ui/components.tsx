@@ -104,6 +104,8 @@ export function DialogRow(
     onOpen: () => void
     /** One glyph after `ro`/`⌁`: the watch mark. */
     mark?: { text: string; color?: string }
+    /** The autopilot's level glyph before the name, and `auto 3/50` after the marks. */
+    autopilot?: { glyph: string; tail: string }
   },
 ): RenderElement {
   const { dialog } = props
@@ -112,11 +114,13 @@ export function DialogRow(
   const badge = isUnread ? String(dialog.unread) : ''
   const time = shortTime(dialog.last_date, props.now)
   const marks = isReadOnlyPeer(dialog) ? 'ro' : props.isPinned ? GLYPH.pinned : ''
-  // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left.
-  const nameWidth = Math.max(8, props.width - 21)
+  // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left; an autopilot mark takes its own.
+  const pilot = props.autopilot
+  const nameWidth = Math.max(8, props.width - 21 - (pilot === undefined ? 0 : pilot.tail.length + 3))
   return (
     <Button key={`dialog:${dialog.id}`} plain onPress={props.onOpen}>
       <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : '  '}</Text>
+      {pilot === undefined ? null : <Text color={TOKEN.accent}>{pilot.glyph} </Text>}
       <Text color={color}>{glyph} </Text>
       <Text bold={isUnread || props.isOpen} underline={props.isOpen}>
         {pad(dialogLabel(dialog), nameWidth)}
@@ -125,6 +129,7 @@ export function DialogRow(
       <Text dimColor>{time.padStart(9)} </Text>
       <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>
       {props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>}
+      {pilot === undefined ? null : <Text dimColor> {pilot.tail}</Text>}
     </Button>
   )
 }
