@@ -632,10 +632,24 @@ async def _scan(
     limit: int,
     folder: int | None,
 ) -> AsyncIterator[DialogView]:
-    """The latest chats; `folder` 0 the main list, 1 the archive, None both."""
+    """The latest `limit` chats of the main list (`folder` 0), the archive (1), or each (None).
+
+    None is two scans, because getDialogs without a folder id returns the main list
+    only (measured: 500 chats, none archived). The archive scan keeps only dialogs
+    marked folder_id 1: with an empty archive, getDialogs(folder_id=1) returns the
+    main list's pinned chats (measured: 3 dialogs, folder_id unset, all pinned). So
+    it reads on, lazily, until it has `limit` archived chats or the archive ends.
+    """
     me = self_id(conn)
-    async for d in conn.client.iter_dialogs(limit=limit, folder=folder):
-        yield convert_dialog(d, self_id=me, mute_defaults=defaults, now=now)
+    for one in (0, 1) if folder is None else (folder,):
+        kept = 0
+        async for d in conn.client.iter_dialogs(limit=None if one == 1 else limit, folder=one):
+            if one == 1 and d.folder_id != 1:
+                continue
+            yield convert_dialog(d, self_id=me, mute_defaults=defaults, now=now)
+            kept += 1
+            if kept >= limit:
+                break
 
 
 async def _peer_dialogs(

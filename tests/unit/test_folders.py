@@ -26,7 +26,9 @@ from tg_kit.client import Connected
 from tg_kit.cmd_read import (
     REFUSED_FOR,
     _fetch_peer_dialogs,
+    _folder_chats,
     _folders_of,
+    _latest,
     _mute_defaults,
     _peer_dialogs,
 )
@@ -531,3 +533,48 @@ def test_folders_print_id_title_kind_and_count() -> None:
     assert folder_json(shared, 0) == {"id": 11, "title": "Team", "kind": "shared", "unread": 0}
     assert folder_line(shared, 3) == "11 Team (shared) [3 unread]"
     assert folder_line(folder(), 0) == "2 Work"
+
+
+# --- the archive ----------------------------------------------------------------------
+
+FILED = types.User(id=404, first_name="Filed", access_hash=88)
+
+
+class _ScanClient:
+    """getDialogs as Telegram answers it, honouring `limit`. The archive answer starts
+    with the main list's pinned bot (seen with an empty archive), then a real archived
+    chat."""
+
+    _self_id = SELF_ID
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[int | None, int]] = []
+
+    async def iter_dialogs(self, *, limit: int | None, folder: int) -> Any:
+        self.asked.append((limit, folder))
+        if folder == 0:
+            dialogs = [tl_dialog(BOT, types.PeerUser(BOT.id), pinned=True)]
+        else:
+            dialogs = [
+                tl_dialog(BOT, types.PeerUser(BOT.id), pinned=True),
+                tl_dialog(FILED, types.PeerUser(FILED.id), folder_id=1),
+            ]
+        for d in dialogs[:limit]:
+            yield d
+
+
+def test_a_folder_that_keeps_archived_chats_holds_an_archived_one(session: TgSession) -> None:
+    conn = Connected(client=_ScanClient(), session=session, account="a", me=None)
+    people = folder(non_contacts=True, bots=True)
+    chats = asyncio.run(_folder_chats(conn, people, {}, {}, NOW))
+    assert sorted(c.id for c in chats) == sorted([BOT.id, FILED.id])  # the bot once, FILED kept
+    archived = asyncio.run(_folder_chats(conn, replace(people, exclude_archived=True), {}, {}, NOW))
+    assert [c.id for c in archived] == [BOT.id]
+
+
+def test_dialogs_archived_lists_archived_chats_only_and_fills_n(session: TgSession) -> None:
+    client = _ScanClient()
+    conn = Connected(client=client, session=session, account="a", me=None)
+    rows = asyncio.run(_latest(conn, {}, NOW, n=1, scan=1, folder=1, keep=lambda _: True))
+    assert [(r.id, r.archived) for r in rows] == [(FILED.id, True)]  # not the main list's pin
+    assert client.asked == [(None, 1)]  # read on past the pin instead of asking for 1
