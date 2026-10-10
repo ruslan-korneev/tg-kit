@@ -124,7 +124,7 @@ export function listenPrompt(input: { peer: Peer; burst: readonly MessageView[];
 type Obj = Record<string, unknown>
 
 /** The one JSON object in a reply, fenced or not; null when there is none. */
-function jsonObject(reply: string): Obj | null {
+export function jsonObject(reply: string): Obj | null {
   const start = reply.indexOf('{')
   const end = reply.lastIndexOf('}')
   if (start === -1 || end <= start) return null

@@ -73,6 +73,11 @@ function outcomeText(outcome: ApOutcome): string {
       return `skipped: ${outcome.reason}`
     case 'failed':
       return `${GLYPH.error} ${outcome.reason}`
+    // ── delegate ──
+    case 'stop':
+      return outcome.answer === 'skipped'
+        ? `skipped stop: ${outcome.stops.join(', ')} ${outcome.what}`
+        : `HARD STOP ${outcome.stops.join(' + ')}: ${outcome.what} → ${outcome.answer} (${outcome.why})`
   }
 }
 
@@ -94,6 +99,8 @@ const CHECK_LABEL: Record<ApCheck, string> = { send: 'send as is', regenerate: '
 
 /** LedgerRow, two lines: what came in, and what the autopilot did with it. */
 export function entryLines(entry: ApEntry, now: number, width: number): [string, string] {
+  // ── delegate ── a hard stop has no incoming message: its task is the head.
+  if (entry.outcome.kind === 'stop') return [`${LEVEL_GLYPH[entry.level]} ${entry.peer.label} · ${oneLine(entry.reply, Math.max(10, width - entry.peer.label.length - 6))}`, `  ${outcomeText(entry.outcome)}`]
   const first = entry.incoming[0]?.text ?? ''
   const more = entry.incoming.length > 1 ? ` +${entry.incoming.length - 1}` : ''
   const head = `${LEVEL_GLYPH[entry.level]} ${entry.peer.label} ← "${oneLine(first, Math.max(10, width - entry.peer.label.length - 12))}"${more}`
