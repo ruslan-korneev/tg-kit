@@ -104,8 +104,8 @@ export function DialogRow(
     onOpen: () => void
     /** One glyph after `ro`/`⌁`: the watch mark. */
     mark?: { text: string; color?: string }
-    /** The autopilot's level glyph before the name, and `auto 3/50` after the marks. */
-    autopilot?: { glyph: string; tail: string }
+    /** The autopilot's level glyph before the name, and `auto 3/50` after the marks; `warn` (red): ── delegate ── skipped hard stops. */
+    autopilot?: { glyph: string; tail: string; warn?: string }
   },
 ): RenderElement {
   const { dialog } = props
@@ -116,7 +116,7 @@ export function DialogRow(
   const marks = isReadOnlyPeer(dialog) ? 'ro' : props.isPinned ? GLYPH.pinned : ''
   // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left; an autopilot mark takes its own.
   const pilot = props.autopilot
-  const nameWidth = Math.max(8, props.width - 21 - (pilot === undefined ? 0 : pilot.tail.length + 3))
+  const nameWidth = Math.max(8, props.width - 21 - (pilot === undefined ? 0 : pilot.tail.length + 3 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)))
   return (
     <Button key={`dialog:${dialog.id}`} plain onPress={props.onOpen}>
       <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : '  '}</Text>
@@ -130,6 +130,7 @@ export function DialogRow(
       <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>
       {props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>}
       {pilot === undefined ? null : <Text dimColor> {pilot.tail}</Text>}
+      {pilot?.warn === undefined ? null : <Text color={TOKEN.danger}> {pilot.warn}</Text>}
     </Button>
   )
 }

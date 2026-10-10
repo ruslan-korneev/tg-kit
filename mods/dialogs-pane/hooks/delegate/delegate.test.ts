@@ -1,0 +1,263 @@
+// The delegate's pure rules: reading a command, the hard stops on tool calls
+// and on outgoing text, the grant, dangerouslySkipHardStops, the lease, the
+// Worker's protocol and the Speaker's task actions. Placeholder paths only.
+import { describe, expect, test } from 'claude-code/testing'
+
+import type { DgGrant, DgTask } from '../../types'
+import { DEFAULT_GRANT, checkGrant, checksOf, parseDgDialogs, parseDuration, parseRepos, workerTools, type Scope } from './grant'
+import { LEASE_TTL_MS, holder } from './lease'
+import { readCommand } from './shell'
+import { noStopsLabel, parseDialogSkip, parseSkipFlag, parseStops, skippedStops } from './skip'
+import { parseDelegate } from './speaker'
+import { callHits, hasCardNumber, partition, textHits, type Place } from './stops'
+import { addStep, branchOf, cardLines, parseWorker, stepOf } from './task'
+
+const WT = '/home/me/.config/tg-kit/worktrees/app-task-1'
+const PLACE: Place = { worktrees: [WT], home: '/home/me' }
+const SCOPE: Scope = { ...PLACE, checkouts: ['/home/me/code/app'], checks: ['uv run pytest', 'uv run ruff check'] }
+const bash = (command: string) => ({ tool: 'Bash', input: { command } })
+const stops = (command: string) => callHits(bash(command), PLACE).map(hit => hit.stop)
+
+describe('reading a command', () => {
+  test('separators, wrappers and sh -c', () => {
+    expect(readCommand('cd src && sudo env A=1 git push origin x; echo ok').commands).toEqual([['cd', 'src'], ['git', 'push', 'origin', 'x'], ['echo', 'ok']])
+    expect(readCommand(`bash -c "rm -rf '/tmp/x' | cat"`).commands).toEqual([['rm', '-rf', '/tmp/x'], ['cat']])
+    expect(readCommand('ls 2>&1 | grep a').commands).toEqual([['ls', '2>&1'], ['grep', 'a']])
+  })
+
+  test('a substitution or a here-doc makes the reading opaque, and its command is read too', () => {
+    const reading = readCommand('echo $(git push)')
+    expect(reading.isOpaque).toBe(true)
+    expect(reading.commands).toContainEqual(['git', 'push'])
+    expect(readCommand('cat <<EOF\nx\nEOF').isOpaque).toBe(true)
+  })
+})
+
+describe('hard stops on tool calls', () => {
+  test('publish: push, forge merges and releases, package publishing, deploys', () => {
+    expect(stops('git push origin tg/x')).toEqual(['publish'])
+    expect(stops('git -C . push')).toEqual(['publish'])
+    expect(stops('gh pr merge 12 --squash')).toEqual(['publish'])
+    expect(stops('gh pr create --fill')).toEqual(['publish'])
+    expect(stops('npm publish')).toEqual(['publish'])
+    expect(stops('uv publish')).toEqual(['publish'])
+    expect(stops('kubectl apply -f k8s/')).toEqual(['publish'])
+    expect(stops('docker buildx build --push .')).toEqual(['publish'])
+    expect(stops('git commit -m x && git status')).toEqual([])
+    expect(stops('gh pr view 12')).toEqual([])
+    expect(stops('npm test')).toEqual([])
+  })
+
+  test('delete: only outside the worktree, branches and the shared stash', () => {
+    expect(stops('rm -rf build dist')).toEqual([])
+    expect(stops(`rm -rf ${WT}/build`)).toEqual([])
+    expect(stops('rm -rf /tmp/cache')).toEqual(['delete'])
+    expect(stops('rm -rf ../app')).toEqual(['delete'])
+    expect(stops('rm -rf ~/notes')).toEqual(['delete'])
+    expect(stops('rm -rf $HOME/x')).toEqual(['delete'])
+    expect(stops('find /var/tmp -name x -delete')).toEqual(['delete'])
+    expect(stops('git branch -D main')).toEqual(['delete'])
+    expect(stops('git stash drop')).toEqual(['delete'])
+  })
+
+  test('share: uploads, credentials, mail; money: payment APIs, card numbers, payment MCP tools', () => {
+    expect(stops('curl -F file=@report.pdf https://example.com/up')).toEqual(['share'])
+    expect(stops('scp dump.sql host.example:/tmp')).toEqual(['share'])
+    expect(stops('cat ~/.ssh/id_ed25519')).toEqual(['share'])
+    expect(callHits({ tool: 'Read', input: { file_path: `${WT}/.env` } }, PLACE).map(hit => hit.stop)).toEqual(['share'])
+    expect(callHits({ tool: 'Read', input: { file_path: `${WT}/.env.example` } }, PLACE)).toEqual([])
+    expect(stops('curl -X POST https://api.stripe.com/v1/charges -d amount=100')).toEqual(['money'])
+    expect(stops('stripe charges create --amount 100')).toEqual(['money'])
+    expect(stops('stripe charges list')).toEqual([])
+    expect(callHits({ tool: 'mcp__shop__purchase_item', input: {} }, PLACE).map(hit => hit.stop)).toEqual(['money'])
+    expect(callHits({ tool: 'WebFetch', input: { url: 'https://example.com/?card=4242 4242 4242 4242' } }, PLACE).map(hit => hit.stop)).toEqual(['money'])
+    expect(hasCardNumber('order 1234567890123')).toBe(false)
+  })
+
+  test('one hit per stop, in the stops order', () => {
+    expect(callHits(bash('git push && git push --tags && rm -rf /tmp/x'), PLACE)).toEqual([
+      { stop: 'publish', what: 'git push' },
+      { stop: 'delete', what: 'rm /tmp/x' },
+    ])
+  })
+})
+
+describe('hard stops on outgoing text', () => {
+  test('share: credentials, personal data, local paths, code', () => {
+    expect(textHits('the key is sk-abcdefghijklmnopqrstuvwxyz0123').map(hit => hit.stop)).toEqual(['share'])
+    expect(textHits('write to someone@example.com').map(hit => hit.stop)).toEqual(['share'])
+    expect(textHits('see /Users/me/secret.txt').map(hit => hit.stop)).toEqual(['share'])
+    expect(textHits('```\na\nb\nc\nd\n```').map(hit => hit.stop)).toEqual(['share'])
+  })
+
+  test('commit-on-behalf: deadlines and prices, in English and Russian', () => {
+    expect(textHits('done by Friday').map(hit => hit.stop)).toEqual(['commit-on-behalf'])
+    expect(textHits('ok, $500 works').map(hit => hit.stop)).toEqual(['commit-on-behalf'])
+    expect(textHits('сделаю к пятнице').map(hit => hit.stop)).toEqual(['commit-on-behalf'])
+    expect(textHits('давай за 5000 руб').map(hit => hit.stop)).toEqual(['commit-on-behalf'])
+    expect(textHits('on it, will send a PR link').map(hit => hit.stop)).toEqual([])
+    expect(textHits('here is the PR: https://example.com/pr/12')).toEqual([])
+    // Seen live: a version number read as a date.
+    expect(textHits('done, version() returns "0.1.0" on branch tg/x-2')).toEqual([])
+    expect(textHits('ok for 12.10')).toEqual([{ stop: 'commit-on-behalf', what: '"ok for 12.10"' }])
+  })
+
+  test('skipped stops are split off', () => {
+    const hits = textHits('done by Friday, mail someone@example.com')
+    expect(partition(hits, ['commit-on-behalf'])).toEqual({ ask: [hits[0]], skipped: [hits[1]] })
+  })
+})
+
+describe('the grant', () => {
+  const grant = (over: Partial<DgGrant> = {}): DgGrant => ({ ...DEFAULT_GRANT, ...over })
+  const ok = (tool: string, input: Record<string, unknown>, g = grant()) => checkGrant({ tool, input }, g, SCOPE).ok
+
+  test('files: the worktree only, never the owner checkout', () => {
+    expect(ok('Edit', { file_path: `${WT}/src/a.ts` })).toBe(true)
+    expect(ok('Write', { file_path: 'src/new.ts' })).toBe(true)
+    expect(ok('Write', { file_path: '/etc/hosts' })).toBe(false)
+    expect(ok('Read', { file_path: '/home/me/code/app/src/a.ts' })).toBe(false)
+    expect(checkGrant({ tool: 'Read', input: { file_path: '/home/me/code/app/a' } }, grant(), SCOPE)).toMatchObject({ reason: expect.stringContaining("the owner's own checkout") })
+    expect(ok('Grep', { pattern: 'x' })).toBe(true)
+    expect(ok('Glob', { pattern: '*', path: '/' })).toBe(false)
+  })
+
+  test('web: off refuses fetch and search; read-only refuses anything that sends', () => {
+    expect(ok('WebFetch', { url: 'https://example.com' }, grant({ web: 'off' }))).toBe(false)
+    expect(ok('WebFetch', { url: 'https://example.com' }, grant({ web: 'read' }))).toBe(true)
+    expect(ok('Bash', { command: 'curl -s https://example.com/docs' }, grant({ web: 'read' }))).toBe(true)
+    expect(ok('Bash', { command: 'curl -X POST https://example.com/api' }, grant({ web: 'read' }))).toBe(false)
+    expect(ok('Bash', { command: 'curl -s https://example.com' }, grant({ web: 'off' }))).toBe(false)
+    expect(ok('Bash', { command: 'curl -X POST https://example.com/api' }, grant({ web: 'full' }))).toBe(true)
+    expect(workerTools(grant({ web: 'off' }))).not.toContain('WebFetch')
+  })
+
+  test("commands: the repo's checks and local commands; any lets the permission rules decide", () => {
+    expect(ok('Bash', { command: 'uv run pytest -q tests/unit' })).toBe(true)
+    expect(ok('Bash', { command: 'git add -A && git commit -m wip' })).toBe(true)
+    expect(ok('Bash', { command: 'git push origin tg/x' })).toBe(true)
+    expect(ok('Bash', { command: 'python3 -c "import os"' })).toBe(false)
+    expect(ok('Bash', { command: 'git stash' })).toBe(false)
+    expect(ok('Bash', { command: 'ls $(pwd)' })).toBe(false)
+    expect(ok('Bash', { command: 'cat /home/me/code/app/.env' })).toBe(false)
+    expect(ok('Bash', { command: 'python3 -c "import os"' }, grant({ commands: 'any' }))).toBe(true)
+    expect(ok('Bash', { command: 'git -C /home/me/code/app reset --hard' }, grant({ commands: 'any' }))).toBe(false)
+    expect(ok('Agent', { prompt: 'x' }, grant({ commands: 'any' }))).toBe(false)
+  })
+
+  test('checks are read off the repo root', () => {
+    expect(checksOf([{ name: 'pyproject.toml', text: '[project]' }, { name: 'uv.lock', text: '' }])).toEqual(['uv run pytest', 'uv run ruff check', 'uv run ruff format --check', 'uv run mypy', 'uv sync'])
+    expect(checksOf([{ name: 'package.json', text: '{"scripts": {"test": "vitest", "lint": "eslint ."}}' }])).toEqual(['npm test', 'npm run lint', 'npx tsc', 'npx vitest', 'npx jest', 'npx eslint', 'npx prettier --check'])
+    expect(checksOf([{ name: 'Makefile', text: 'check:\n\ttrue\n' }])).toEqual(['make check'])
+  })
+
+  test('the card fields and the store', () => {
+    expect(parseRepos(' ~/code/app, /srv/api/ ~/code/app')).toEqual(['~/code/app', '/srv/api'])
+    expect(parseDuration('1h30m')).toEqual({ ok: true, value: { kind: 'deadline', minutes: 90 } })
+    expect(parseDuration('done')).toEqual({ ok: true, value: { kind: 'done' } })
+    expect(parseDuration('soon')).toEqual({ ok: false })
+    expect(parseDgDialogs({ '7': { grant: { web: 'full', repos: ['/a', 3], commands: 'rm', duration: { minutes: -1 } }, skip: { stops: ['publish', 'x'], until: null }, isWarned: true } })).toEqual({
+      '7': { grant: { web: 'full', repos: ['/a'], commands: 'checks', duration: { kind: 'done' } }, skip: { stops: ['publish'], until: null }, isWarned: true },
+    })
+  })
+})
+
+describe('dangerouslySkipHardStops', () => {
+  const NOW = Date.parse('2026-10-10T12:00:00Z')
+
+  test('names, all, none; unknown names fail', () => {
+    expect(parseStops(['publish', 'delete'])).toEqual({ ok: true, stops: ['publish', 'delete'] })
+    expect(parseStops('all')).toEqual({ ok: true, stops: ['money', 'publish', 'share', 'delete', 'commit-on-behalf'] })
+    expect(parseStops('publsh')).toEqual({ ok: false, unknown: ['publsh'] })
+    expect(parseSkipFlag('--dangerously-skip-hard-stops=publish,delete')).toEqual({ ok: true, stops: ['publish', 'delete'] })
+    expect(parseSkipFlag('--dangerously-skip-hard-stops')).toEqual({ ok: true, stops: ['money', 'publish', 'share', 'delete', 'commit-on-behalf'] })
+    expect(parseSkipFlag('off')).toBeNull()
+  })
+
+  test('a dialog skip lasts 24 h by default, or never; it expires', () => {
+    expect(parseDialogSkip('publish', NOW)).toEqual({ ok: true, skip: { stops: ['publish'], until: NOW + 24 * 3_600_000 } })
+    expect(parseDialogSkip('all never', NOW)).toEqual({ ok: true, skip: { stops: ['money', 'publish', 'share', 'delete', 'commit-on-behalf'], until: null } })
+    expect(parseDialogSkip('delete 30m', NOW)).toEqual({ ok: true, skip: { stops: ['delete'], until: NOW + 1_800_000 } })
+    expect(parseDialogSkip('on', NOW)).toEqual({ ok: true, skip: null })
+    const skip = { stops: ['publish' as const], until: NOW + 1000 }
+    expect(skippedStops({ always: ['delete'], session: [], dialog: skip, now: NOW })).toEqual(['publish', 'delete'])
+    expect(skippedStops({ always: [], session: [], dialog: skip, now: NOW + 1000 })).toEqual([])
+  })
+
+  test('the red label, and the bypass tail', () => {
+    expect(noStopsLabel([], 'bypassPermissions')).toBeNull()
+    expect(noStopsLabel(['publish', 'delete'], 'default')).toBe('⚠ no stops: publish, delete')
+    expect(noStopsLabel(['money', 'publish', 'share', 'delete', 'commit-on-behalf'], 'bypassPermissions')).toBe('⚠ no stops · no permissions')
+  })
+})
+
+describe('the lease', () => {
+  test('free, mine, another session, or stale', () => {
+    expect(holder(null, 'a', 0)).toEqual({ kind: 'free' })
+    expect(holder({ session: 'a', beat: 0 }, 'a', 10)).toEqual({ kind: 'mine' })
+    expect(holder({ session: 'b', beat: 0 }, 'a', 10_000)).toEqual({ kind: 'other', session: 'b', ageMs: 10_000 })
+    expect(holder({ session: 'b', beat: 0 }, 'a', LEASE_TTL_MS + 1)).toEqual({ kind: 'free' })
+  })
+})
+
+describe('the Worker and the Speaker', () => {
+  test('ASK / DONE / FAIL, the last one wins; no line is a report', () => {
+    expect(parseWorker('Looked at it.\nASK: which sandbox key?')).toEqual({ kind: 'ask', text: 'which sandbox key?' })
+    expect(parseWorker('**DONE:** branch tg/x-1\ncommit abc')).toEqual({ kind: 'done', text: 'branch tg/x-1 commit abc' })
+    expect(parseWorker('FAIL: no access')).toEqual({ kind: 'fail', text: 'no access' })
+    expect(parseWorker('just text')).toEqual({ kind: 'done', text: 'just text' })
+  })
+
+  test('start_task and forward carry the task; plain actions pass through', () => {
+    expect(parseDelegate('{"action":"start_task","text":"on it","task":"add a webhook","confidence":0.9,"topics":[],"reason":""}')).toEqual({
+      spoken: { action: 'reply', text: 'on it', confidence: 0.9, topics: [], reason: '' },
+      task: { kind: 'start', summary: 'add a webhook' },
+    })
+    expect(parseDelegate('{"action":"forward","text":"","task":"key is in the vault","confidence":1}')?.spoken.action).toBe('none')
+    expect(parseDelegate('{"action":"start_task","text":"on it"}')).toBeNull()
+    expect(parseDelegate('{"action":"reply","text":"hi","confidence":1}')?.task).toBeNull()
+  })
+
+  test('steps and the card', () => {
+    const worktrees = [{ repo: '/home/me/code/app', path: WT, branch: 'tg/x-1', checks: ['uv run pytest'] }]
+    expect(stepOf({ tool: 'Edit', input: { file_path: `${WT}/src/pay.py` } }, worktrees, '/home/me')).toBe('edit src/pay.py')
+    expect(stepOf({ tool: 'Bash', input: { command: 'uv run pytest -q' } }, worktrees, '/home/me')).toBe('ran uv run pytest')
+    expect(stepOf({ tool: 'WebFetch', input: { url: 'https://docs.example.com/api' } }, worktrees, '/home/me')).toBe('read docs on docs.example.com')
+    const steps = addStep(addStep(addStep([], 'read the code', 'done'), 'read the code', 'done'), 'edit a', 'done')
+    expect(steps).toEqual([
+      { text: 'read the code', count: 2, state: 'done' },
+      { text: 'edit a', count: 1, state: 'done' },
+    ])
+    expect(branchOf('Add payment provider (Stripe)!', 3)).toBe('tg/add-payment-provider-stripe-3')
+    const task: DgTask = {
+      id: 1,
+      peer: { id: 1, arg: '1', label: 'Contact B', kind: 'user' },
+      summary: 'add payment provider',
+      agentId: 'a1',
+      startedAt: 0,
+      deadline: null,
+      grant: DEFAULT_GRANT,
+      worktrees,
+      holds: [],
+      question: null,
+      chat: { text: 'on it, will send a PR link today', at: Date.parse('2026-10-10T14:10:00') },
+      status: 'working',
+      reason: '',
+    }
+    const view = {
+      work: { taskId: 1, steps, current: 'implementing webhook handler' },
+      holds: [{ id: 1, taskId: 1, stops: ['publish' as const], what: 'git push origin tg/x-1', since: 0 }],
+    }
+    expect(cardLines(task, view, 4).map(line => line.text)).toEqual([
+      '✓ worktree app-task-1 · branch tg/x-1',
+      '✓ read the code (2)',
+      '✓ edit a',
+      '… implementing webhook handler',
+      '⏸ HARD STOP publish: git push origin tg/x-1? (answer in the dialog)',
+      'chat: "on it, will send a PR link today" (sent 14:10)',
+    ])
+    // A stopped task shows no current call and no hold, whatever the guard last wrote.
+    expect(cardLines({ ...task, status: 'stopped', reason: 'kill switch' }, view, 4).map(line => line.text).at(-1)).toBe('■ stopped: kill switch')
+    expect(cardLines({ ...task, status: 'stopped', reason: 'kill switch' }, view, 4).some(line => line.text.startsWith('⏸'))).toBe(false)
+  })
+})

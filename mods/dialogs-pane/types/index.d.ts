@@ -357,8 +357,11 @@ export type BotTest = {
 // Phase 3 (docs/design/dialogs-pane.md §6): dialogs answered as you, per level.
 // Pure rules in hooks/autopilot/.
 
-/** listen ◉ reads and summarizes; draft ✎ writes into the band; auto ⟳ sends within the limits. */
-export type ApLevel = 'listen' | 'draft' | 'auto'
+/**
+ * listen ◉ reads and summarizes; draft ✎ writes into the band; auto ⟳ sends
+ * within the limits; delegate ⚡ also hands work to a Worker agent (── delegate ──).
+ */
+export type ApLevel = 'listen' | 'draft' | 'auto' | 'delegate'
 
 /** Escalation topics: a reply touching an enabled one goes to you as a draft. */
 export type ApTopic = 'money' | 'dates' | 'promises' | 'opinions' | 'personal'
@@ -394,6 +397,8 @@ export type ApOutcome =
   | { kind: 'listened' }
   | { kind: 'skipped'; reason: string }
   | { kind: 'failed'; reason: string }
+  // ── delegate ── a hard stop met: asked (yes / no, and who said it) or skipped.
+  | { kind: 'stop'; stops: DgStop[]; what: string; answer: 'yes' | 'no' | 'skipped'; why: string }
 
 export type ApUndo = { state: 'open'; until: number } | { state: 'undone' } | { state: 'expired' } | { state: 'failed'; reason: string }
 
@@ -453,6 +458,99 @@ export type Autopilot = {
 
 // ── /autopilot ──
 
+// ── delegate ──
+// Phase 4 (docs/design/dialogs-pane.md §6 "delegate"): the Worker, its grant,
+// worktrees, hard stops and dangerouslySkipHardStops. Pure rules in hooks/delegate/.
+
+/** The hard stops, named so each can be skipped alone. */
+export type DgStop = 'money' | 'publish' | 'share' | 'delete' | 'commit-on-behalf'
+
+/** off; read: fetch pages and search, nothing sent; full: anything the tools do. */
+export type DgWeb = 'off' | 'read' | 'full'
+
+/** checks: the repos' own checks and local, read-only commands; any: Claude Code's permission rules decide. */
+export type DgCommands = 'checks' | 'any'
+
+/** Until the task is done, or a deadline this many minutes after it starts; the kill switch ends either. */
+export type DgDuration = { kind: 'done' } | { kind: 'deadline'; minutes: number }
+
+/** What the Worker may use, set in the card. */
+export type DgGrant = { web: DgWeb; repos: string[]; commands: DgCommands; duration: DgDuration }
+
+/** dangerouslySkipHardStops for one dialog: which stops, until when (null: never). */
+export type DgSkip = { stops: DgStop[]; until: number | null }
+
+/** One dialog's delegate settings, kept in $.store (`delegate.dialogs`). */
+export type DgDialog = { grant: DgGrant; skip: DgSkip | null; isWarned: boolean }
+
+/** A fresh worktree of a granted repo: the Worker's only place to write. */
+export type DgWorktree = { repo: string; path: string; branch: string; checks: string[] }
+
+/** One step on the task card, read off a Worker tool call by the guard. */
+export type DgStep = { text: string; count: number; state: 'done' | 'failed' }
+
+/** A hard stop waiting for your answer in the engine's dialog. */
+export type DgHold = { id: number; stops: DgStop[]; what: string; since: number }
+
+export type DgStatus = 'starting' | 'working' | 'asking' | 'done' | 'failed' | 'stopped'
+
+/** One task a delegate dialog handed to a Worker: the task card. */
+export type DgTask = {
+  id: number
+  peer: PeerRef
+  summary: string
+  /** The Worker's agent id once spawned: its tool calls carry it, and the hooks enforce the grant by it. */
+  agentId: string | null
+  startedAt: number
+  /** Local ms; null: until done. */
+  deadline: number | null
+  grant: DgGrant
+  worktrees: DgWorktree[]
+  /** The Speaker's hard stops waiting for you; the Worker's are the guard's (GuardHold). */
+  holds: DgHold[]
+  /** What the Worker asked the chat, while it waits for the answer. */
+  question: string | null
+  /** The last message the Speaker sent for the task. */
+  chat: { text: string; at: number } | null
+  status: DgStatus
+  /** Why it ended (done: the result; failed / stopped: the reason). */
+  reason: string
+}
+
+/** The card's per-dialog skip, until you type the dialog's name. */
+export type DgPending = { dialogId: number; skip: DgSkip }
+
+export type Delegate = {
+  /** Per dialog id; mirrors $.store. */
+  dialogs: Record<string, DgDialog>
+  tasks: DgTask[]
+  /** `/tg autopilot --dangerously-skip-hard-stops[=…]`: until the session ends. */
+  sessionSkip: DgStop[]
+  /** The mod option `dangerouslySkipHardStops`, mirrored here so the guard plugin reads it. */
+  alwaysSkip: DgStop[]
+  /** The session's permission mode as the classic hooks last reported it; null: not seen yet. */
+  permissionMode: string | null
+  pending: DgPending | null
+}
+
+// The guard plugin's state (mods/dialogs-pane-guard), as this mod reads it to
+// draw. The guard owns, writes and declares it; here it is external data,
+// narrowed by hooks/delegate/guard.ts before use.
+
+/** The Worker's steps and the call it runs now, per task. */
+export type GuardWork = { taskId: number; steps: DgStep[]; current: string | null }
+
+/** A Worker's hard stop waiting for your answer in the engine's dialog. */
+export type GuardHold = { id: number; taskId: number; stops: DgStop[]; what: string; since: number }
+
+/** A Worker's hard stop met: asked (yes / no and who) or skipped. */
+export type GuardEvent = { seq: number; at: number; taskId: number; peer: PeerRef; summary: string; stops: DgStop[]; what: string; answer: 'yes' | 'no' | 'skipped'; why: string }
+
+/** The handshake: the guard's last heartbeat, and the task ids it saw and guards (written on every `delegate` write). */
+export type GuardArmed = { at: number; taskIds: number[] }
+
+// ── /delegate ──
+
 declare module 'claude-code' {
   interface PluginState {
     'dialogs-pane': {
@@ -480,6 +578,7 @@ declare module 'claude-code' {
       // ── /routing ──
       bottest: BotTest
       autopilot: Autopilot
+      delegate: Delegate
     }
   }
 }
