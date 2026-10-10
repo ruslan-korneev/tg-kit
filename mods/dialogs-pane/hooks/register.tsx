@@ -2385,12 +2385,18 @@ function apAllowView(peer: PeerRef, allow: BotTest['allow']): AllowView {
   return blocked?.kind === 'botfather' ? { kind: 'error', text: readOnlyText(blocked) } : { kind: 'ok', isAllowed: blocked === null }
 }
 
-/** Whether tg's guard lets writes to the dialog through without --yes; the allowlist is read when not at hand. */
-async function apIsAllowed($: $, peer: PeerRef): Promise<boolean> {
-  const allow = (await read($, bottest)).allow
-  if (allow.status !== 'ok') await loadAllow($)
-  const view = apAllowView(peer, (await read($, bottest)).allow)
-  return view.kind === 'ok' && view.isAllowed
+/**
+ * Whether tg's guard lets writes to the dialog through without --yes; the allowlist is read when not at hand.
+ * `reread` reads it again before answering no, so the card's "press 3 again" sees a `! tg allow add` run since.
+ */
+async function apIsAllowed($: $, peer: PeerRef, reread = false): Promise<boolean> {
+  const allowed = async () => {
+    const view = apAllowView(peer, (await read($, bottest)).allow)
+    return view.kind === 'ok' && view.isAllowed
+  }
+  if ((await read($, bottest)).allow.status !== 'ok') await loadAllow($)
+  else if (reread && !(await allowed())) await loadAllow($)
+  return allowed()
 }
 
 // --- listening: the watch hub ---
@@ -2899,7 +2905,7 @@ async function apEdit($: $, dialogId: number, change: (dialog: ApDialog) => ApDi
 }
 
 async function apSetLevel($: $, dialog: ApDialog, level: ApLevel): Promise<void> {
-  if ((level === 'auto' || level === 'delegate') && !(await apIsAllowed($, dialog.peer))) {
+  if ((level === 'auto' || level === 'delegate') && !(await apIsAllowed($, dialog.peer, true))) {
     await apNotice($, `${level} sends by itself, so ${dialog.peer.arg} must be in allow.toml first: run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, then press ${level === 'auto' ? 3 : 4} again.`)
     return
   }
@@ -2918,7 +2924,7 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
     await refreshStatus($)
     return
   }
-  if ((dialog.level === 'auto' || dialog.level === 'delegate') && !(await apIsAllowed($, dialog.peer))) {
+  if ((dialog.level === 'auto' || dialog.level === 'delegate') && !(await apIsAllowed($, dialog.peer, true))) {
     await apNotice($, `Not started: ${dialog.level} needs ${dialog.peer.arg} in allow.toml. Run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, or pick 2 draft.`)
     return
   }

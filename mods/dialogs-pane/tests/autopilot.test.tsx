@@ -350,6 +350,31 @@ describe('auto', () => {
     await ui.unmount()
   })
 
+  test('added to allow.toml after a refusal: pressing 3 again sets auto and ⏎ starts it, the card still open', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const allow: number[] = []
+    const seen = world(on, { allow })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(tgCommand('wide'))
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+    await ui.press({ key: 'hint:down' })
+    await ui.press({ key: 'ap:card-open' })
+    await clock.settle()
+    await ui.press({ key: 'ap:level:auto' })
+    expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first/ })).toBeDefined()
+    allow.push(GROUP) // the owner runs `! tg allow add 1002 --yes`
+    const reads = seen.runs.filter(one => one.argv[1] === 'allow').length
+    await ui.press({ key: 'ap:level:auto' })
+    expect(seen.runs.filter(one => one.argv[1] === 'allow').length).toBe(reads + 1)
+    expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first/ })).toBeUndefined()
+    await ui.press({ key: 'ap:start' })
+    await clock.settle()
+    expect(await ui.find({ type: 'Text', text: /Not started/ })).toBeUndefined()
+    expect(seen.children).toHaveLength(1)
+    await ui.unmount()
+  })
+
   test('a send the guard refuses keeps the text as a draft with the reason', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { send: () => run(7, '', 'error: 1002 is not in the allowlist; pass --yes\n') })
