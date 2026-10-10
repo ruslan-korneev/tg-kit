@@ -164,6 +164,22 @@ describe('the pane', () => {
     expect(seen.status.at(-1)).toBe('tg ● 7 unread')
     await ui.unmount()
   })
+
+  test('a hot reload keeps this session’s mode, not the last one another session stored', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-10T12:00:00Z') })
+    const seen = world(on, happy)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(runTg('wide'))
+    await clock.settle()
+    // $.store is shared by every session: another one's `/tg compact` lands here.
+    seen.store.set('mode', 'compact')
+    // A hot reload fires session.start again; $.state kept this session's mode.
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+    expect((await ui.find({ key: 'mode' }))?.text).toBe('wide')
+    await ui.unmount()
+  })
 })
 
 describe('states', () => {
@@ -211,6 +227,15 @@ describe('states', () => {
 })
 
 describe('hidden mode', () => {
+  test('/tg hidden before any list loaded shows the real status, not tg …', async ($, on) => {
+    const clock = mock.clock(on, { now: 0 })
+    const { status } = world(on, happy, { mode: 'compact' })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(runTg('hidden'))
+    await clock.settle()
+    expect(status.at(-1)).toBe('tg ● 7 unread')
+  })
+
   test('a dialog whose unread count grows raises the band; x dismisses it', async ($, on) => {
     let unread = 5
     const clock = mock.clock(on, { now: 0 })
@@ -236,6 +261,8 @@ describe('hidden mode', () => {
       },
     })
     expect((await band.find({ type: 'Text', text: 'Dev Team: "deploy is green"' }))).toBeDefined()
+    // o, x and ⏎ reach the band only once it holds the keys: the band says how.
+    expect(await band.find({ type: 'Text', text: 'ctrl+x tab:' })).toBeDefined()
     await band.press({ key: 'band:dismiss' })
     expect(status.at(-1)).toBe('tg ● 8 unread')
     await band.unmount()
