@@ -28,8 +28,10 @@ __all__ = [
     "ALL_CHATS",
     "ALL_CHATS_ID",
     "Folder",
+    "FolderChats",
     "find_folder",
     "folder_order",
+    "folder_pass",
     "in_folder",
     "is_unread",
     "unread_chats",
@@ -133,6 +135,46 @@ def folder_order(folder: Folder, chats: Iterable[DialogView]) -> list[DialogView
 def unread_chats(folder: Folder, chats: Iterable[DialogView]) -> int:
     """The folder's badge: unread chats that are not muted (muted ones would bury it)."""
     return sum(1 for c in chats if in_folder(folder, c) and is_unread(c) and not c.muted)
+
+
+@dataclass(frozen=True)
+class FolderChats:
+    """One folder in `tg folders --chats`: its badge, its pins and its members, by id."""
+
+    folder: Folder
+    unread: int
+    pinned: tuple[int, ...]
+    chats: tuple[int, ...]
+
+
+def folder_pass(
+    folders: Sequence[Folder], scanned: Sequence[DialogView], listed: Sequence[DialogView]
+) -> tuple[list[FolderChats], list[DialogView]]:
+    """Every folder's members from one look at the chats, and the rows they use.
+
+    `scanned` are the latest chats in Telegram's order; `listed` the chats folders name
+    that the scan missed. A folder sees the scan plus its own listed chats, exactly as
+    `tg dialogs --folder` does, so All chats and the chat types look at the scan only.
+    The rows are every member of some folder, once, in scan-then-listed order, with
+    Telegram's own `pinned`.
+    """
+    seen = {c.id for c in scanned}
+    extra = {c.id: c for c in listed if c.id not in seen}
+    entries = []
+    for f in folders:
+        own = [extra[i] for i in f.listed if i in extra]
+        members = folder_order(f, [*scanned, *own])
+        entries.append(
+            FolderChats(
+                folder=f,
+                unread=unread_chats(f, members),
+                pinned=tuple(c.id for c in members if c.pinned),
+                chats=tuple(c.id for c in members),
+            )
+        )
+    used = {i for e in entries for i in e.chats}
+    rows = [c for c in [*scanned, *extra.values()] if c.id in used]
+    return entries, rows
 
 
 def find_folder(folders: Sequence[Folder], spec: str) -> Folder:

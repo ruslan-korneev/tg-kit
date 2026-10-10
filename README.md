@@ -110,7 +110,7 @@ every button. Pressing a button depends on its type:
 ```bash
 # read
 tg dialogs [-n 30] [--unread] [--query TEXT] [--archived | --folder ID|TITLE]
-tg folders [--counts]                    # Telegram folders in Telegram's order
+tg folders [--counts | --chats]          # Telegram folders in Telegram's order
 tg read PEER [-n 20] [--before ID] [--after ID] [--since 2h|2026-09-01] [--from PEER] [--reverse] [--full]
 tg msg PEER ID [ID…]                     # full messages, never truncated
 tg search PEER QUERY [--filter photo|video|doc|link|voice|music|gif|round|…] [--since …] [--from PEER]
@@ -277,14 +277,37 @@ Per command:
 - `kind`: `all` (All chats, always id 0), `folder`, or `shared` (a folder joined or shared by an
   invite link).
 - `unread` comes only with `--counts`: the folder's unread chats that are not muted. It looks at
-  the latest 500 chats plus the chats the folders list by name.
+  the latest 500 chats of the chat list and of the Archive, plus the chats the folders list by
+  name.
+- `tg folders --chats` is one pass for every folder. It implies `--counts` and makes the same
+  Telegram calls. Each text line ends in ` · N chats`. With `--json` it prints one document:
+
+  ```json
+  {"at": "2026-10-11T09:30:00+00:00", "scan": 500,
+   "folders": [
+     {"id": 2, "title": "Work", "kind": "folder", "unread": 1,
+      "pinned": [-1000000000205], "chats": [-1000000000205, 123456]},
+     {"id": 0, "title": "All chats", "kind": "all", "unread": 1,
+      "pinned": [123456], "chats": [123456, -1000000000205, 202]},
+     {"id": 11, "title": "Team", "kind": "shared", "unread": 0, "pinned": [], "chats": [202]}],
+   "dialogs": [{"id": 123456, "kind": "bot", …}, {"id": -1000000000205, …}, {"id": 202, …}]}
+  ```
+
+  `chats` holds every member in the folder's order, ids only: pinned first, then newest last
+  message first. `pinned` holds the folder's pinned chats; for All chats, the chat list's pins.
+  `dialogs` has one `tg dialogs` row for every chat in some `chats` list, and no other chat. A
+  row's `pinned` is Telegram's own pin for the chat. `scan` is how many of the latest chats
+  were looked at, in the chat list and again in the Archive. All chats and chat types see only
+  those; listed chats are always fetched. `at` is when the pass ran, in UTC. A FLOOD_WAIT longer
+  than `flood_sleep_threshold` exits 5.
 - `tg dialogs --folder ID|TITLE` lists one folder's chats: its pinned chats first, in its order,
   then by last message. A title matches exactly, then case-insensitively. An unknown folder exits
   4 with the list of folders.
 - Membership follows Telegram's rule: pinned or included chats are in; excluded ones are out;
   otherwise the folder's chat types (contacts, non-contacts, groups, channels, bots), minus muted,
   read or archived chats when the folder says so. An unread mention keeps a muted or read chat
-  in. A shared folder holds only its listed chats. Chats joining by type come from the latest 500.
+  in. A shared folder holds only its listed chats. Chats joining by type come from the latest 500
+  of the chat list and of the Archive.
 - Listed chats are fetched by id, so an old one still shows. Telegram rate-limits that by chats:
   about 180 in 30 seconds. Past that, tg sleeps out the FLOOD_WAIT or exits 5. A listed chat
   Telegram refuses (left, banned, deleted) is left out and not asked for again for 6 hours.

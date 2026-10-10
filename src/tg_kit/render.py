@@ -18,15 +18,18 @@ Compact, one line per message, buttons on indented lines under it:
     -1000000000777 channel Example News 🔕 [5 unread, 1 mention] — post text
     2 Work [3 unread]
     5 Team Projects (shared)
+
+`tg folders --chats` ends each folder line with its size: `2 Work [3 unread] · 14 chats`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, tzinfo
 
 from tg_kit.buttons import format_grid
-from tg_kit.folders import Folder
+from tg_kit.folders import Folder, FolderChats
 from tg_kit.model import (
     DialogView,
     Media,
@@ -46,6 +49,7 @@ __all__ = [
     "event_lines",
     "folder_json",
     "folder_line",
+    "folders_pass_json",
     "message_json",
     "ready_json",
     "sender_label",
@@ -267,10 +271,30 @@ def folder_json(folder: Folder, unread: int | None = None) -> dict[str, object]:
     return doc
 
 
-def folder_line(folder: Folder, unread: int | None = None) -> str:
+def folder_line(folder: Folder, unread: int | None = None, chats: int | None = None) -> str:
     shared = " (shared)" if folder.kind == "shared" else ""
     count = f" [{unread} unread]" if unread else ""
-    return f"{folder.id} {folder.title}{shared}{count}"
+    members = f" · {chats} chat{'' if chats == 1 else 's'}" if chats is not None else ""
+    return f"{folder.id} {folder.title}{shared}{count}{members}"
+
+
+def folders_pass_json(
+    at: datetime, scan: int, entries: Sequence[FolderChats], rows: Sequence[DialogView]
+) -> dict[str, object]:
+    """The `tg folders --chats --json` document (documented in README → Dialogs and folders)."""
+    return {
+        "at": at.astimezone(UTC).isoformat(),
+        "scan": scan,
+        "folders": [
+            {
+                **folder_json(e.folder, e.unread),
+                "pinned": list(e.pinned),
+                "chats": list(e.chats),
+            }
+            for e in entries
+        ],
+        "dialogs": [dialog_json(r) for r in rows],
+    }
 
 
 # --- `tg watch` ---------------------------------------------------------------

@@ -1,6 +1,7 @@
 """Pins Telegram folders: membership (tdlib's `need_dialog`), order, lookup by id or
 title, the layer-229 conversion of `DialogFilter*` and dialogs, the `dialogs` and
-`folders` output, the folder list's order (All chats first when the server omits
+`folders` output, the one-pass `folders --chats` document and the Telegram
+calls behind it, the folder list's order (All chats first when the server omits
 it), default mutes that fail to load, and how getPeerDialogs survives a chat
 Telegram refuses and skips it on later runs.
 
@@ -14,29 +15,45 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
-from telethon import errors
+from telethon import errors, utils
 from telethon.tl import custom, functions, types
 
-from tg_kit.client import Connected
+from tg_kit.client import Connected, telegram_errors
 from tg_kit.cmd_read import (
     REFUSED_FOR,
+    SCAN,
     _fetch_peer_dialogs,
     _folder_chats,
     _folders_of,
+    _folders_pass,
     _latest,
     _mute_defaults,
     _peer_dialogs,
 )
 from tg_kit.convert import convert_dialog, convert_folder, folder_input_peers
-from tg_kit.errors import EXIT_NOT_FOUND, NotFoundError
-from tg_kit.folders import ALL_CHATS, Folder, find_folder, folder_order, in_folder, unread_chats
+from tg_kit.errors import EXIT_FLOOD, EXIT_NOT_FOUND, FloodWaitTooLongError, NotFoundError
+from tg_kit.folders import (
+    ALL_CHATS,
+    Folder,
+    find_folder,
+    folder_order,
+    folder_pass,
+    in_folder,
+    unread_chats,
+)
 from tg_kit.model import DialogView
-from tg_kit.render import dialog_json, dialog_line, folder_json, folder_line
+from tg_kit.render import (
+    dialog_json,
+    dialog_line,
+    folder_json,
+    folder_line,
+    folders_pass_json,
+)
 from tg_kit.session import TgSession
 
 from .conftest import BOT, CHANNEL, PERSON, SELF_ID
@@ -291,8 +308,7 @@ def tl_dialog(
         notify_settings=notify or types.PeerNotifySettings(),
         **kw,
     )
-    key = CHANNEL_ID if isinstance(entity, types.Channel) else entity.id
-    return custom.Dialog(_Client(), raw, {key: entity}, None)
+    return custom.Dialog(_Client(), raw, {utils.get_peer_id(entity): entity}, None)
 
 
 def convert(d: Any, **defaults: datetime | None) -> DialogView:
@@ -535,9 +551,184 @@ def test_folders_print_id_title_kind_and_count() -> None:
     assert folder_line(folder(), 0) == "2 Work"
 
 
-# --- the archive ----------------------------------------------------------------------
+# --- tg folders --chats: one pass ----------------------------------------------------
 
+DEV = types.Channel(
+    id=205,
+    title="Dev Team",
+    photo=types.ChatPhotoEmpty(),
+    date=None,
+    megagroup=True,
+    access_hash=66,
+)
+DEV_ID = -(10**12 + DEV.id)
+OLD = types.User(id=303, first_name="Contact A", access_hash=77)
 FILED = types.User(id=404, first_name="Filed", access_hash=88)
+
+
+def _peer(u: types.User) -> types.InputPeerUser:
+    return types.InputPeerUser(u.id, u.access_hash)
+
+
+PASS_FILTERS = [
+    types.DialogFilter(
+        id=2,
+        title=title("Work"),
+        pinned_peers=[types.InputPeerChannel(DEV.id, DEV.access_hash)],
+        include_peers=[BOT_PEER],
+        exclude_peers=[],
+    ),
+    types.DialogFilterDefault(),
+    types.DialogFilterChatlist(
+        id=11, title=title("Team"), pinned_peers=[], include_peers=[_peer(OLD), CHANNEL_PEER]
+    ),
+]
+
+
+class _PassClient(_PeerDialogsClient):
+    """Telegram for one pass: filters, default mutes, the latest chats, getPeerDialogs.
+
+    The latest chats: the bot (pinned, 2 unread) and Dev Team in the main list, and in
+    the archive a user no folder lists. Team lists an old contact (not in the scan) and a
+    channel Telegram refuses.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.log: list[str] = []
+
+    async def __call__(self, request: Any) -> Any:
+        if isinstance(request, functions.messages.GetDialogFiltersRequest):
+            self.log.append("getDialogFilters")
+            return types.messages.DialogFilters(filters=PASS_FILTERS)
+        if isinstance(request, functions.account.GetNotifySettingsRequest):
+            self.log.append(f"getNotifySettings {type(request.peer).__name__}")
+            return types.PeerNotifySettings()
+        ids = sorted(utils.get_peer_id(p.peer) for p in request.peers)
+        self.log.append(f"getPeerDialogs {ids}")
+        return await super().__call__(request)
+
+    async def iter_dialogs(self, *, limit: int | None, folder: int | None) -> Any:
+        self.log.append(f"getDialogs limit={limit} folder={folder}")
+        if folder == 0:
+            yield tl_dialog(BOT, types.PeerUser(BOT.id), pinned=True, unread_count=2)
+            yield tl_dialog(DEV, types.PeerChannel(DEV.id))
+        else:
+            # An archive answer also carries the main list's pins (seen with an empty archive).
+            yield tl_dialog(BOT, types.PeerUser(BOT.id), pinned=True, unread_count=2)
+            yield tl_dialog(FILED, types.PeerUser(FILED.id), folder_id=1)
+
+
+def test_one_pass_makes_the_counts_calls_and_skips_a_remembered_refusal(
+    session: TgSession,
+) -> None:
+    client = _PassClient()
+    conn = Connected(client=client, session=session, account="a", me=None)
+    asyncio.run(_folders_pass(conn, NOW, counted=True))
+    notify = [
+        "getNotifySettings InputNotifyUsers",
+        "getNotifySettings InputNotifyChats",
+        "getNotifySettings InputNotifyBroadcasts",
+    ]
+    first_fetch = f"getPeerDialogs {sorted([CHANNEL_ID, OLD.id])}"
+    scans = [f"getDialogs limit={SCAN} folder=0", "getDialogs limit=None folder=1"]
+    assert client.log[:7] == ["getDialogFilters", *notify, *scans, first_fetch]
+    assert client.log[7:] == [f"getPeerDialogs [{OLD.id}]", f"getPeerDialogs [{CHANNEL_ID}]"]
+
+    client.log.clear()
+    asyncio.run(_folders_pass(conn, NOW + timedelta(minutes=1), counted=True))
+    assert client.log == ["getDialogFilters", *notify, *scans, f"getPeerDialogs [{OLD.id}]"]
+
+    client.log.clear()
+    asyncio.run(_folders_pass(conn, NOW, counted=False))
+    assert client.log == ["getDialogFilters"]  # the plain list makes no other call
+
+
+def test_the_pass_builds_every_folder_and_one_row_per_member(session: TgSession) -> None:
+    conn = Connected(client=_PassClient(), session=session, account="a", me=None)
+    _, entries, rows = asyncio.run(_folders_pass(conn, NOW, counted=True))
+    assert [(e.folder.id, e.unread, e.pinned, e.chats) for e in entries] == [
+        (2, 1, (DEV_ID,), (DEV_ID, BOT.id)),
+        (0, 1, (BOT.id,), (BOT.id, DEV_ID)),  # All chats in the server's place
+        (11, 0, (), (OLD.id,)),  # the refused channel is in no list
+    ]
+    assert [r.id for r in rows] == [BOT.id, DEV_ID, OLD.id]  # not the archived chat
+    assert {i for e in entries for i in e.chats} == {r.id for r in rows}
+    assert [r.pinned for r in rows] == [True, False, False]  # Telegram's own pin
+
+
+def test_each_folders_chats_follow_folder_order() -> None:
+    scanned = [
+        replace(NEWS, last_date=NOW, pinned=True),
+        replace(GROUP, last_date=NOW - timedelta(hours=1)),
+        replace(SUPERGROUP, last_date=NOW - timedelta(hours=2)),
+    ]
+    listed = [replace(STRANGER, last_date=NOW - timedelta(days=30))]
+    work = folder(groups=True, pinned=(SUPERGROUP.id,), include=(STRANGER.id,))
+    entries, _ = folder_pass([work, ALL_CHATS], scanned, listed)
+    for e, members in zip(entries, ([*scanned, *listed], scanned), strict=True):
+        assert e.chats == tuple(c.id for c in folder_order(e.folder, members))
+    assert entries[0].chats == (SUPERGROUP.id, GROUP.id, STRANGER.id)
+    assert entries[1].chats == (NEWS.id, GROUP.id, SUPERGROUP.id)  # listed chat: not All chats
+
+
+def test_a_type_built_folder_sees_only_the_scan_and_its_own_listed_chats() -> None:
+    old_group = replace(GROUP, id=-999)
+    other = Folder(id=5, title="Other", kind="folder", include=(old_group.id,))
+    groups = folder(groups=True)
+    entries, rows = folder_pass([groups, other], [SUPERGROUP], [old_group])
+    assert [e.chats for e in entries] == [(SUPERGROUP.id,), (old_group.id,)]
+    assert [r.id for r in rows] == [SUPERGROUP.id, old_group.id]
+
+
+def test_a_flood_past_the_threshold_exits_5_with_the_wait(session: TgSession) -> None:
+    class _Flooded(_PassClient):
+        async def __call__(self, request: Any) -> Any:
+            if isinstance(request, functions.messages.GetPeerDialogsRequest):
+                raise errors.FloodWaitError(request=request, capture=41)
+            return await super().__call__(request)
+
+    conn = Connected(client=_Flooded(), session=session, account="a", me=None)
+    with pytest.raises(FloodWaitTooLongError) as e, telegram_errors():
+        asyncio.run(_folders_pass(conn, NOW, counted=True))
+    assert (e.value.exit_code, e.value.seconds) == (EXIT_FLOOD, 41)
+    assert session.refused_peers(NOW.timestamp()) == set()  # a flood is not a refusal
+
+
+def test_the_pass_document_has_at_scan_folders_and_dialogs() -> None:
+    work = folder()
+    entries, rows = folder_pass([work, ALL_CHATS], [replace(GROUP, pinned=True)], [])
+    at = datetime(2026, 10, 11, 12, 30, tzinfo=timezone(timedelta(hours=3)))
+    doc = folders_pass_json(at, 500, entries, rows)
+    assert list(doc) == ["at", "scan", "folders", "dialogs"]
+    assert (doc["at"], doc["scan"]) == ("2026-10-11T09:30:00+00:00", 500)
+    assert doc["folders"] == [
+        {"id": 2, "title": "Work", "kind": "folder", "unread": 0, "pinned": [], "chats": []},
+        {
+            "id": 0,
+            "title": "All chats",
+            "kind": "all",
+            "unread": 0,
+            "pinned": [GROUP.id],
+            "chats": [GROUP.id],
+        },
+    ]
+    assert doc["dialogs"] == [dialog_json(replace(GROUP, pinned=True))]
+
+
+@pytest.mark.parametrize(
+    ("unread", "chats", "line"),
+    [
+        (3, 14, "2 Work [3 unread] · 14 chats"),
+        (0, 1, "2 Work · 1 chat"),
+        (0, 0, "2 Work · 0 chats"),
+    ],
+)
+def test_the_chats_line_ends_with_the_folders_size(unread: int, chats: int, line: str) -> None:
+    assert folder_line(folder(), unread, chats) == line
+
+
+# --- the archive ----------------------------------------------------------------------
 
 
 class _ScanClient:

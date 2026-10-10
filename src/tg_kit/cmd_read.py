@@ -30,11 +30,25 @@ from tg_kit.client import Connected, rpc_error_name, telegram_errors
 from tg_kit.common import HARD_MAX, print_views, resolve_spec, self_id, view_of
 from tg_kit.convert import MUTE_SCOPES, convert_dialog, convert_folder, folder_input_peers
 from tg_kit.errors import NotFoundError, RefusedError, TgError, UsageError
-from tg_kit.folders import ALL_CHATS, Folder, find_folder, folder_order, unread_chats
+from tg_kit.folders import (
+    ALL_CHATS,
+    Folder,
+    FolderChats,
+    find_folder,
+    folder_order,
+    folder_pass,
+)
 from tg_kit.model import DialogView
 from tg_kit.parsing import parse_since
 from tg_kit.peers import message_id_in, parse_peer
-from tg_kit.render import LIST_TRUNCATE, dialog_json, dialog_line, folder_json, folder_line
+from tg_kit.render import (
+    LIST_TRUNCATE,
+    dialog_json,
+    dialog_line,
+    folder_json,
+    folder_line,
+    folders_pass_json,
+)
 
 __all__ = ["register"]
 
@@ -158,6 +172,13 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
             bool,
             typer.Option("--counts", help="Add each folder's unread chats that are not muted."),
         ] = False,
+        chats: Annotated[
+            bool,
+            typer.Option(
+                "--chats",
+                help="Every folder's chats and their rows in one pass (implies --counts).",
+            ),
+        ] = False,
         account: AccountOpt = None,
         json_out: JsonOpt = False,
         timeout: TimeoutOpt = None,
@@ -167,19 +188,23 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         g = globals_from(ctx, account, json_out, timeout, verbose)
 
         async def body(rt: Runtime) -> int:
-            unread: dict[int, int] = {}
             async with rt.connect() as conn:
                 with telegram_errors():
-                    found = await _folders(conn)
-                    if counts:
-                        defaults = await _mute_defaults(conn.client)
-                        inputs = {i: p for _, ps in found for i, p in ps.items()}
-                        chats = await _scan_then_listed(conn, inputs, defaults, rt.now, folder=None)
-                        unread = {f.id: unread_chats(f, chats) for f, _ in found}
+                    found, entries, rows = await _folders_pass(
+                        conn, rt.now, counted=counts or chats
+                    )
+            if chats:
+                if rt.json:
+                    emit_json(folders_pass_json(rt.now, SCAN, entries, rows))
+                else:
+                    for e in entries:
+                        out(folder_line(e.folder, e.unread, len(e.chats)))
+                return 0
+            unread = {e.folder.id: e.unread for e in entries}
             if rt.json:
-                emit_json([folder_json(f, unread.get(f.id)) for f, _ in found])
+                emit_json([folder_json(f, unread.get(f.id)) for f in found])
             else:
-                for f, _ in found:
+                for f in found:
                     out(folder_line(f, unread.get(f.id)))
             return 0
 
@@ -572,7 +597,8 @@ async def _folder_chats(
     """A folder's chats in its order: the listed ones by id, plus the latest chats by type."""
     if folder.by_type:
         scan_folder = 0 if folder.exclude_archived else None
-        chats = await _scan_then_listed(conn, inputs, defaults, now, folder=scan_folder)
+        scanned, listed = await _scan_then_listed(conn, inputs, defaults, now, folder=scan_folder)
+        chats = [*scanned, *listed]
     else:
         chats = await _peer_dialogs(conn, inputs, defaults, now)
     return folder_order(folder, chats)
@@ -585,18 +611,33 @@ async def _scan_then_listed(
     now: datetime,
     *,
     folder: int | None,
-) -> list[DialogView]:
-    """The latest chats, plus the listed ones the scan did not reach.
+) -> tuple[list[DialogView], list[DialogView]]:
+    """The latest chats, and the listed ones the scan did not reach.
 
     getPeerDialogs is rate-limited by peers: on a real account ~180 peers in 30 s
     went through, the next call got FLOOD_WAIT 29. So listed chats the scan already
     has are not fetched again.
     """
-    chats = {r.id: r async for r in _scan(conn, defaults, now, limit=SCAN, folder=folder)}
-    missing = {i: p for i, p in inputs.items() if i not in chats}
-    for r in await _peer_dialogs(conn, missing, defaults, now):
-        chats.setdefault(r.id, r)
-    return list(chats.values())
+    scanned = [r async for r in _scan(conn, defaults, now, limit=SCAN, folder=folder)]
+    seen = {r.id for r in scanned}
+    missing = {i: p for i, p in inputs.items() if i not in seen}
+    return scanned, await _peer_dialogs(conn, missing, defaults, now)
+
+
+async def _folders_pass(
+    conn: Connected, now: datetime, *, counted: bool
+) -> tuple[list[Folder], list[FolderChats], list[DialogView]]:
+    """`tg folders`: the list, and with `counted` one pass over the latest chats (main
+    list and archive) plus the chats folders list, from which every folder is built."""
+    found = await _folders(conn)
+    folders = [f for f, _ in found]
+    if not counted:
+        return folders, [], []
+    defaults = await _mute_defaults(conn.client)
+    inputs = {i: p for _, ps in found for i, p in ps.items()}
+    scanned, listed = await _scan_then_listed(conn, inputs, defaults, now, folder=None)
+    entries, rows = folder_pass(folders, scanned, listed)
+    return folders, entries, rows
 
 
 async def _mute_defaults(client: Any) -> dict[str, datetime | None]:
