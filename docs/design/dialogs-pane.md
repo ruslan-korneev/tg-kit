@@ -4,7 +4,8 @@ An optional Claude Code mod shipped with tg-kit. It shows Telegram dialogs and m
 and sends a selected message (or range, or whole dialog) to the current agent or to other agents
 as a **packet**: the full message record, not just its text.
 
-Status: phases 1–3 built on `feat/dialogs-pane`; phase 4 (`delegate`) in progress.
+Status: phases 1–3 built on `feat/dialogs-pane`; phase 4 (`delegate`) built on `feat/mod-delegate`,
+with a second mod, `mods/dialogs-pane-guard`, that guards the Worker.
 
 ## 1. What the engine gives us
 
@@ -288,25 +289,42 @@ The work is split between two agents:
 
 | Role | Tools | What it does |
 | --- | --- | --- |
-| **Speaker** | `reply`, `draft`, `escalate`, `read_history` | Talks in the dialog as you: "on it", "one question: …", "done, here's the PR" |
-| **Worker** | The tools you grant (web, repos, commands) | Does the task: reads the docs from the link, adds the payment system in a worktree, runs the tests |
+| **Speaker** | None: actions in its JSON answer, `reply`, `draft`, `escalate`, `read_history`, plus `start_task` and `forward` | Talks in the dialog as you: "on it", "one question: …", "done, here's the PR" |
+| **Worker** | The tools you grant (web, repos, commands); never Agent | Does the task: reads the docs from the link, adds the payment system in a worktree, runs the tests |
 
 The Speaker never touches the tools. The Worker never writes to Telegram. They talk through a task
-card that you see in the pane. The Worker asks for a reply ("ask them for the sandbox API key"), and
-the Speaker phrases it for the chat.
+card that you see in the pane:
+
+- `start_task`: the Speaker's ack goes out like an auto reply, and a task starts. Each granted repo
+  gets a fresh `git worktree add -b tg/<slug>-<id>` under `TG_KIT_CONFIG_DIR/worktrees`. The
+  Worker gets an agent type of its own, `dialogs-pane:worker-<id>`, with the granted tools and
+  hidden from the model, and is spawned in the first worktree.
+- The Worker ends every turn with `ASK: …`, `DONE: …` or `FAIL: …`. The Speaker phrases it for
+  the chat (the relay prompt). It goes out through the same gate, limits and outgoing stops as an
+  auto reply. FAIL is always a draft.
+- `forward`: the chat answered the Worker's question. The answer reaches the Worker through
+  `session.send`.
 
 **Grant (set in the card when you pick `delegate`):**
 
 - **Web:** off / read-only (fetch pages and docs) / full.
 - **Repos:** a list of paths. The Worker works in a fresh worktree of each, never on your
   checkout.
-- **Commands:** the repo's own check commands by default. Anything else follows Claude Code's
-  normal permission rules.
-- **Duration:** until the task is done, a deadline, or `Esc Esc`.
+- **Commands:** `checks` (the default) or `any`.
+  - `checks` allows the repo's own checks, read off `package.json`, `pyproject.toml` with
+    `uv.lock`, `Makefile`, `justfile`, `Cargo.toml` and `go.mod`. It also allows local git (no
+    stash, no config, since both are shared with your checkout) and local read-only commands.
+  - `checks` refuses any word with a `$`: a path known only when the shell runs cannot be cleared.
+  - `any` lets Claude Code's normal permission rules decide.
+  - Files are only in the worktrees, never in your checkouts, in both modes.
+- **Duration:** until the task is done, or a deadline (`2h`, `90m`). The kill switch ends either.
 
 **Who decides when to ask you.** The agent decides by default: if it's unsure, if the task grows, or
-if two readings are both reasonable. **Hard stops** always ask you, whatever the agent thinks. The
-brief cannot turn them off:
+if two readings are both reasonable. **Hard stops** always ask you, whatever the agent thinks.
+The Worker's calls are checked by the guard mod's `tool.call` hook. The Speaker's outgoing text is
+checked for `share` and `commit-on-behalf`. A stop waits in the engine's own dialog, where No is
+listed first. It runs only on "Yes, allow it". No, a dismissal, `-p`, a stopped task or a passed
+deadline all count as no. The brief cannot turn them off:
 
 - spending money or entering payment details;
 - push, merge, deploy, publishing anything;
@@ -321,15 +339,16 @@ like `--dangerously-skip-permissions`. Stops are named so they can be skipped on
 
 | Scope | How | Lasts |
 | --- | --- | --- |
-| One dialog | The card's `hard stops` row → `off` or a list. You confirm by typing the dialog's name | Until the time limit (default 24 h, `never` allowed) or until you turn it back on |
-| Session | `/tg autopilot --dangerously-skip-hard-stops[=publish,delete]` | Until the session ends |
-| Always | The mod option `dangerouslySkipHardStops: ["publish"]` (or `true`) in `settings.json` | Until you remove it |
+| One dialog | The card's `stops` row, field `skip`: `all` or names, then `24h` / `8h` / `never`. You confirm by typing the dialog's name | Until the time limit (default 24 h, `never` allowed) or until you type `on` |
+| Session | `/tg autopilot --dangerously-skip-hard-stops[=publish,delete]` (`=none` turns them back on) | Until the session ends |
+| Always | The mod option `dangerouslySkipHardStops: ["publish"]` (or `["all"]`) in `settings.json`; the engine's `userConfig` takes no boolean here | Until you remove it |
 
 Even when stops are off:
 
 - the dialog row, the task card and the status line show a red `⚠ no stops` (or the skipped
   names);
-- every action that would have stopped is logged in the ledger as `skipped stop: publish …`;
+- every action that would have stopped is logged in the ledger as `skipped stop: publish …`
+  (the guard logs the Worker's; the pane logs the Speaker's);
 - the kill switch and the guard (`allow.toml`) still work;
 - Claude Code's own permission prompts still apply, unless the session itself runs with
   `--dangerously-skip-permissions`. In that case the card says so: `⚠ no stops · no permissions`.
@@ -346,7 +365,7 @@ show the warning in the card once.
 │ ✓ read docs (3 pages)                                │
 │ ✓ worktree tg-pay · branch feat/payments             │
 │ … implementing webhook handler                       │
-│ ⏸ HARD STOP publish: push feat/payments? ⏎ yes  x no │
+│ ⏸ HARD STOP publish: git push …? (answer in the dialog)│
 │ chat: "on it, will send a PR link today" (sent 14:10)│
 └──────────────────────────────────────────────────────┘
 ```
@@ -362,8 +381,21 @@ show the warning in the card once.
   gets more tools, and only the ones granted.
 - **Brief per dialog.** Tone, what the agent may and may not promise, and facts about you it may
   use. It is stored in `$.store` and shown in the setup card.
-- **Kill switch.** `/tg autopilot off`, or `Esc Esc` in the pane, stops every dialog and every
-  Worker at once. Closing the session stops them too.
+- **Kill switch.** `/tg autopilot off`, or "stop all" in the pane, stops every dialog and every
+  Worker at once (TaskStop). Stopping a dialog, the task card's "stop" and the grant's deadline
+  stop its Worker. Closing the session stops them too.
+- **The guard is a mod of its own** (`mods/dialogs-pane-guard`). The engine runs no hook of a
+  plugin inside a loop that plugin spawned. In a live run, the pane's own `tool.call` hook never
+  saw its Worker, and a `git push` reached the remote. Another plugin's hooks do run there.
+  - The guard reads `delegate` (the tasks, the grants, the skips) and writes its own `armed`,
+    `work`, `holds` and `events`, which the pane draws.
+  - Delegate starts only while the guard answers (`armed` under 30 s old). A Worker is spawned
+    only once `armed` names its task.
+  - A guard silent for 30 s stops every Worker. The pane's own hook refuses the call of a Worker
+    whose task is over or whose guard went silent.
+- **One session per dialog.** Starting any level takes the dialog's lease in `$.store`: the owner
+  session and a 30 s heartbeat. A second session sees "running in another session" and does not
+  start. The lease is freed at session end, or after 90 s of silence.
 - **Autopilot ledger.** Every auto reply is logged with the incoming message, the reply, the
   confidence, the level and the check-before-send choice. `u` within 30 s deletes a sent reply
   (`tg delete --yes`).
@@ -383,6 +415,11 @@ A new `tg watch PEER… --jsonl` command streams new and edited messages in the 
   hook has a 10 s budget, so it cannot wait for a press in the card. The card, the band and the
   status line mirror the open stop. If nobody answers, the answer is no.
 - The kill switch is `/tg autopilot off` and the "stop all" button, because the engine owns Esc.
+- The Worker's guard moved into a second mod (see Safety model). The rules both mods use
+  (`hooks/delegate/{shell,paths,stops,grant,skip,task}.ts`) are byte-identical copies, because the
+  engine loads no file from outside a plugin's folder, symlinks included.
+  `tests/unit/test_mod_shared_rules.py` pins the copies. Only `contract.ts` differs.
+- `true` for `dangerouslySkipHardStops` is spelled `["all"]`: a boolean failed the mod's load.
 
 ### Mockups
 
@@ -442,4 +479,4 @@ Telegram only through the `tg` CLI.
 | 2 | `tg-mod-bottest` | pane-core | Pressable buttons, recorder → test, reply diff, latency stamps |
 | 2 | `tg-mod-triage` | pane-core, watch | Watched bots in Hidden mode, summaries, needs-you ranking |
 | 3 | `tg-mod-autopilot` | routing, watch | Levels, limits, bursts, check before sending, Speaker subagent, guard, kill switch, ledger, undo |
-| 4 | `tg-mod-delegate` | autopilot | Worker, grant, worktrees, hard stops, `dangerouslySkipHardStops`, task card |
+| 4 | `tg-mod-delegate` | autopilot | Worker, grant, worktrees, hard stops, `dangerouslySkipHardStops`, task card, the guard mod, the cross-session lease |
