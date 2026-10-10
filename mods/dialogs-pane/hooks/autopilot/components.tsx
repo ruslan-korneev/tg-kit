@@ -262,12 +262,17 @@ export function draftLine(draft: Pick<ApDraft, 'peer' | 'incoming' | 'text'>, wi
   return { body, isWhole: shown === oneLine(draft.text, Infinity) && cells(`${LEVEL_GLYPH.draft} ${body}`) <= width }
 }
 
-/** Terminal cells, erring wide: CJK, Hangul and emoji take two; `truncate-end` cuts by cells. */
+/**
+ * Terminal cells, erring wide: `truncate-end` cuts by cells. Everything from U+2000 up
+ * counts two (CJK, emoji, and wide symbols such as ✅ ⭐ ⌚ ☕ among narrow arrows and
+ * punctuation), as does Hangul Jamo; Latin and Cyrillic stay one. Too wide only opens
+ * a draft that would have fit; too narrow would send one the owner never saw whole.
+ */
 function cells(text: string): number {
   let count = 0
   for (const char of text) {
     const point = char.codePointAt(0) ?? 0
-    count += (point >= 0x1100 && point <= 0x115f) || point >= 0x2e80 ? 2 : 1
+    count += (point >= 0x1100 && point <= 0x115f) || point >= 0x2000 ? 2 : 1
   }
   return count
 }

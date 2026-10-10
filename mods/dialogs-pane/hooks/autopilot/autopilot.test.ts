@@ -148,4 +148,12 @@ describe('the band shows a draft whole or cut short (decision 9: ⏎ sends only 
     expect(draftLine(draft('明天很忙'.repeat(5)), 70).isWhole).toBe(false)
     expect(draftLine(draft('Завтра занят'), 70).isWhole).toBe(true)
   })
+
+  test('a wide symbol below the CJK block (✅) counts two cells, at the exact width', () => {
+    // 48 columns: the room floors at 12; "Done x" fills the band exactly, "Done ✅" is one cell over.
+    expect(draftLine(draft('Done x'), 48).isWhole).toBe(true)
+    expect(draftLine(draft('Done x'), 47).isWhole).toBe(false)
+    expect(draftLine(draft('Done ✅'), 48).isWhole).toBe(false)
+    expect(draftLine(draft('Done ✅'), 49).isWhole).toBe(true)
+  })
 })
