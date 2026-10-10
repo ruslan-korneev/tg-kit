@@ -164,6 +164,22 @@ describe('the pane', () => {
     expect(seen.status.at(-1)).toBe('tg ● 7 unread')
     await ui.unmount()
   })
+
+  test('a hot reload keeps this session’s mode, not the last one another session stored', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-10T12:00:00Z') })
+    const seen = world(on, happy)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(runTg('wide'))
+    await clock.settle()
+    // $.store is shared by every session: another one's `/tg compact` lands here.
+    seen.store.set('mode', 'compact')
+    // A hot reload fires session.start again; $.state kept this session's mode.
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+    expect((await ui.find({ key: 'mode' }))?.text).toBe('wide')
+    await ui.unmount()
+  })
 })
 
 describe('states', () => {

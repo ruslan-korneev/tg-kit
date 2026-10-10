@@ -127,15 +127,19 @@ export const register: Register = on => {
       description: 'Open or focus the Telegram dialogs pane',
       argumentHint: '[wide|compact|hidden]',
     })
+    // $.store is shared by every session, so it only seeds a fresh one: after a
+    // hot reload $.state still holds this session's mode, and the stored one
+    // may be another session's last /tg.
+    const isFresh = (await $.state.get({ plugin: 'dialogs-pane', key: 'mode' })).version === 0
     const kept = await $.store.get(STORE_MODE)
-    if (isMode(kept)) await update($, mode, () => kept)
+    if (isFresh && isMode(kept)) await update($, mode, () => kept)
     // Hidden keeps its status line fresh; an open pane keeps its list fresh.
     $.clock.every(POLL_MS, () => {
       poll($).catch(() => {
         // A failed poll leaves the last list on screen; the next one retries.
       })
     })
-    if (kept === 'hidden') {
+    if ((await read($, mode)) === 'hidden') {
       loadDialogs($).catch(() => {
         // The status line stays at `tg …` until the first poll lands.
       })
