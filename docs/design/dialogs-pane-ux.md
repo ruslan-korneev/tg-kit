@@ -405,7 +405,8 @@ Why:
   "exclude read" does the job for whoever wants one, and shows here like any other folder.
 - Bots stays, as a pane view: bot testing is what tg-kit is for, 29 bots hide among the latest 200
   chats, and a Bots folder in Telegram would clutter the owner's phone for the pane's sake. It
-  lists the bots among the pass's rows: the latest 500 chats and every chat a folder lists.
+  lists the bots among the pass's rows: the latest chats of the chat list and the Archive, and
+  every chat a folder lists.
 - For you is new: what waits for the owner, across every folder (§5.3). It replaces the `y`
   ranking toggle, whose state (`you↑ on`) the list did not show.
 
@@ -452,13 +453,19 @@ Where the data comes from (tg, tasks T8 and T8b):
   when it excludes read. An archived chat is out when the folder excludes archived, mention or
   not. Last come the folder's chat types: contacts (with Saved Messages), non-contacts, groups,
   channels, bots. Listed chats are fetched by id (`messages.getPeerDialogs`), so an old one still
-  shows; type-built folders look at the latest 500 chats.
+  shows; All chats and type-built folders look at the latest 500 chats of the chat list and the
+  latest 500 of the Archive. Those are two scans: `getDialogs` without a folder id answers with
+  the chat list only, and its Archive answer also carries the chat list's pins, so only dialogs
+  marked `folder_id` 1 count as archived.
 - Cost, measured on the owner's account by T8: `getPeerDialogs` is limited by chats, about 180 in
   30 s, and past that Telegram asks for a wait of about 30 s, which tg sleeps out (its default
   `flood_sleep_threshold` is 30 s). The folders list 212 distinct chats, 121 of them outside the
-  latest 500, so one pass costs about 3 s and 121 chats by id. Fetching a folder on every switch
-  would spend the budget in one look through 14 folders; the pane runs one pass a minute at most
-  (§8 T9). `tg dialogs --limit 50` takes 1.0 s, `--limit 200` 2.0 s.
+  latest 500. Measured by T8b, one pass takes 4.2 s and returns 621 chats in a document of
+  467 KB, about 121 of them fetched by id, and two passes back to back flood. Fetching a folder on
+  every switch would spend the budget in one look through 14 folders, so the pane runs one pass a
+  minute at most. It keeps the rows in its module and only the view on screen in `$.state`,
+  since a `$.state` value crosses to the host as JSON on every write and on every read while
+  drawing (§8 T9). `tg dialogs --limit 50` takes 1.0 s, `--limit 200` 2.0 s.
 
 ## 5. Core flows
 
@@ -1480,9 +1487,9 @@ BotFather runs nothing.
 **T8b — one pass for every folder** (½ day; Python; after T8 and its four review fixes; T9 needs
 it).
 - `tg folders --chats [--json]`. `--chats` implies `--counts` and makes no Telegram call that
-  `--counts` does not: one scan of the latest 500 chats (main list and archive) and
-  `messages.getPeerDialogs` for the listed chats the scan missed, minus the chats remembered as
-  refused.
+  `--counts` does not: two scans of the latest 500 chats, the chat list and the Archive (only
+  dialogs marked `folder_id` 1), and `messages.getPeerDialogs` for the listed chats the scans
+  missed, minus the chats remembered as refused.
 - With `--json` it prints one document; `tg folders --json` without `--chats` keeps its list:
 
 ```json
@@ -1517,8 +1524,9 @@ it).
 - `dialogs`: every chat that is in at least one `chats` list, once, as a `tg dialogs --json` row,
   and no other chat. A row's `pinned` is Telegram's own pin for the chat (in All chats, or in the
   Archive for an archived chat); a folder's pins are that folder's `pinned`.
-- `scan`: how many of the latest chats were looked at. All chats and type-built folders see only
-  those; listed chats are always fetched. `at`: when the pass ran, in UTC.
+- `scan`: how many of the latest chats were looked at, in the chat list and again in the
+  Archive. All chats and type-built folders see only those; listed chats are always fetched.
+  `at`: when the pass ran, in UTC.
 - Without `--json`: the `--counts` lines, each ending in ` · N chats`.
 - Exit codes as `tg folders`. A FLOOD_WAIT longer than `flood_sleep_threshold` exits 5 with the
   seconds to wait.
@@ -1533,24 +1541,38 @@ it).
   cursor is in Chats; `s` searches every chat.
 - The Folders list (`h` from Chats): counts, `shared`, Archive, the pane views; two columns inline.
 - The first open lands on Telegram's first folder, later ones on the last used (`$.store`).
-- Data, one pass for everything (§4.7): the strip paints from `tg folders --json` and from the last
-  pass the session holds; then `tg folders --chats --json` runs in the background. Every folder's
-  list, Bots, For you's people and the counts come from the pass, so switching folders or views
-  runs no tg call. The pane never calls `tg dialogs --folder`.
+- Data, one pass for everything (§4.7): the strip paints from `tg folders --json` and from what
+  the session already holds; then `tg folders --chats --json` runs in the background. Every
+  folder's list, Bots, For you's people and the counts come from the pass, so switching folders
+  or views runs no tg call. The pane never calls `tg dialogs --folder`.
 - When a pass runs: on opening the pane, on `g`, and every 60 s while the pane is open; every
   5 min while it is hidden, once it has been opened in this session (the footer's count reads it).
-  One at a time, and never within 60 s of the last one's start, except `g` after 10 s.
+  One at a time, and never within 60 s of the last one's start: two passes back to back flood
+  (T8b's measurement). `g` inside those 60 s queues one pass for when they are up and says
+  `refreshing in N s`; another `g` adds no second pass. The last start's time is kept in
+  `$.state`, so a hot reload keeps the 60 s too.
 - Between passes, watch events (the open chat, watched chats) patch the rows they touch (`unread`,
-  `mentions`, the last message) and move the chat to the top of the unpinned part of each folder
-  that has it. Nothing else changes until the next pass.
-- Kept where: the whole pass in `$.state`, for this session. `$.store` keeps the folder list with
-  its counts, the current folder's id and that folder's rows, so the next session paints them
-  before its first pass.
+  `mentions`, the last message) in the module's map and in the view on screen, and move the chat
+  to the top of the unpinned part of each folder that has it. Nothing else changes until the next
+  pass.
+- Kept where. On the owner's account a pass is 467 KB and 621 chats, and a `$.state` value
+  crosses to the host as JSON on every write and on every read while drawing, so the pass is
+  never kept there whole:
+  - (a) the module keeps the last pass's rows in a map by id, and each folder's chat ids. Nothing
+    draws from them directly; a hot reload drops them, and the next pass fills them again.
+  - (b) `$.state` holds only what is drawn: the folder list with its counts, and the rows of the
+    view on screen (the current folder, For you or Bots), each `last_text` cut to 120 characters.
+    A pass or a watch event that changes those rows writes them again.
+  - (c) A folder switch copies that folder's rows from the module's map into `$.state`: a write of
+    one view. After a hot reload, until the next pass, a folder other than the one on screen shows
+    `…` rows and `refreshing in N s`.
+  - (d) `$.store` keeps the folder list with its counts, the current folder's id and that folder's
+    rows, so the next session paints them before its first pass.
 - Floods and errors: exit 5 keeps the pass, shows §7.4's flood state with the seconds and holds
   the next pass until they are over; a pass tg slept through just lands late. Any other failure
   keeps the pass and shows one red line with `g: retry`; the 60 s cadence goes on.
 - A first open with no pass held: the strip after `tg folders` (0.66 s on the owner's account),
-  the chats after the pass (about 3 s), with `…` rows until then.
+  the chats after the pass (about 4 s), with `…` rows until then.
 - Search (`tg dialogs --query`) and the Archive (`tg dialogs --archived`) run when asked and are
   not cached.
 - For you (`y`): the agents' items first (drafts and undo windows, read from the autopilot state
@@ -1563,8 +1585,10 @@ it).
 - Tests: the strip's order with All chats where Telegram has it; digits; `+N`; `h` up and ⏎ down;
   the remembered folder; an account without folders; search across folders; For you's order, and
   no ranking outside it; muted counts dim; switching folders runs no tg; a second pass within 60 s
-  does not run, and `g` after 10 s does; exit 5 keeps the pass and holds the next one; a watch
-  event moves its chat up in every folder that has it.
+  does not run; `g` inside the 60 s queues one that runs when they are up, and a second `g` adds
+  none; a hot reload keeps the 60 s; `$.state` holds no row of a view off screen, and no
+  `last_text` over 120 characters; exit 5 keeps the pass and holds the next one; a watch event
+  moves its chat up in every folder that has it.
 
 Conflict points between parallel tasks: `keys.ts` (each task adds its rows), the Pane render's
 slots (T1 makes them), `types/index.d.ts` (marked blocks, as today).
