@@ -127,8 +127,11 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'tg',
-      description: 'Open or focus the Telegram dialogs pane',
-      argumentHint: '[wide|compact|hidden|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
+      description: 'Open or focus the Telegram dialogs pane · /tg stop stops every agent',
+      argumentHint: '[wide|compact|hidden|stop|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
+      // The kill switch must not wait for main's turn to end, so every /tg runs
+      // at once: opening the pane touches no turn state either.
+      immediate: true,
     })
     // $.store is shared by every session, so it only seeds a fresh one: after a
     // hot reload $.state still holds this session's mode, and the stored one
@@ -158,8 +161,9 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'tg' }, async ($, e) => {
     const asked = e.args.trim()
     if (asked === 'autopilot' || asked.startsWith('autopilot ')) return autopilotCommand($, asked.slice('autopilot'.length).trim()) // ── autopilot ──
+    if (asked === 'stop') return autopilotCommand($, 'off') // ── autopilot ── the kill switch
     const named = MODE_ARGS.find(one => one === asked)
-    if (asked !== '' && named === undefined) return { text: 'Usage: /tg [wide|compact|hidden]' }
+    if (asked !== '' && named === undefined) return { text: 'Usage: /tg [wide|compact|hidden|stop]' }
     // Never chosen, or Hidden: open as the terminal suits; else as last left.
     const kept = await $.store.get(STORE_MODE)
     const target = named ?? (isMode(kept) && kept !== 'hidden' ? kept : defaultMode(e.presentation))
@@ -2257,7 +2261,7 @@ async function drawBottest($: $, els: Els): Promise<RenderElement[]> {
 // allow.toml decide, and nothing here passes --yes except `u`'s delete, which
 // the person's key press asks for. Pure rules are in ./autopilot; every `$`
 // call is here. Keys: q the card (pane), u undo (pane and band); a draft's
-// ⏎ e x o in the band. The kill switch: `/tg autopilot off`, "stop all".
+// ⏎ e x o in the band. The kill switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
 import type { PluginOptions } from 'claude-code'
 
 import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
@@ -2385,12 +2389,18 @@ function apAllowView(peer: PeerRef, allow: BotTest['allow']): AllowView {
   return blocked?.kind === 'botfather' ? { kind: 'error', text: readOnlyText(blocked) } : { kind: 'ok', isAllowed: blocked === null }
 }
 
-/** Whether tg's guard lets writes to the dialog through without --yes; the allowlist is read when not at hand. */
-async function apIsAllowed($: $, peer: PeerRef): Promise<boolean> {
-  const allow = (await read($, bottest)).allow
-  if (allow.status !== 'ok') await loadAllow($)
-  const view = apAllowView(peer, (await read($, bottest)).allow)
-  return view.kind === 'ok' && view.isAllowed
+/**
+ * Whether tg's guard lets writes to the dialog through without --yes; the allowlist is read when not at hand.
+ * `reread` reads it again before answering no, so the card's "press 3 again" sees a `! tg allow add` run since.
+ */
+async function apIsAllowed($: $, peer: PeerRef, reread = false): Promise<boolean> {
+  const allowed = async () => {
+    const view = apAllowView(peer, (await read($, bottest)).allow)
+    return view.kind === 'ok' && view.isAllowed
+  }
+  if ((await read($, bottest)).allow.status !== 'ok') await loadAllow($)
+  else if (reread && !(await allowed())) await loadAllow($)
+  return allowed()
 }
 
 // --- listening: the watch hub ---
@@ -2899,7 +2909,7 @@ async function apEdit($: $, dialogId: number, change: (dialog: ApDialog) => ApDi
 }
 
 async function apSetLevel($: $, dialog: ApDialog, level: ApLevel): Promise<void> {
-  if ((level === 'auto' || level === 'delegate') && !(await apIsAllowed($, dialog.peer))) {
+  if ((level === 'auto' || level === 'delegate') && !(await apIsAllowed($, dialog.peer, true))) {
     await apNotice($, `${level} sends by itself, so ${dialog.peer.arg} must be in allow.toml first: run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, then press ${level === 'auto' ? 3 : 4} again.`)
     return
   }
@@ -2918,7 +2928,7 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
     await refreshStatus($)
     return
   }
-  if ((dialog.level === 'auto' || dialog.level === 'delegate') && !(await apIsAllowed($, dialog.peer))) {
+  if ((dialog.level === 'auto' || dialog.level === 'delegate') && !(await apIsAllowed($, dialog.peer, true))) {
     await apNotice($, `Not started: ${dialog.level} needs ${dialog.peer.arg} in allow.toml. Run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, or pick 2 draft.`)
     return
   }
@@ -2936,7 +2946,7 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
   await apEdit($, id, one => one)
   await update($, autopilot, value => ({ ...value, running: [...value.running, id], view: { kind: 'none' } }))
   await apListen($, dialog.peer)
-  $.ui.toast(`tg: ${LEVEL_GLYPH[dialog.level]} autopilot ${dialog.level} on for ${dialog.peer.label}. /tg autopilot off stops every dialog.`)
+  $.ui.toast(`tg: ${LEVEL_GLYPH[dialog.level]} autopilot ${dialog.level} on for ${dialog.peer.label}. /tg stop stops every dialog.`)
   await refreshStatus($)
 }
 

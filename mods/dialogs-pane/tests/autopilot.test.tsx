@@ -3,7 +3,7 @@
 // the band, undo, the kill switch and the ledger. tg is answered by
 // process.run / process.spawn hooks beneath the plugin and the Speaker by a
 // model.complete hook; nothing real runs and nothing is sent anywhere.
-import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, RenderPropsOf } from 'claude-code'
+import type { CommandSpec, ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
 import type { TgMessage } from '../types'
@@ -73,6 +73,7 @@ type World = {
   asked: ModelCompleteInput[]
   status: (string | undefined)[]
   toasts: string[]
+  commands: CommandSpec[]
   store: Map<string, unknown>
   /** What `tg read` on the group answers (oldest first); tests append to it. */
   history: TgMessage[]
@@ -86,7 +87,7 @@ function world(
     send?: (ran: Ran) => ProcessRunResult
   } = {},
 ): World {
-  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], store: new Map(), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
+  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], store: new Map(), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
@@ -147,7 +148,10 @@ function world(
     const { Text } = $.ui.resolve(e)
     return <Text>engine band</Text>
   })
-  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('command.register', (_$, e) => {
+    seen.commands.push(e)
+    return { value: { command: e.name } }
+  })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.close', () => ({ value: undefined }))
   on('ui.panes', () => ({ value: [] }))
@@ -350,6 +354,31 @@ describe('auto', () => {
     await ui.unmount()
   })
 
+  test('added to allow.toml after a refusal: pressing 3 again sets auto and ⏎ starts it, the card still open', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const allow: number[] = []
+    const seen = world(on, { allow })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(tgCommand('wide'))
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+    await ui.press({ key: 'hint:down' })
+    await ui.press({ key: 'ap:card-open' })
+    await clock.settle()
+    await ui.press({ key: 'ap:level:auto' })
+    expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first/ })).toBeDefined()
+    allow.push(GROUP) // the owner runs `! tg allow add 1002 --yes`
+    const reads = seen.runs.filter(one => one.argv[1] === 'allow').length
+    await ui.press({ key: 'ap:level:auto' })
+    expect(seen.runs.filter(one => one.argv[1] === 'allow').length).toBe(reads + 1)
+    expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first/ })).toBeUndefined()
+    await ui.press({ key: 'ap:start' })
+    await clock.settle()
+    expect(await ui.find({ type: 'Text', text: /Not started/ })).toBeUndefined()
+    expect(seen.children).toHaveLength(1)
+    await ui.unmount()
+  })
+
   test('a send the guard refuses keeps the text as a draft with the reason', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { send: () => run(7, '', 'error: 1002 is not in the allowlist; pass --yes\n') })
@@ -423,6 +452,41 @@ describe('kill switch', () => {
     await clock.advance(60_000)
     expect(seen.asked).toEqual([])
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a dialog in the pane and press q.')
+  })
+
+  test('/tg is immediate, and /tg stop stops every dialog while main is mid-turn', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+    on('turn.complete', (_$, e) => ({ text: e.answer }))
+    const { child } = await handOver($, clock, seen, '3')
+    expect(seen.commands.find(one => one.name === 'tg')?.immediate).toBe(true)
+    await $.turn.start({ text: 'working on something', turnId: 't-0' })
+    watchMessage(child, message(500, 'is it merged?'))
+    await clock.advance(5_000)
+    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg autopilot off: 1 dialog stopped.')
+    await clock.settle()
+    expect(child?.isKilled).toBe(true)
+    await clock.advance(60_000)
+    expect(seen.asked).toEqual([])
+    expect(sends(seen)).toHaveLength(0)
+    await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't-0', reason: 'answer' })
+    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg autopilot: nothing was running.')
+  })
+
+  test('0 is stop all, and no other key in the pane, wide or compact', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const { ui, child } = await handOver($, clock, seen, '3')
+    const zeros = async () => (await ui.findAll({ type: 'Button' })).filter(one => one.props.hotkey === '0').map(one => one.key)
+    expect(await zeros()).toEqual(['ap:stop-all'])
+    await $.command.run(tgCommand('compact'))
+    expect(await zeros()).toEqual(['ap:stop-all'])
+    await ui.press({ key: 'ap:stop-all' })
+    await clock.settle()
+    expect(child?.isKilled).toBe(true)
+    expect(await zeros()).toEqual([])
+    await ui.unmount()
   })
 
   test('stop all in the pane does the same', async ($, on) => {
