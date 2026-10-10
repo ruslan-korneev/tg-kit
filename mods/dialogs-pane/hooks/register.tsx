@@ -1872,7 +1872,7 @@ import { failureText } from './ui/model'
 import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, type WriteResult } from './bottest/calls'
 import { diffPair, replyDiff } from './bottest/diff'
 import { chipAction, readOnlyReason, readOnlyText, type ReadOnly } from './bottest/keyboard'
-import { NO_TIMING, observe, pressed, stampFor } from './bottest/latency'
+import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
 import { BotBar, ChipRow, DiffView, NoticeRow, SendBox, chipKey } from './bottest/ui'
 import type { Button as KeyButton, MessageView } from './packet/types'
@@ -2087,7 +2087,7 @@ async function sendText($: $, text: string): Promise<void> {
   if (blocked !== null) return say($, 'warn', readOnlyText(blocked))
   if ((await read($, bottest)).busy !== null) return say($, 'info', 'tg is still running the last step; send again once it is done.')
   const at = await $.clock.now()
-  await update($, bottest, value => ({ ...value, busy: `sending ${oneLine(text, 24)}`, notice: null }))
+  await update($, bottest, value => ({ ...value, busy: `sending ${oneLine(text, 24)}`, notice: null, timing: sent(value.timing, at) }))
   const result = await runWrite($, calls.send(open.peer.arg), text)
   await finishWrite($, open.peer, { kind: 'send', text, wait_s: SEND_WAIT_S }, at, result)
   // Hand the keys back to the thread, or j/k would type into nothing.
