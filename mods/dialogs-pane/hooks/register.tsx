@@ -118,14 +118,15 @@ const selection = atom({ plugin: 'dialogs-pane', key: 'selection' } as const, NO
 const band = atom({ plugin: 'dialogs-pane', key: 'band' } as const, null)
 const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  configureAutopilot(options) // ── autopilot ──
   registerTriage(on)
   registerBottest(on)
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'tg',
       description: 'Open or focus the Telegram dialogs pane',
-      argumentHint: '[wide|compact|hidden]',
+      argumentHint: '[wide|compact|hidden|autopilot [off]]',
     })
     // $.store is shared by every session, so it only seeds a fresh one: after a
     // hot reload $.state still holds this session's mode, and the stored one
@@ -147,11 +148,13 @@ export const register: Register = on => {
     const started = await next(e)
     await startRouting($) // ── routing ──
     await startTriage($)
+    await startAutopilot($) // ── autopilot ──
     return started
   })
 
   on('command.run', { command: 'tg' }, async ($, e) => {
     const asked = e.args.trim()
+    if (asked === 'autopilot' || asked.startsWith('autopilot ')) return autopilotCommand($, asked.slice('autopilot'.length).trim()) // ── autopilot ──
     const named = MODE_ARGS.find(one => one === asked)
     if (asked !== '' && named === undefined) return { text: 'Usage: /tg [wide|compact|hidden]' }
     // Never chosen, or Hidden: open as the terminal suits; else as last left.
@@ -190,6 +193,8 @@ export const register: Register = on => {
     const els = $.ui.resolve(e)
     const width = e.props.bodyColumns
     const rows = e.props.scroll.bodyRows
+    const card = await drawAutopilotView($, els, width, rows) // ── autopilot ──
+    if (card !== null) return card
     const over = await drawOverlay($, els, width, rows)
     if (over !== null) return over
     return (await read($, mode)) === 'wide'
@@ -198,6 +203,9 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    // ── autopilot ── drafts, undo and summaries show in every mode.
+    const pilot = e.props.hasSurvey ? null : await drawAutopilotBand($, $.ui.resolve(e), e.props.bodyColumns)
+    if (pilot !== null) return pilot
     const event = await read($, band)
     if (e.props.hasSurvey || event === null || (await read($, mode)) !== 'hidden') return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
@@ -297,11 +305,12 @@ async function cycleMode($: $): Promise<void> {
 }
 
 async function refreshStatus($: $): Promise<void> {
+  const pilot = await autopilotStatus($) // ── autopilot ──
   if ((await read($, mode)) !== 'hidden') {
-    $.ui.status(undefined)
+    $.ui.status(pilot.line ?? (pilot.tail === '' ? undefined : `tg${pilot.tail}`))
     return
   }
-  $.ui.status(hiddenStatus(await read($, dialogs), await read($, band), (await read($, triage)).reply) + ledgerStatus(await read($, ledger)))
+  $.ui.status(pilot.line ?? hiddenStatus(await read($, dialogs), await read($, band), (await read($, triage)).reply) + ledgerStatus(await read($, ledger)) + pilot.tail)
 }
 
 async function poll($: $): Promise<void> {
@@ -526,6 +535,7 @@ async function drawDialogList($: $, els: Els, width: number, rows: number): Prom
   const list = await visibleTriaged($, loaded(load) ?? [], where)
   if (list.length === 0) return [(await emptySavedLens($, els)) ?? EmptyLens(els, where)]
   const markOf = await watchMarks($)
+  const pilotOf = await autopilotMarks($)
   const cursor = clamp(where.dialogCursor, list.length)
   const shown = windowAround(list, cursor, rows)
   const pinned = new Set((await read($, pins)).map(pin => pin.peer.id))
@@ -539,6 +549,7 @@ async function drawDialogList($: $, els: Els, width: number, rows: number): Prom
       now: at,
       onOpen: () => openThread($, dialog),
       mark: markOf(dialog.id),
+      autopilot: pilotOf(dialog.id),
     }),
   )
 }
@@ -608,8 +619,8 @@ async function drawWide($: $, els: Els, width: number, rows: number): Promise<Re
   const { Box } = els
   const where = await read($, nav)
   const open = await read($, thread)
-  // Chrome: header, lens bar, watch row, two dividers, tray (3), hints; bot testing under a thread.
-  const room = Math.max(4, rows - 9 - (open === null ? 0 : await bottestRows($, width)))
+  // Chrome: header, lens bar, watch row, autopilot row, two dividers, tray (3), hints; bot testing under a thread.
+  const room = Math.max(4, rows - 10 - (open === null ? 0 : await bottestRows($, width)))
   const listRows = Math.max(3, Math.floor(room * 0.4))
   const summary = await drawSummary($, els, width, false)
   return (
@@ -617,6 +628,7 @@ async function drawWide($: $, els: Els, width: number, rows: number): Promise<Re
       {Header(els, { title: 'tg · dialogs', mode: 'wide', onMode: () => cycleMode($) })}
       {LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
       {await drawWatchRow($, els)}
+      {await drawAutopilotRow($, els)}
       {...await drawDialogList($, els, width, listRows)}
       {Divider(els, { label: open?.peer.label ?? 'no dialog open', width })}
       {summary.element}
@@ -634,12 +646,13 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
   const where = await read($, nav)
   const open = await read($, thread)
   const isThread = where.view === 'thread' && open !== null
-  // Chrome: header, lens bar and watch row or summary and tray line, hints; 8-12 rows in all; bot testing under a thread.
-  const room = Math.max(5, Math.min(rows, 12) - 3 - (isThread ? await bottestRows($, width) : 0))
+  // Chrome: header, autopilot row, lens bar and watch row or summary and tray line, hints; 8-12 rows in all; bot testing under a thread.
+  const room = Math.max(5, Math.min(rows, 12) - 4 - (isThread ? await bottestRows($, width) : 0))
   const summary = isThread ? await drawSummary($, els, width, true) : { element: await drawWatchRow($, els), rows: 1 }
   return (
     <Box flexDirection="column">
       {Header(els, { title: isThread ? `tg · ${open.peer.label}` : 'tg · dialogs', mode: 'compact', onMode: () => cycleMode($) })}
+      {await drawAutopilotRow($, els)}
       {isThread ? null : LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
       {summary.element}
       {...isThread
@@ -2224,3 +2237,767 @@ async function drawBottest($: $, els: Els): Promise<RenderElement[]> {
     ...(box === null ? [] : [box]),
   ]
 }
+
+// ── autopilot ──
+// Phase 3 (docs/design/dialogs-pane.md §6): chosen dialogs answered as you.
+// Each running dialog listens on the watch hub (name 'autopilot', unbounded).
+// A burst waits for its gap and for the other side to stop typing (60 s at
+// most); the Speaker, one $.model.complete call with no tools, writes; the
+// dialog is read again right before sending; a reply leaves through the
+// bottest write runner as `tg send PEER - --plain --json`, so tg's guard and
+// allow.toml decide, and nothing here passes --yes except `u`'s delete, which
+// the person's key press asks for. Pure rules are in ./autopilot; every `$`
+// call is here. Keys: q the card (pane), u undo (pane and band); a draft's
+// ⏎ e x o in the band. The kill switch: `/tg autopilot off`, "stop all".
+import type { PluginOptions } from 'claude-code'
+
+import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
+import { AutopilotCard, AutopilotLedger, AutopilotRow, DraftBand, NoteBand, UndoBand, type AllowView } from './autopilot/components'
+import {
+  LEVEL_GLYPH,
+  defaultDialog,
+  parseDialogs as parseApDialogs,
+  parseQuiet,
+  parseRate,
+  rateText,
+  stepGap,
+  stepRate,
+  stepThreshold,
+  toggleTopic,
+  DEFAULT_QUIET,
+} from './autopilot/config'
+import { MAX_REGENERATIONS, NO_BURST, afterCheck, consume, gate, onDeleted, onEdited, onIncoming, onTyping, sentLastHour, wakeAt, type AfterCheck, type Burst } from './autopilot/burst'
+import { NO_AUTOPILOT, UNDO_MS, addEntry as addApEntry, draftsTail, logCheck, patchEntry, putDraft, undoStatus } from './autopilot/ledger'
+import {
+  HISTORY_LIMIT,
+  LISTEN_SYSTEM,
+  MORE_HISTORY_LIMIT,
+  SPEAKER_MAX_TOKENS,
+  SPEAKER_MODEL,
+  SPEAKER_TIMEOUT_MS,
+  checkPrompt,
+  listenPrompt,
+  parseChecked,
+  parseSpoken,
+  replyPrompt,
+  speakerSystem,
+  type Checked,
+  type Spoken,
+} from './autopilot/speaker'
+import { readOnlyReason as apReadOnly } from './bottest/keyboard'
+
+const autopilot = atom({ plugin: 'dialogs-pane', key: 'autopilot' } as const, NO_AUTOPILOT)
+const STORE_AUTOPILOT = 'autopilot.dialogs'
+const AP_HUB = 'autopilot'
+
+/** The mod option `speakerModel`, read at each load (SPEAKER_MODEL says why the default). */
+let speakerModel = SPEAKER_MODEL
+
+function configureAutopilot(options: PluginOptions): void {
+  const chosen = options.speakerModel
+  speakerModel = typeof chosen === 'string' && chosen.trim() !== '' ? chosen.trim() : SPEAKER_MODEL
+}
+
+/** One running dialog's live half: module state, so a reload starts it over from $.state's `running`. */
+type ApRuntime = {
+  peer: PeerRef
+  burst: Burst
+  timer: Timer | null
+  isBusy: boolean
+  /** Bumped on stop and when you answer yourself: a flow begun under an older turn ends without writing. */
+  turn: number
+  /** Past the hub's `ready`: replayed lines after that are messages a restart missed. */
+  wasLive: boolean
+  /** A send is running: your own outgoing message from it is not "you answered". */
+  isSending: boolean
+  sentIds: Set<number>
+  /** The burst's ledger entry, kept across its regenerations. */
+  seq: number | null
+  abort: AbortController | null
+}
+
+const apRuntimes = new Map<number, ApRuntime>()
+let apTicker: Timer | null = null
+
+/** From session.start (and a reload): the settings from $.store; dialogs still `running` in this session listen again. */
+async function startAutopilot($: $): Promise<void> {
+  const dialogs = parseApDialogs(await $.store.get(STORE_AUTOPILOT))
+  const state = await update($, autopilot, (value): Autopilot => ({
+    ...value,
+    dialogs,
+    running: value.running.filter(id => dialogs[String(id)] !== undefined),
+    phase: {},
+    view: value.view.kind === 'card' && dialogs[String(value.view.dialogId)] === undefined ? { kind: 'none' } : value.view,
+  }))
+  await Promise.all(
+    state.running.flatMap(id => {
+      const dialog = state.dialogs[String(id)]
+      return dialog === undefined ? [] : [apListen($, dialog.peer)]
+    }),
+  )
+  if (state.undo !== null) apStartTicker($)
+}
+
+async function apSetPhase($: $, dialogId: number, phase: ApPhase): Promise<void> {
+  await update($, autopilot, value => (value.phase[String(dialogId)] === phase ? value : { ...value, phase: { ...value.phase, [String(dialogId)]: phase } }))
+}
+
+async function apDialog($: $, dialogId: number): Promise<ApDialog | null> {
+  return (await read($, autopilot)).dialogs[String(dialogId)] ?? null
+}
+
+async function apLog($: $, entry: Omit<Autopilot['ledger'][number], 'seq'>): Promise<number> {
+  const next = await update($, autopilot, value => ({ ...value, ledger: addApEntry(value.ledger, entry) }))
+  return next.ledger.at(-1)?.seq ?? 0
+}
+
+async function apPatch($: $, seq: number, patch: Parameters<typeof patchEntry>[2]): Promise<void> {
+  await update($, autopilot, value => ({ ...value, ledger: patchEntry(value.ledger, seq, patch) }))
+}
+
+/** The text a ledger row and the band show for a message. */
+function messageText(message: MessageView | undefined): string {
+  if (message === undefined) return ''
+  return [message.media === null ? '' : `[${message.media.type}]`, message.text].filter(part => part !== '').join(' ')
+}
+
+function localMinutes(at: number): number {
+  const date = new Date(at)
+  return date.getHours() * 60 + date.getMinutes()
+}
+
+function apAllowView(peer: PeerRef, allow: BotTest['allow']): AllowView {
+  if (allow.status === 'idle' || allow.status === 'loading') return { kind: 'loading' }
+  if (allow.status === 'error') return { kind: 'error', text: failureText(allow.failure, 0) }
+  const blocked = apReadOnly(peer, allow.value)
+  return blocked?.kind === 'botfather' ? { kind: 'error', text: readOnlyText(blocked) } : { kind: 'ok', isAllowed: blocked === null }
+}
+
+/** Whether tg's guard lets writes to the dialog through without --yes; the allowlist is read when not at hand. */
+async function apIsAllowed($: $, peer: PeerRef): Promise<boolean> {
+  const allow = (await read($, bottest)).allow
+  if (allow.status !== 'ok') await loadAllow($)
+  const view = apAllowView(peer, (await read($, bottest)).allow)
+  return view.kind === 'ok' && view.isAllowed
+}
+
+// --- listening: the watch hub ---
+
+async function apListen($: $, peer: PeerRef): Promise<void> {
+  const rt: ApRuntime = { peer, burst: NO_BURST, timer: null, isBusy: false, turn: 0, wasLive: false, isSending: false, sentIds: new Set(), seq: null, abort: null }
+  apRuntimes.set(peer.id, rt)
+  await apSetPhase($, peer.id, 'listening')
+  await subscribeWatch($, peer, {
+    name: AP_HUB,
+    isBounded: false,
+    after: null,
+    onEvent: (event, isReplay) => onApEvent($, rt, event, isReplay),
+    onEnd: reason => onApEnd($, rt, reason),
+  })
+}
+
+/** Stops one dialog: its timer, its model call, its subscription; a burst in the works is logged as stopped. */
+async function apUnlisten($: $, dialogId: number): Promise<void> {
+  const rt = apRuntimes.get(dialogId)
+  if (rt === undefined) return
+  apRuntimes.delete(dialogId)
+  rt.turn += 1
+  rt.timer?.cancel()
+  rt.abort?.abort()
+  if (rt.seq !== null) await apPatch($, rt.seq, { outcome: { kind: 'skipped', reason: 'autopilot stopped' } })
+  await unsubscribeWatch($, dialogId, AP_HUB)
+}
+
+async function onApEnd($: $, rt: ApRuntime, reason: string): Promise<void> {
+  if (apRuntimes.get(rt.peer.id) !== rt) return
+  await apUnlisten($, rt.peer.id)
+  await update($, autopilot, value => ({ ...value, running: value.running.filter(id => id !== rt.peer.id) }))
+  $.ui.toast(`tg: autopilot stopped for ${rt.peer.label}: ${reason}`)
+}
+
+async function onApEvent($: $, rt: ApRuntime, event: WatchEvent, isReplay: boolean): Promise<void> {
+  if (apRuntimes.get(rt.peer.id) !== rt) return
+  const at = await $.clock.now()
+  switch (event.event) {
+    case 'ready':
+      rt.wasLive = true
+      return
+    case 'typing':
+      rt.burst = onTyping(rt.burst, event.action, at)
+      return apSchedule($, rt)
+    case 'delete':
+      rt.burst = onDeleted(rt.burst, event.ids)
+      return apSchedule($, rt)
+    case 'edit':
+      if (!event.message.out) rt.burst = onEdited(rt.burst, event.message)
+      return
+    case 'message':
+      break
+  }
+  const { message } = event
+  // What came before the autopilot started listening is not its to answer.
+  if (isReplay && !rt.wasLive) return
+  if (message.out) {
+    if (rt.isSending || rt.sentIds.has(message.id)) return
+    if (rt.burst.messages.length > 0 || rt.isBusy) await apYouAnswered($, rt)
+    return
+  }
+  // Joins, leaves and pins are not messages to answer.
+  if (message.service !== null) return
+  rt.burst = onIncoming(rt.burst, message, at)
+  await apSchedule($, rt)
+}
+
+/** You wrote in the dialog yourself: the burst is yours, its work stops, its stale draft goes. */
+async function apYouAnswered($: $, rt: ApRuntime): Promise<void> {
+  rt.turn += 1
+  rt.abort?.abort()
+  rt.timer?.cancel()
+  rt.timer = null
+  const seq = rt.seq
+  rt.seq = null
+  rt.burst = NO_BURST
+  if (seq !== null) await apPatch($, seq, { outcome: { kind: 'skipped', reason: 'you replied' } })
+  await update($, autopilot, value => ({ ...value, drafts: value.drafts.filter(one => one.peer.id !== rt.peer.id) }))
+  await apSetPhase($, rt.peer.id, 'listening')
+  await refreshStatus($)
+}
+
+/** Sets the burst's timer, or starts it; never awaits the answer, so the hub keeps delivering events meanwhile. */
+async function apSchedule($: $, rt: ApRuntime): Promise<void> {
+  if (apRuntimes.get(rt.peer.id) !== rt || rt.isBusy) return
+  const dialog = await apDialog($, rt.peer.id)
+  if (dialog === null) return
+  const at = await $.clock.now()
+  const wake = wakeAt(rt.burst, dialog.gapS * 1000, at)
+  rt.timer?.cancel()
+  rt.timer = null
+  switch (wake.kind) {
+    case 'idle':
+      return apSetPhase($, rt.peer.id, 'listening')
+    case 'wait':
+      rt.timer = $.clock.after(wake.at - at, () => {
+        rt.timer = null
+        apSchedule($, rt).catch(() => {
+          // A failed wake leaves the burst waiting; the next message or typing event schedules it again.
+        })
+      })
+      return apSetPhase($, rt.peer.id, wake.why === 'typing' ? 'typing' : 'gathering')
+    case 'go':
+      apRunBurst($, rt).catch(() => {
+        // apRunBurst logs its own failures in the ledger; nothing is left to report.
+      })
+      return
+  }
+}
+
+async function apRunBurst($: $, rt: ApRuntime): Promise<void> {
+  if (rt.isBusy) return
+  rt.isBusy = true
+  const turn = rt.turn
+  try {
+    await apAnswer($, rt, turn)
+  } catch (error) {
+    if (rt.seq !== null && rt.turn === turn) await apDone($, rt, rt.burst.messages.map(one => one.id), { kind: 'failed', reason: reasonOf(error) })
+  } finally {
+    rt.isBusy = false
+    rt.abort = null
+  }
+  if (apRuntimes.get(rt.peer.id) === rt) await apSchedule($, rt)
+}
+
+/** The burst is handled: its messages leave it, and its ledger entry gets the outcome. */
+async function apDone($: $, rt: ApRuntime, ids: readonly number[], outcome: ApOutcome, patch: Parameters<typeof patchEntry>[2] = {}): Promise<void> {
+  const seq = rt.seq
+  rt.burst = consume(rt.burst, ids)
+  rt.seq = null
+  if (seq !== null) await apPatch($, seq, { ...patch, outcome })
+  await refreshStatus($)
+}
+
+/** read_history: the dialog's last messages, oldest first; none when tg cannot say. */
+async function apHistory($: $, rt: ApRuntime, limit: number): Promise<MessageView[]> {
+  const result = await runTg($, tg.read(rt.peer.arg, { limit }))
+  return result.ok ? result.value : []
+}
+
+type Said<T> = { ok: true; value: T } | { ok: false; reason: string }
+
+async function apAsk<T>($: $, rt: ApRuntime, dialog: ApDialog, prompt: string, parse: (text: string) => T | null): Promise<Said<T>> {
+  rt.abort = new AbortController()
+  const result = await $.model.complete(
+    { model: speakerModel, system: speakerSystem(dialog), prompt, maxTokens: SPEAKER_MAX_TOKENS, timeoutMs: SPEAKER_TIMEOUT_MS },
+    { signal: rt.abort.signal },
+  )
+  if (!result.isAnswered) return { ok: false, reason: modelFailure(result) }
+  const value = parse(result.text)
+  return value === null ? { ok: false, reason: 'the Speaker answered in a shape the autopilot cannot read' } : { ok: true, value }
+}
+
+/**
+ * One burst: read_history, the Speaker, the gate; for a reply that may go out
+ * by itself, the dialog read again and, when it moved, the Speaker's check
+ * choice. Every await is followed by `alive()`: a stop or your own reply ends
+ * the flow there, before anything is written.
+ */
+async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
+  const alive = () => apRuntimes.get(rt.peer.id) === rt && rt.turn === turn
+  const dialog = await apDialog($, rt.peer.id)
+  const burst = rt.burst.messages
+  if (dialog === null || burst.length === 0) return
+  const ids = burst.map(one => one.id)
+  await apSetPhase($, rt.peer.id, 'thinking')
+  const incoming = burst.map(one => ({ id: one.id, text: messageText(one) }))
+  if (rt.seq === null) {
+    rt.seq = await apLog($, { at: await $.clock.now(), peer: rt.peer, level: dialog.level, incoming, reply: '', confidence: null, topics: [], checks: [], outcome: { kind: 'working' }, undo: null })
+  } else {
+    await apPatch($, rt.seq, { incoming, level: dialog.level })
+  }
+  const peer = peerOf(rt.peer, loaded(await read($, dialogs)) ?? [])
+  const history = await apHistory($, rt, HISTORY_LIMIT)
+  if (!alive()) return
+
+  if (dialog.level === 'listen') {
+    rt.abort = new AbortController()
+    const result = await $.model.complete(
+      { model: speakerModel, system: LISTEN_SYSTEM, prompt: listenPrompt({ peer, burst, history }), maxTokens: 200, timeoutMs: SPEAKER_TIMEOUT_MS },
+      { signal: rt.abort.signal },
+    )
+    if (!alive()) return
+    if (!result.isAnswered) return apDone($, rt, ids, { kind: 'failed', reason: modelFailure(result) })
+    const text = oneLine(result.text.trim(), 200)
+    const seq = rt.seq ?? 0
+    await update($, autopilot, value => ({ ...value, notes: [...value.notes.filter(one => one.peer.id !== rt.peer.id), { seq, peer: rt.peer, text }] }))
+    return apDone($, rt, ids, { kind: 'listened' }, { reply: text })
+  }
+
+  let spoken = await apAsk($, rt, dialog, replyPrompt({ peer, burst, history, canReadMore: true }), parseSpoken)
+  if (spoken.ok && spoken.value.action === 'read_history') {
+    const more = await apHistory($, rt, MORE_HISTORY_LIMIT)
+    if (!alive()) return
+    spoken = await apAsk($, rt, dialog, replyPrompt({ peer, burst, history: more, canReadMore: false }), parseSpoken)
+  }
+  if (!alive()) return
+  if (!spoken.ok) return apDone($, rt, ids, { kind: 'failed', reason: spoken.reason })
+  const said = spoken.value
+  if (said.action === 'none' || said.action === 'read_history') {
+    return apDone($, rt, ids, { kind: 'skipped', reason: said.reason === '' ? 'nothing to answer' : said.reason }, { confidence: said.confidence, topics: said.topics })
+  }
+  const at = await $.clock.now()
+  const verdict = gate(dialog, { ...said, action: said.action }, {
+    sentLastHour: sentLastHour((await read($, autopilot)).ledger, rt.peer.id, at),
+    minutes: localMinutes(at),
+    isAllowed: await apIsAllowed($, rt.peer),
+  })
+  if (rt.seq !== null) await apPatch($, rt.seq, { reply: said.text, confidence: said.confidence, topics: said.topics })
+  if (!alive()) return
+  if (verdict.kind === 'draft') return apToDraft($, rt, ids, said, verdict.reasons)
+
+  // Check before sending: read the dialog again.
+  await apSetPhase($, rt.peer.id, 'checking')
+  const fresh = await apFresh($, rt, ids)
+  if (!alive()) return
+  if (fresh === null) return apYouAnswered($, rt)
+  let next: AfterCheck = 'send'
+  let confidence = said.confidence
+  if (fresh.length > 0) {
+    const checked: Said<Checked> = await apAsk($, rt, dialog, checkPrompt({ peer, burst, reply: said.text, fresh }), parseChecked)
+    if (!alive()) return
+    if (!checked.ok) return apToDraft($, rt, [...ids, ...fresh.map(one => one.id)], said, [`check failed: ${checked.reason}`])
+    const choice = checked.value.choice
+    if (rt.seq !== null) {
+      const seq = rt.seq
+      await update($, autopilot, value => ({ ...value, ledger: logCheck(value.ledger, seq, choice) }))
+    }
+    // The draft's confidence as of the new messages: past the regeneration cap it decides send or draft.
+    confidence = checked.value.confidence ?? confidence
+    next = afterCheck(choice, rt.burst.regenerations, confidence, dialog.threshold)
+  }
+  const all = [...ids, ...(fresh ?? []).map(one => one.id)]
+  switch (next) {
+    case 'regenerate':
+      // The new messages are in the burst; a new gap from now, then the Speaker writes it again.
+      rt.burst = { ...rt.burst, regenerations: rt.burst.regenerations + 1, lastAt: await $.clock.now() }
+      return apSetPhase($, rt.peer.id, 'gathering')
+    case 'draft':
+      return apToDraft($, rt, all, { ...said, confidence }, [`regenerated ${MAX_REGENERATIONS}×, conf < ${dialog.threshold.toFixed(2)}`])
+    case 'send':
+      return apSendReply($, rt, turn, all, said)
+    case 'send_then_answer':
+      return apSendReply($, rt, turn, ids, said)
+  }
+}
+
+/**
+ * Reads the dialog again before sending: the incoming messages newer than the
+ * burst (tg's view joined with the watch's), now part of the burst; null when
+ * a message of yours came meanwhile.
+ */
+async function apFresh($: $, rt: ApRuntime, ids: readonly number[]): Promise<MessageView[] | null> {
+  const newest = Math.max(...ids)
+  const result = await runTg($, tg.read(rt.peer.arg, { limit: 10 }))
+  // tg could not read: the watch's view stands alone (it is live, so it lags by a moment at most).
+  const later = result.ok ? result.value.filter(one => one.id > newest) : []
+  if (later.some(one => one.out && !rt.sentIds.has(one.id))) return null
+  const at = await $.clock.now()
+  for (const message of later) {
+    if (!message.out && message.service === null) rt.burst = onIncoming(rt.burst, message, at)
+  }
+  return rt.burst.messages.filter(one => !ids.includes(one.id))
+}
+
+async function apToDraft($: $, rt: ApRuntime, ids: readonly number[], said: Spoken, reasons: string[]): Promise<void> {
+  const seq = rt.seq ?? 0
+  const last = rt.burst.messages.filter(one => ids.includes(one.id)).at(-1)
+  const draft: ApDraft = { seq, peer: rt.peer, incoming: messageText(last), text: said.text, confidence: said.confidence, reasons, state: { kind: 'ready' } }
+  await update($, autopilot, value => ({ ...value, drafts: putDraft(value.drafts, draft) }))
+  await apDone($, rt, ids, { kind: 'drafted', reasons })
+}
+
+/** `tg send PEER - --plain --json`: the text on stdin, sent as written; no --yes, so the guard decides. */
+function apSendArgv(peerArg: string): string[] {
+  return ['tg', 'send', peerArg, '-', '--plain', '--json']
+}
+
+function writeFailure(result: WriteResult & { ok: false }, peer: PeerRef, at: number): string {
+  const why = failureText(result.failure, at)
+  return result.isRefused ? `${why} ${readOnlyText({ kind: 'not-allowed', arg: peer.arg })}` : why
+}
+
+async function apSendReply($: $, rt: ApRuntime, turn: number, ids: readonly number[], said: Spoken): Promise<void> {
+  const isRunning = (await read($, autopilot)).running.includes(rt.peer.id)
+  if (apRuntimes.get(rt.peer.id) !== rt || rt.turn !== turn || !isRunning) return
+  await apSetPhase($, rt.peer.id, 'sending')
+  rt.isSending = true
+  let result: WriteResult
+  try {
+    result = await runWrite($, apSendArgv(rt.peer.arg), said.text)
+  } finally {
+    rt.isSending = false
+  }
+  const at = await $.clock.now()
+  if (!result.ok) {
+    // The text is not lost: it waits as a draft, with tg's reason.
+    return apToDraft($, rt, ids, said, [writeFailure(result, rt.peer, at)])
+  }
+  const sent = result.sent.map(one => one.id)
+  for (const id of sent) rt.sentIds.add(id)
+  const seq = rt.seq ?? 0
+  await apDone($, rt, ids, { kind: 'sent', ids: sent, by: 'auto' }, { undo: { state: 'open', until: at + UNDO_MS } })
+  await update($, autopilot, value => ({
+    ...value,
+    now: at,
+    undo: { seq, peer: rt.peer, ids: sent, text: said.text, confidence: said.confidence, until: at + UNDO_MS },
+  }))
+  apStartTicker($)
+  await refreshStatus($)
+}
+
+// --- undo: `u` within 30 s ---
+
+function apStartTicker($: $): void {
+  if (apTicker !== null) return
+  apTicker = $.clock.every(1000, () => {
+    apTick($).catch(() => {
+      // A missed tick only holds the countdown one second.
+    })
+  })
+}
+
+async function apTick($: $): Promise<void> {
+  const at = await $.clock.now()
+  const state = await update($, autopilot, value => ({ ...value, now: at }))
+  if (state.undo !== null && at >= state.undo.until) await apCloseUndo($, { state: 'expired' })
+  if ((await read($, autopilot)).undo === null) {
+    apTicker?.cancel()
+    apTicker = null
+  }
+  await refreshStatus($)
+}
+
+async function apCloseUndo($: $, undo: ApUndo): Promise<void> {
+  await update($, autopilot, value => (value.undo === null ? value : { ...value, undo: null, ledger: patchEntry(value.ledger, value.undo.seq, { undo }) }))
+}
+
+/** `u`: deletes the last auto reply with `tg delete PEER ID --yes`; the key press is the consent --yes stands for. */
+async function apUndo($: $): Promise<void> {
+  const undo = (await read($, autopilot)).undo
+  const at = await $.clock.now()
+  if (undo === null || at >= undo.until) {
+    $.ui.toast('tg: nothing to undo; the 30 s window is over.')
+    return
+  }
+  const result = await runWrite($, ['tg', 'delete', undo.peer.arg, ...undo.ids.map(String), '--yes', '--json'])
+  if (result.ok) {
+    await apCloseUndo($, { state: 'undone' })
+    $.ui.toast(`tg: deleted the auto reply in ${undo.peer.label}.`)
+  } else {
+    const reason = failureText(result.failure, at)
+    await apCloseUndo($, { state: 'failed', reason })
+    $.ui.toast(`tg: could not delete the auto reply: ${reason}`)
+  }
+  await refreshStatus($)
+}
+
+// --- drafts in the band ---
+
+async function apDraftOf($: $): Promise<ApDraft | null> {
+  return (await read($, autopilot)).drafts[0] ?? null
+}
+
+async function apSetDraft($: $, seq: number, change: (draft: ApDraft) => ApDraft): Promise<void> {
+  await update($, autopilot, value => ({ ...value, drafts: value.drafts.map(one => (one.seq === seq ? change(one) : one)) }))
+}
+
+/** ⏎ on a draft: your press sends it, through the same guard. */
+async function apSendDraft($: $): Promise<void> {
+  const draft = await apDraftOf($)
+  if (draft === null || draft.state.kind === 'sending') return
+  await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'sending' } }))
+  const rt = apRuntimes.get(draft.peer.id)
+  if (rt !== undefined) rt.isSending = true
+  let result: WriteResult
+  try {
+    result = await runWrite($, apSendArgv(draft.peer.arg), draft.text)
+  } finally {
+    if (rt !== undefined) rt.isSending = false
+  }
+  if (!result.ok) {
+    const reason = writeFailure(result, draft.peer, await $.clock.now())
+    await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'failed', reason } }))
+    return
+  }
+  const sent = result.sent.map(one => one.id)
+  for (const id of sent) rt?.sentIds.add(id)
+  await update($, autopilot, value => ({
+    ...value,
+    drafts: value.drafts.filter(one => one.seq !== draft.seq),
+    ledger: patchEntry(value.ledger, draft.seq, { reply: draft.text, outcome: { kind: 'sent', ids: sent, by: 'you' } }),
+  }))
+  await refreshStatus($)
+}
+
+async function apDropDraft($: $): Promise<void> {
+  const draft = await apDraftOf($)
+  if (draft === null) return
+  await update($, autopilot, value => ({
+    ...value,
+    drafts: value.drafts.filter(one => one.seq !== draft.seq),
+    ledger: patchEntry(value.ledger, draft.seq, { outcome: { kind: 'dropped' } }),
+  }))
+  await refreshStatus($)
+}
+
+/** `o` on a draft or a summary: the pane, on that dialog. */
+async function apOpen($: $, peer: PeerRef): Promise<void> {
+  if ((await read($, mode)) === 'hidden') await setMode($, defaultMode(undefined))
+  const listed = (loaded(await read($, dialogs)) ?? []).find(one => one.id === peer.id)
+  await openThread($, listed ?? dialogOfPeer(peer))
+}
+
+/** The band in every mode: an undoable auto reply first (it has 30 s), then a draft, then a summary. */
+async function drawAutopilotBand($: $, els: Els, width: number): Promise<RenderElement | null> {
+  const state = await read($, autopilot)
+  if (state.undo !== null && state.now < state.undo.until) {
+    return UndoBand(els, { undo: state.undo, now: state.now, onUndo: () => apUndo($), onDismiss: () => apCloseUndo($, { state: 'expired' }) })
+  }
+  const draft = state.drafts[0]
+  if (draft !== undefined) {
+    return DraftBand(els, {
+      draft,
+      more: state.drafts.length - 1,
+      width,
+      onSend: () => apSendDraft($),
+      onEdit: () => apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'editing' } })),
+      onSave: text => apSetDraft($, draft.seq, one => ({ ...one, text: text.trim() === '' ? one.text : text, state: { kind: 'ready' } })),
+      onDrop: () => apDropDraft($),
+      onOpen: () => apOpen($, draft.peer),
+    })
+  }
+  const note = state.notes.at(-1)
+  if (note === undefined) return null
+  const dismiss = () => update($, autopilot, value => ({ ...value, notes: value.notes.filter(one => one.seq !== note.seq) }))
+  return NoteBand(els, {
+    note,
+    width,
+    onDismiss: dismiss,
+    onOpen: async () => {
+      await dismiss()
+      await apOpen($, note.peer)
+    },
+  })
+}
+
+// --- the card, the ledger tab, the pane's row, the list marks ---
+
+/** `q`: the card for the open thread's dialog, or the one at the cursor; again closes it. */
+async function apToggleCard($: $): Promise<void> {
+  if ((await read($, autopilot)).view.kind !== 'none') {
+    await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
+    return
+  }
+  const peer = await watchTarget($)
+  if (peer === undefined) {
+    $.ui.toast('tg: put the cursor on a dialog, then press q for its autopilot card.')
+    return
+  }
+  await update($, autopilot, value => ({
+    ...value,
+    dialogs: value.dialogs[String(peer.id)] === undefined ? { ...value.dialogs, [String(peer.id)]: defaultDialog(peer) } : value.dialogs,
+    view: { kind: 'card', dialogId: peer.id, notice: null },
+  }))
+  // Fresh: an allow added in the prompt since the last read shows at once.
+  loadAllow($).catch(() => {
+    // loadAllow records its own failure, and the card shows it.
+  })
+}
+
+async function apNotice($: $, notice: string | null): Promise<void> {
+  await update($, autopilot, value => (value.view.kind === 'card' ? { ...value, view: { ...value.view, notice } } : value))
+}
+
+/** A change from the card: kept in $.state and $.store at once. */
+async function apEdit($: $, dialogId: number, change: (dialog: ApDialog) => ApDialog): Promise<void> {
+  const next = await update($, autopilot, value => {
+    const current = value.dialogs[String(dialogId)]
+    return current === undefined ? value : { ...value, dialogs: { ...value.dialogs, [String(dialogId)]: change(current) } }
+  })
+  await $.store.set(STORE_AUTOPILOT, next.dialogs)
+}
+
+async function apSetLevel($: $, dialog: ApDialog, level: ApLevel): Promise<void> {
+  if (level === 'auto' && !(await apIsAllowed($, dialog.peer))) {
+    await apNotice($, `auto sends by itself, so ${dialog.peer.arg} must be in allow.toml first: run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, then press 3 again.`)
+    return
+  }
+  await apNotice($, null)
+  await apEdit($, dialog.peer.id, one => ({ ...one, level }))
+}
+
+/** ⏎ in the card: start the dialog (auto needs allow.toml), or stop it. */
+async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
+  const id = dialog.peer.id
+  if ((await read($, autopilot)).running.includes(id)) {
+    await apUnlisten($, id)
+    await update($, autopilot, value => ({ ...value, running: value.running.filter(one => one !== id), phase: { ...value.phase, [String(id)]: 'listening' } }))
+    $.ui.toast(`tg: autopilot off for ${dialog.peer.label}.`)
+    await refreshStatus($)
+    return
+  }
+  if (dialog.level === 'auto' && !(await apIsAllowed($, dialog.peer))) {
+    await apNotice($, `Not started: auto needs ${dialog.peer.arg} in allow.toml. Run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, or pick 2 draft.`)
+    return
+  }
+  await apEdit($, id, one => one)
+  await update($, autopilot, value => ({ ...value, running: [...value.running, id], view: { kind: 'none' } }))
+  await apListen($, dialog.peer)
+  $.ui.toast(`tg: ${LEVEL_GLYPH[dialog.level]} autopilot ${dialog.level} on for ${dialog.peer.label}. /tg autopilot off stops every dialog.`)
+  await refreshStatus($)
+}
+
+/** The kill switch: every dialog stops listening, every timer and model call is cut. */
+async function apStopAll($: $): Promise<number> {
+  const running = (await read($, autopilot)).running
+  await Promise.all(running.map(id => apUnlisten($, id)))
+  await update($, autopilot, value => ({ ...value, running: [], phase: {} }))
+  await refreshStatus($)
+  return running.length
+}
+
+/** `/tg autopilot [off]`. */
+async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
+  if (args === 'off') {
+    const stopped = await apStopAll($)
+    return { text: stopped === 0 ? 'tg autopilot: nothing was running.' : `tg autopilot off: ${stopped} dialog${stopped === 1 ? '' : 's'} stopped.` }
+  }
+  if (args !== '') return { text: 'Usage: /tg autopilot [off]' }
+  const state = await read($, autopilot)
+  const lines = state.running.flatMap(id => {
+    const dialog = state.dialogs[String(id)]
+    return dialog === undefined ? [] : [`${LEVEL_GLYPH[dialog.level]} ${dialog.peer.label}: ${dialog.level}, ${rateText(dialog.perHour)}, ${state.phase[String(id)] ?? 'listening'}`]
+  })
+  return { text: lines.length === 0 ? 'tg autopilot: off. Open a dialog in the pane and press q.' : ['tg autopilot:', ...lines].join('\n') }
+}
+
+/** The card or the ledger tab in place of the pane while one is open. */
+async function drawAutopilotView($: $, els: Els, width: number, rows: number): Promise<RenderElement | null> {
+  const state = await read($, autopilot)
+  const view = state.view
+  if (view.kind === 'none') return null
+  const close = () => update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
+  if (view.kind === 'ledger') {
+    const at = await $.clock.now()
+    return AutopilotLedger(els, { ledger: state.ledger, now: Math.max(at, state.now), rows, width, onCard: null, onClose: close })
+  }
+  const dialog = state.dialogs[String(view.dialogId)]
+  if (dialog === undefined) return null
+  const id = dialog.peer.id
+  const edit = (change: (one: ApDialog) => ApDialog) => apEdit($, id, change)
+  return AutopilotCard(els, {
+    dialog,
+    isRunning: state.running.includes(id),
+    phase: state.phase[String(id)],
+    allow: apAllowView(dialog.peer, (await read($, bottest)).allow),
+    notice: view.notice,
+    width,
+    onLevel: level => apSetLevel($, dialog, level),
+    onBrief: (field, text) => edit(one => ({ ...one, brief: { ...one.brief, [field]: text.trim() } })),
+    onRate: by => edit(one => ({ ...one, perHour: stepRate(one.perHour, by) })),
+    onRateText: async text => {
+      const parsed = parseRate(text)
+      if (!parsed.ok) return apNotice($, `"${text}" is not a rate: a whole number of replies per hour, or ∞.`)
+      await apNotice($, null)
+      await edit(one => ({ ...one, perHour: parsed.value }))
+    },
+    onGap: by => edit(one => ({ ...one, gapS: stepGap(one.gapS, by) })),
+    onConf: by => edit(one => ({ ...one, threshold: stepThreshold(one.threshold, by) })),
+    onTopic: (topic: ApTopic) => edit(one => ({ ...one, topics: toggleTopic(one.topics, topic) })),
+    onQuiet: () => edit(one => ({ ...one, quiet: one.quiet === null ? { ...DEFAULT_QUIET } : null })),
+    onQuietText: async text => {
+      const parsed = parseQuiet(text)
+      if (!parsed.ok) return apNotice($, `"${text}" is not a range: write it as 22:00-08:00, or off.`)
+      await apNotice($, null)
+      await edit(one => ({ ...one, quiet: parsed.value }))
+    },
+    onStart: () => apToggleRun($, dialog),
+    onEditBrief: () => moveRing($, 'ap:tone'),
+    onLedger: () => update($, autopilot, value => ({ ...value, view: { kind: 'ledger' } })),
+    onClose: close,
+  })
+}
+
+async function drawAutopilotRow($: $, els: Els): Promise<RenderElement> {
+  const state = await read($, autopilot)
+  return AutopilotRow(els, {
+    running: state.running.length,
+    drafts: state.drafts.length,
+    undo: state.undo,
+    now: state.now,
+    onCard: () => apToggleCard($),
+    onUndo: () => apUndo($),
+    onStopAll: async () => {
+      const stopped = await apStopAll($)
+      $.ui.toast(`tg autopilot off: ${stopped} dialog${stopped === 1 ? '' : 's'} stopped.`)
+    },
+  })
+}
+
+/** DialogRow's level mark for running dialogs: the glyph, and `auto 3/50` (sent this hour / limit). */
+async function autopilotMarks($: $): Promise<(dialogId: number) => { glyph: string; tail: string } | undefined> {
+  const state = await read($, autopilot)
+  const at = Math.max(state.now, await $.clock.now())
+  return dialogId => {
+    const dialog = state.dialogs[String(dialogId)]
+    if (dialog === undefined || !state.running.includes(dialogId)) return undefined
+    const tail = dialog.level === 'auto' ? `auto ${sentLastHour(state.ledger, dialogId, at)}/${dialog.perHour ?? '∞'}` : dialog.level
+    return { glyph: LEVEL_GLYPH[dialog.level], tail }
+  }
+}
+
+/** The status line: an open undo window owns it (`tg ⟳ … u undo 28s`); waiting drafts add a tail. */
+async function autopilotStatus($: $): Promise<{ line: string | null; tail: string }> {
+  const state = await read($, autopilot)
+  const line = state.undo !== null && state.now < state.undo.until ? undoStatus(state.undo, state.now) : null
+  return { line, tail: draftsTail(state.drafts) }
+}
+// ── /autopilot ──
