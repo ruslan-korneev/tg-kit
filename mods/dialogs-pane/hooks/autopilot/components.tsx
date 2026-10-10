@@ -221,7 +221,11 @@ export function AutopilotRow(
   )
 }
 
-/** A draft waiting for you (design §6 mockup); `e` swaps its second line for the text field. */
+/**
+ * A draft waiting for you (design §6 mockup); `e` swaps its second line for the
+ * text field. Band keys reach it once the band holds them (ctrl+x tab), as the
+ * triage band says too.
+ */
 export function DraftBand(
   els: Els,
   props: { draft: ApDraft; more: number; width: number; onSend: () => void; onEdit: () => void; onSave: (text: string) => void; onDrop: () => void; onOpen: () => void },
@@ -245,6 +249,7 @@ export function DraftBand(
           <Text dimColor wrap="truncate-end">{why === '' ? ' ' : `  ${why}`}</Text>
           {state.kind === 'sending' ? <Text dimColor>{`${GLYPH.working}sending`}</Text> : null}
           {state.kind === 'failed' ? <Text color={TOKEN.danger} wrap="truncate-end">{`${GLYPH.error} ${state.reason}`}</Text> : null}
+          <Text dimColor>ctrl+x tab:</Text>
           <Button key="ap:draft:send" plain autoFocus onPress={props.onSend}>
             ⏎ send
           </Button>
@@ -277,6 +282,7 @@ export function UndoBand(
         <Text color={TOKEN.accent}>{`${LEVEL_GLYPH.auto} `}</Text>
         {`${undo.peer.label} replied "${oneLine(undo.text, 40)}"${conf}`}
       </Text>
+      <Text dimColor>ctrl+x tab:</Text>
       <Button key="ap:band:undo-press" plain hotkey="u" autoFocus onPress={props.onUndo}>
         {`undo ${undoLeft(undo, props.now)}s`}
       </Button>
@@ -295,6 +301,7 @@ export function NoteBand({ Box, Text, Button }: Els, props: { note: ApNote; widt
         <Text color={TOKEN.accent}>{`${LEVEL_GLYPH.listen} `}</Text>
         {`${props.note.peer.label}: ${oneLine(props.note.text, Math.max(20, props.width - props.note.peer.label.length - 30))}`}
       </Text>
+      <Text dimColor>ctrl+x tab:</Text>
       <Button key="ap:note:open" plain hotkey="o" dimColor onPress={props.onOpen}>
         open
       </Button>
