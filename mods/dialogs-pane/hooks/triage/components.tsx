@@ -59,7 +59,7 @@ export function LensTabs(
   )
 }
 
-/** Under the lens bar: `w` on the dialog at the cursor, `f` for the lens editor, and how the watches are. */
+/** Under the lens bar: `w` on the dialog at the cursor, `z` for the lens editor, and how the watches are. */
 export function WatchRow(
   { Box, Button, Text }: Els,
   props: {
@@ -80,7 +80,7 @@ export function WatchRow(
       <Button key="watch" plain hotkey="w" dimColor onPress={props.onWatch}>
         {`${props.isWatched ? 'unwatch' : 'watch'}${target}`}
       </Button>
-      <Button key="lens-editor" plain hotkey="f" dimColor onPress={props.onLensEditor}>
+      <Button key="lens-editor" plain hotkey="z" dimColor onPress={props.onLensEditor}>
         {props.isSavedLens ? 'edit lens' : 'save lens'}
       </Button>
       {states.length === 0 ? null : (
@@ -145,7 +145,7 @@ export function summaryRows(summary: Summary | null): number {
 
 /**
  * The lens editor, in place of the dialog list: name, kinds, unread, query,
- * and the dialogs to pick (each row toggles). `f` saves; cancel has no
+ * and the dialogs to pick (each row toggles). `z` saves; cancel has no
  * hotkey, since Wide draws the thread's `h` beside the editor.
  */
 export function LensEditor(
@@ -213,7 +213,7 @@ export function LensEditor(
         )
       })}
       <Box flexDirection="row" gap={2}>
-        <Button key="lens:save" plain hotkey="f" onPress={props.onSave}>
+        <Button key="lens:save" plain hotkey="z" onPress={props.onSave}>
           save
         </Button>
         <Button key="lens:cancel" plain dimColor onPress={props.onCancel}>
@@ -233,7 +233,7 @@ export function LensEditor(
 export function EmptySavedLens({ Text }: Els, props: { lens: SavedLens }): RenderElement {
   return (
     <Text key="empty" dimColor wrap="wrap">
-      {`No dialogs in ${props.lens.name} (${describeLens(props.lens)}). Press f to edit it, 1 for All.`}
+      {`No dialogs in ${props.lens.name} (${describeLens(props.lens)}). Press z to edit it, 1 for All.`}
     </Text>
   )
 }

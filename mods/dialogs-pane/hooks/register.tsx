@@ -648,7 +648,7 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
 // Live updates through the watch hub, watched dialogs in Hidden mode, saved
 // lenses, summaries and needs-you ranking (design §5 ideas 11–14). Every `$`
 // function of the triage phase is in this block; its pure rules are in
-// ./triage. Keys: w watch, t summary, f lens editor, y needs-you, 4–9 lenses.
+// ./triage. Keys: w watch, t summary, z lens editor, y needs-you, 4–9 lenses.
 // `On`, `MessageView` and `failureText` come from the bottest block's imports
 // (imports hoist; one module may import a name once).
 
@@ -904,7 +904,7 @@ async function openLensEditor($: $): Promise<void> {
   const state = await read($, triage)
   const saved = state.lenses.find(lens => lens.id === state.lens)
   if (saved === undefined && state.lenses.length >= MAX_LENSES) {
-    $.ui.toast(`tg: ${MAX_LENSES} lenses at most; open one (4–9) and press f to edit or delete it.`)
+    $.ui.toast(`tg: ${MAX_LENSES} lenses at most; open one (4–9) and press z to edit or delete it.`)
     return
   }
   const id = `lens-${(await $.clock.now()).toString(36)}`

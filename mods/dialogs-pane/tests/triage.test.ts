@@ -303,7 +303,7 @@ describe('the open thread is live', () => {
 })
 
 describe('saved lenses', () => {
-  test('f saves the view as a lens tab on 4; editing kinds filters; delete removes it', async ($, on) => {
+  test('z saves the view as a lens tab on 4; editing kinds filters; delete removes it', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
