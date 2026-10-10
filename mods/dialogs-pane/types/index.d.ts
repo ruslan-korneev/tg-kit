@@ -331,7 +331,7 @@ export type Recorded = Recording & { stoppedAt: number; script: string; path: st
  */
 export type Timing = {
   watch: 'off' | 'starting' | 'live'
-  lastOut: { id: number; at: number } | null
+  lastOut: { at: number } | null
   lastPress: { at: number; messageId: number | null } | null
   measured: Record<string, number>
   pressedAt: Record<string, number>

@@ -261,4 +261,33 @@ describe('latency stamps', () => {
     expect((await ui.find({ key: 'msg:677811' }))?.text).toContain('⏱1.4s')
     await ui.unmount()
   })
+
+  test('a send from the box times the live reply from the local send, whatever the dates say', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    // Dates 59 min apart, as a fake tg's fixed ones are; the watch never echoes the send.
+    const mine = { ...MESSAGES[0], id: 677820, text: '/ping', date: '2026-10-10T11:01:00Z' }
+    const pong = { ...MESSAGES[2], id: 677821, text: 'pong', reply_to: 677820, date: '2026-10-10T12:00:00Z' }
+    world(on, { writes: () => out(0, { sent: [mine], replies: [] }) })
+    let release = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const line = (value: unknown) => `${JSON.stringify(value)}\n`
+    on('process.spawn', async function* () {
+      yield { stream: 'stdout' as const, text: line({ event: 'ready', peers: [] }) }
+      await gate
+      yield { stream: 'stdout' as const, text: line({ event: 'message', ...pong }) }
+      return { value: { code: 0, signal: null } }
+    })
+    const ui = await openBot($, clock)
+    const composing = ui.press({ key: 'bt:compose' })
+    await clock.advance(50)
+    await composing
+    await ui.input({ key: 'bt:send', text: '/ping' })
+    await clock.advance(1400)
+    release()
+    await clock.settle()
+    expect((await ui.find({ key: 'msg:677821' }))?.text).toContain('⏱1.4s')
+    await ui.unmount()
+  })
 })

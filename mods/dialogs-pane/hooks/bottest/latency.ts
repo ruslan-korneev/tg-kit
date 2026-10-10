@@ -27,7 +27,7 @@ function isBotReply(message: Pick<MessageView, 'out' | 'sender'>): boolean {
  * pressed (an edit answers a button; a later one, or another message's, does not).
  */
 export function observe(timing: Timing, kind: 'message' | 'edit', message: MessageView, at: number): Timing {
-  if (message.out) return kind === 'message' ? { ...timing, lastOut: { id: message.id, at } } : timing
+  if (message.out) return kind === 'message' ? { ...timing, lastOut: { at } } : timing
   if (!isBotReply(message)) return timing
   const press = timing.lastPress
   if (kind === 'edit') {
@@ -41,6 +41,15 @@ export function observe(timing: Timing, kind: 'message' | 'edit', message: Messa
   const from = Math.max(...[timing.lastOut?.at ?? null, press?.at ?? null].filter((one): one is number => one !== null && one <= at))
   if (!Number.isFinite(from)) return timing
   return { ...timing, measured: { ...timing.measured, [String(message.id)]: at - from } }
+}
+
+/**
+ * A send from the pane's box, `at` its local start: bot messages after it are
+ * timed from here, as from your message the watch shows. The watch may never
+ * show it (a fake tg's does not), and then only the dates were left.
+ */
+export function sent(timing: Timing, at: number): Timing {
+  return { ...timing, lastOut: { at } }
 }
 
 /** A press from the pane on `messageId`: later watch events time from it; `brought` came back with it. */

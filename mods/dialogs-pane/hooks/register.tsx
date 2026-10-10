@@ -128,15 +128,19 @@ export const register: Register = (on, options) => {
       description: 'Open or focus the Telegram dialogs pane',
       argumentHint: '[wide|compact|hidden|autopilot [off]]',
     })
+    // $.store is shared by every session, so it only seeds a fresh one: after a
+    // hot reload $.state still holds this session's mode, and the stored one
+    // may be another session's last /tg.
+    const isFresh = (await $.state.get({ plugin: 'dialogs-pane', key: 'mode' })).version === 0
     const kept = await $.store.get(STORE_MODE)
-    if (isMode(kept)) await update($, mode, () => kept)
+    if (isFresh && isMode(kept)) await update($, mode, () => kept)
     // Hidden keeps its status line fresh; an open pane keeps its list fresh.
     $.clock.every(POLL_MS, () => {
       poll($).catch(() => {
         // A failed poll leaves the last list on screen; the next one retries.
       })
     })
-    if (kept === 'hidden') {
+    if ((await read($, mode)) === 'hidden') {
       loadDialogs($).catch(() => {
         // The status line stays at `tg …` until the first poll lands.
       })
@@ -157,7 +161,8 @@ export const register: Register = (on, options) => {
     const kept = await $.store.get(STORE_MODE)
     const target = named ?? (isMode(kept) && kept !== 'hidden' ? kept : defaultMode(e.presentation))
     await setMode($, target)
-    if (target !== 'hidden' && (await read($, dialogs)).status !== 'ok') {
+    // Hidden needs the list too: its status line counts the unread.
+    if ((await read($, dialogs)).status !== 'ok') {
       loadDialogs($).catch(() => {
         // loadDialogs records its own failures in state; nothing is left to report.
       })
@@ -205,7 +210,7 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || event === null || (await read($, mode)) !== 'hidden') return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const isBot = event.kind === 'bot'
-    const room = Math.max(10, e.props.bodyColumns - event.label.length - 40)
+    const room = Math.max(10, e.props.bodyColumns - event.label.length - 52)
     return (
       <Box flexDirection="row" gap={2}>
         <Text wrap="truncate-end">
@@ -213,6 +218,9 @@ export const register: Register = (on, options) => {
           {`${event.label}: "${oneLine(event.text, room)}"`}
         </Text>
         {await bandLatency($, $.ui.resolve(e), event)}
+        {/* The engine gives band hotkeys and ⏎ the keys only once the band holds
+            them (ctrl+x tab or a click); typed at the prompt they are text. */}
+        <Text dimColor>ctrl+x tab:</Text>
         <Button key="band:main" plain autoFocus onPress={() => bandToMain($)}>
           ⏎ send to main
         </Button>
@@ -1877,7 +1885,7 @@ import { failureText } from './ui/model'
 import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, type WriteResult } from './bottest/calls'
 import { diffPair, replyDiff } from './bottest/diff'
 import { chipAction, readOnlyReason, readOnlyText, type ReadOnly } from './bottest/keyboard'
-import { NO_TIMING, observe, pressed, stampFor } from './bottest/latency'
+import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
 import { BotBar, ChipRow, DiffView, NoticeRow, SendBox, chipKey } from './bottest/ui'
 import type { Button as KeyButton, MessageView } from './packet/types'
@@ -2092,7 +2100,7 @@ async function sendText($: $, text: string): Promise<void> {
   if (blocked !== null) return say($, 'warn', readOnlyText(blocked))
   if ((await read($, bottest)).busy !== null) return say($, 'info', 'tg is still running the last step; send again once it is done.')
   const at = await $.clock.now()
-  await update($, bottest, value => ({ ...value, busy: `sending ${oneLine(text, 24)}`, notice: null }))
+  await update($, bottest, value => ({ ...value, busy: `sending ${oneLine(text, 24)}`, notice: null, timing: sent(value.timing, at) }))
   const result = await runWrite($, calls.send(open.peer.arg), text)
   await finishWrite($, open.peer, { kind: 'send', text, wait_s: SEND_WAIT_S }, at, result)
   // Hand the keys back to the thread, or j/k would type into nothing.
