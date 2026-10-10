@@ -174,6 +174,12 @@ describe('watched bots in Hidden mode', () => {
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect(await band.find({ type: 'Text', text: '@example_bot: "⚠ Something went wrong"' })).toBeDefined()
     expect(await band.find({ type: 'Text', text: '⏱2.0s' })).toBeDefined()
+    // Routing's ⏎ sends the watched reply itself, by its own id, even after the dialog moved on.
+    child?.line(event('message', { id: 677796, date: '2026-10-10T12:00:09Z', out: true, text: 'thanks' }))
+    await clock.settle()
+    expect((await band.find({ key: 'band:main' }))?.text).toContain('send to main')
+    await band.press({ key: 'band:main' })
+    expect(seen.runs.some(argv => argv.join(' ') === 'tg msg @example_bot 677795 --json')).toBe(true)
     await band.unmount()
   })
 
@@ -196,7 +202,7 @@ describe('watched bots in Hidden mode', () => {
       await clock.advance(60_000)
     }
     expect(seen.children).toHaveLength(7)
-    expect(seen.toasts.at(-1)).toBe('tg watch @example_bot: tg: lost the connection to Telegram')
+    expect(seen.toasts.at(-1)).toBe('tg watch @example_bot: tg watch: lost the connection to Telegram')
   })
 
   test('not logged in stops the watch without a restart', async ($, on) => {
@@ -230,11 +236,12 @@ describe('the open thread is live', () => {
     await $.command.run(tgCommand('compact'))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'dialog:1001' })
+    // Dev Team: no bot, so triage is the thread watch's only listener.
+    await ui.press({ key: 'dialog:1002' })
     await clock.settle()
     const child = seen.children[0]
-    // It replays from the newest message the thread already shows.
-    expect(child?.argv.slice(-2)).toEqual(['--after', '677792'])
+    // It replays from the newest message the thread already shows, and may idle out.
+    expect(child?.argv).toEqual(['tg', 'watch', '1002', '--jsonl', '--after', '677792', '--idle-exit', '15m'])
     child?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
     child?.line(event('message', { id: 677796, date: '2026-10-10T12:00:05Z', text: 'Live one' }))
     await clock.settle()
@@ -248,6 +255,26 @@ describe('the open thread is live', () => {
     await $.command.run(tgCommand('hidden'))
     await clock.settle()
     expect(child?.isKilled).toBe(true)
+    await ui.unmount()
+  })
+
+  test("a bot thread shares bot testing's one child; watching it keeps that child from idling out", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(tgCommand('compact'))
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+    await ui.press({ key: 'dialog:1001' })
+    await clock.settle()
+    expect(seen.children.map(child => child.argv)).toEqual([['tg', 'watch', '@example_bot', '--jsonl', '--idle-exit', '15m']])
+    await ui.press({ key: 'watch-thread' })
+    await clock.settle()
+    // An unbounded listener joined: the hub restarts its one child without --idle-exit,
+    // replaying after the newest message the thread showed.
+    expect(seen.children).toHaveLength(2)
+    expect(seen.children[0]?.isKilled).toBe(true)
+    expect(seen.children[1]?.argv).toEqual(['tg', 'watch', '@example_bot', '--jsonl', '--after', '677792'])
     await ui.unmount()
   })
 

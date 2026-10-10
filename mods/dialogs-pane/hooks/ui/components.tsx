@@ -3,7 +3,7 @@
 // how `h` treats function components. Handlers come in as closures.
 import type { ElementTable, RenderElement } from 'claude-code'
 
-import type { Lens, Load, Selection, TgDialog, TgMessage } from '../../types'
+import type { Lens, Load, TgDialog, TgMessage } from '../../types'
 import {
   GLYPH,
   LENSES,
@@ -98,10 +98,11 @@ export function DialogRow(
     dialog: TgDialog
     isCursor: boolean
     isOpen: boolean
+    isPinned: boolean
     width: number
     now: number
     onOpen: () => void
-    /** One glyph after `ro`: the watch mark. */
+    /** One glyph after `ro`/`⌁`: the watch mark. */
     mark?: { text: string; color?: string }
   },
 ): RenderElement {
@@ -110,7 +111,7 @@ export function DialogRow(
   const isUnread = dialog.unread > 0
   const badge = isUnread ? String(dialog.unread) : ''
   const time = shortTime(dialog.last_date, props.now)
-  const marks = isReadOnlyPeer(dialog) ? 'ro' : ''
+  const marks = isReadOnlyPeer(dialog) ? 'ro' : props.isPinned ? GLYPH.pinned : ''
   // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left.
   const nameWidth = Math.max(8, props.width - 21)
   return (
@@ -122,7 +123,7 @@ export function DialogRow(
       </Text>
       <Text bold>{badge.padStart(3)} </Text>
       <Text dimColor>{time.padStart(9)} </Text>
-      <Text color={TOKEN.warn}>{marks}</Text>
+      <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>
       {props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>}
     </Button>
   )
@@ -149,15 +150,19 @@ export function MessageCard(
     width: number
     now: number
     onPress: () => void
+    /** Bot testing: the reply's latency stamp, and pressable chips in place of the display row. */
+    stamp?: { text: string; isSlow: boolean } | null
+    buttonRow?: RenderElement | null
   },
 ): RenderElement {
   const { Box, Button, Text } = els
   const { message } = props
   const sender = senderLabel(message)
   const id = `#${message.id}`
+  const stamp = props.stamp ?? null
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
-  // cursor(1) time(11) sender(6) text, then " #id": one column spare so nothing wraps.
-  const textWidth = Math.max(10, props.width - 20 - id.length)
+  // cursor(1) time(11) sender(6) text, then " ⏱1.4s" and " #id": one column spare so nothing wraps.
+  const textWidth = Math.max(10, props.width - 20 - id.length - (stamp === null ? 0 : stamp.text.length + 1))
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
   return (
     <Box key={`card:${message.id}`} flexDirection="column">
@@ -168,64 +173,10 @@ export function MessageCard(
         <Text color={color} inverse={props.isSelected}>
           {pad(oneLine(body, textWidth), textWidth)}
         </Text>
+        {stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>}
         <Text dimColor> {id}</Text>
       </Button>
-      {message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
-    </Box>
-  )
-}
-
-/** What is selected; Send is a stub until the routing phase fills it. */
-export function PacketTray(
-  { Box, Text, Button }: Els,
-  props: {
-    size: 'full' | 'line'
-    selection: Selection
-    messages: readonly TgMessage[]
-    onSend: () => void
-    onWhole: () => void
-    onClear: () => void
-  },
-): RenderElement {
-  const chosen = props.messages.filter(message => props.selection.ids.includes(message.id))
-  const count = props.selection.ids.length
-  const summary =
-    chosen.length === 0
-      ? 'nothing selected: x selects, v a range, d the whole thread'
-      : chosen
-          .slice(0, 4)
-          .map(message => `#${message.id}`)
-          .join(' ') + (chosen.length > 4 ? ` +${chosen.length - 4}` : '')
-  const buttons = chosen.reduce((sum, message) => sum + message.buttons.flat().length, 0)
-  const media = chosen.filter(message => message.media !== null).length
-  const actions = (
-    <Box flexDirection="row" gap={2}>
-      <Button key="send" variant="primary" onPress={props.onSend}>
-        send
-      </Button>
-      <Button key="whole" plain hotkey="d" dimColor onPress={props.onWhole}>
-        all
-      </Button>
-      <Button key="clear" plain hotkey="c" dimColor onPress={props.onClear}>
-        clear
-      </Button>
-    </Box>
-  )
-  if (props.size === 'line') {
-    return (
-      <Box flexDirection="row" gap={2}>
-        <Text color={TOKEN.accent}>{`${count} selected`}</Text>
-        {actions}
-      </Box>
-    )
-  }
-  return (
-    <Box flexDirection="column">
-      <Text color={TOKEN.accent}>{`packet · ${count} msg`}</Text>
-      <Text dimColor wrap="truncate-end">
-        {count === 0 ? summary : `${summary} · ${buttons} buttons · ${media === 0 ? 'no media' : `${media} media`}`}
-      </Text>
-      {actions}
+      {props.buttonRow !== undefined ? props.buttonRow : message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
     </Box>
   )
 }

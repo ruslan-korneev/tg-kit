@@ -4,7 +4,7 @@ import type { BandEvent, Load, TgDialog, TgPeerKind, Triage, WatchedReply } from
 import { findTrigger } from '../packet/replay'
 import type { MessageView } from '../packet/types'
 import { GLYPH, statusText } from '../ui/model'
-import type { WatchEvent } from './watch'
+import type { WatchEvent } from '../watch/watch'
 
 /** Messages a watch keeps to find what a reply answers. */
 export const RECENT = 50
@@ -27,8 +27,9 @@ export const EMPTY_TRIAGE: Triage = {
 
 /** A thread's messages after one event, oldest first; a message seen twice is kept once. */
 export function applyToMessages<M extends { id: number }>(messages: readonly M[], event: WatchEvent, toMessage: (m: MessageView) => M): M[] {
-  switch (event.kind) {
+  switch (event.event) {
     case 'ready':
+    case 'typing':
       return [...messages]
     case 'delete':
       return messages.filter(one => !event.ids.includes(one.id))

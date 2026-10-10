@@ -9,7 +9,7 @@ import { EMPTY_TRIAGE, applyToDialogs, applyToMessages, hiddenStatus, latencyOf,
 import { heuristic, parseVerdicts, rank, rankPrompt, toAsk, verdictKey } from './needs'
 import { summaryPrompt } from './summary'
 import { triageDialogs } from './view'
-import { MAX_ATTEMPTS, ending, parseWatchLine, parseWatched, splitLines, watchArgv } from './watch'
+import { parseWatched } from './watch'
 
 const dialog = (over: Partial<TgDialog> & Pick<TgDialog, 'id'>): TgDialog => ({
   kind: 'user',
@@ -23,45 +23,8 @@ const dialog = (over: Partial<TgDialog> & Pick<TgDialog, 'id'>): TgDialog => ({
 })
 
 const NOBODY = { username: null, name: null }
-const line = (value: unknown) => JSON.stringify(value)
 
-describe('tg watch lines', () => {
-  test('the argv adds --after only on a restart', () => {
-    expect(watchArgv('@example_bot', null)).toEqual(['tg', 'watch', '@example_bot', '--jsonl', '--events', 'message,edit,delete'])
-    expect(watchArgv('me', 42).slice(-2)).toEqual(['--after', '42'])
-  })
-
-  test('pieces split into whole lines; a torn line waits for its end', () => {
-    const first = splitLines('', '{"event":"ready"}\n{"event":"mes')
-    expect(first).toEqual({ lines: ['{"event":"ready"}'], rest: '{"event":"mes' })
-    expect(splitLines(first.rest, 'sage"}\n\n')).toEqual({ lines: ['{"event":"message"}'], rest: '' })
-  })
-
-  test('message, edit, delete and ready parse; typing, junk and drifted shapes are skipped', () => {
-    expect(parseWatchLine(line({ event: 'ready', peers: [] }))).toEqual({ kind: 'ready' })
-    expect(parseWatchLine(line({ ...REPLY, event: 'message' }))).toEqual({ kind: 'message', message: REPLY })
-    expect(parseWatchLine(line({ ...REPLY, event: 'edit' }))?.kind).toBe('edit')
-    expect(parseWatchLine(line({ event: 'delete', chat_id: 1, ids: [5, 'x', 6] }))).toEqual({ kind: 'delete', ids: [5, 6] })
-    expect(parseWatchLine(line({ event: 'typing', chat_id: 1, action: 'typing' }))).toBeUndefined()
-    expect(parseWatchLine(line({ ...REPLY, event: 'message', id: 'nope' }))).toBeUndefined()
-    expect(parseWatchLine('not json')).toBeUndefined()
-  })
-
-  test('exit 1 restarts with a doubling, capped delay; the attempt limit stops it', () => {
-    expect(ending(1, 'error: lost the connection to Telegram', 0)).toEqual({ kind: 'restart', delayMs: 2000 })
-    expect(ending(1, '', 2)).toEqual({ kind: 'restart', delayMs: 8000 })
-    expect(ending(1, '', 5)).toEqual({ kind: 'restart', delayMs: 60_000 })
-    expect(ending(1, '', MAX_ATTEMPTS).kind).toBe('stop')
-  })
-
-  test('a flood wait restarts when it is over; auth, not-found and a missing tg stop', () => {
-    expect(ending(5, 'error: FLOOD_WAIT 23s', 0)).toEqual({ kind: 'restart', delayMs: 23_000 })
-    expect(ending(3, '', 0)).toEqual({ kind: 'stop', failure: { kind: 'auth' } })
-    expect(ending(4, 'error: no such peer', 0)).toEqual({ kind: 'stop', failure: { kind: 'not-found', message: 'no such peer' } })
-    expect(ending(null, '', 0)).toEqual({ kind: 'stop', failure: { kind: 'missing' } })
-    expect(ending(0, '', 0).kind).toBe('stop')
-  })
-
+describe('watched dialogs', () => {
   test('watched dialogs from $.store are checked entry by entry', () => {
     const good = { id: 1001, arg: '@example_bot', label: '@example_bot', kind: 'bot' }
     expect(parseWatched([good, { id: 'x' }, { ...good, kind: 'robot' }, null])).toEqual([good])
@@ -72,12 +35,12 @@ describe('tg watch lines', () => {
 describe('live merges', () => {
   test('a message is appended once, an edit replaces, a delete removes', () => {
     const same = <M,>(m: M) => m
-    const added = applyToMessages([SENT], { kind: 'message', message: REPLY }, same)
+    const added = applyToMessages([SENT], { event: 'message', message: REPLY }, same)
     expect(added.map(m => m.id)).toEqual([677790, 677791])
-    expect(applyToMessages(added, { kind: 'message', message: REPLY }, same)).toHaveLength(2)
-    const edited = applyToMessages(added, { kind: 'edit', message: { ...REPLY, text: 'Fixed' } }, same)
+    expect(applyToMessages(added, { event: 'message', message: REPLY }, same)).toHaveLength(2)
+    const edited = applyToMessages(added, { event: 'edit', message: { ...REPLY, text: 'Fixed' } }, same)
     expect(edited[1]?.text).toBe('Fixed')
-    expect(applyToMessages(edited, { kind: 'delete', ids: [677791] }, same).map(m => m.id)).toEqual([677790])
+    expect(applyToMessages(edited, { event: 'delete', chatId: REPLY.chat_id, ids: [677791] }, same).map(m => m.id)).toEqual([677790])
   })
 
   test('the dialog row takes the live message; incoming counts as unread, yours clears it', () => {
