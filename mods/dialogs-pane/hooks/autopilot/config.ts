@@ -3,7 +3,7 @@
 // narrowing of what $.store hands back. Pure.
 import type { ApBrief, ApDialog, ApLevel, ApTopic, PeerRef, TgPeerKind } from '../../types'
 
-export const AP_LEVELS = ['listen', 'draft', 'auto'] as const satisfies readonly ApLevel[]
+export const AP_LEVELS = ['listen', 'draft', 'auto', 'delegate'] as const satisfies readonly ApLevel[]
 export const AP_TOPICS = ['money', 'dates', 'promises', 'opinions', 'personal'] as const satisfies readonly ApTopic[]
 
 export const LEVEL_GLYPH = { listen: '◉', draft: '✎', auto: '⟳', delegate: '⚡' } as const satisfies Record<ApLevel, string>

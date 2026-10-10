@@ -120,13 +120,15 @@ const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
 
 export const register: Register = (on, options) => {
   configureAutopilot(options) // ── autopilot ──
+  configureDelegate(options) // ── delegate ──
+  registerDelegate(on) // ── delegate ──
   registerTriage(on)
   registerBottest(on)
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'tg',
       description: 'Open or focus the Telegram dialogs pane',
-      argumentHint: '[wide|compact|hidden|autopilot [off]]',
+      argumentHint: '[wide|compact|hidden|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
     })
     // $.store is shared by every session, so it only seeds a fresh one: after a
     // hot reload $.state still holds this session's mode, and the stored one
@@ -149,6 +151,7 @@ export const register: Register = (on, options) => {
     await startRouting($) // ── routing ──
     await startTriage($)
     await startAutopilot($) // ── autopilot ──
+    await startDelegate($) // ── delegate ──
     return started
   })
 
@@ -244,6 +247,7 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    dgOnTurn($, e.agentId, e.reason, e.answer) // ── delegate ──
     if (e.agentId === undefined) await update($, isMainBusy, () => false)
     const at = await $.clock.now()
     let closed: LedgerEntry[] = []
@@ -619,8 +623,9 @@ async function drawWide($: $, els: Els, width: number, rows: number): Promise<Re
   const { Box } = els
   const where = await read($, nav)
   const open = await read($, thread)
-  // Chrome: header, lens bar, watch row, autopilot row, two dividers, tray (3), hints; bot testing under a thread.
-  const room = Math.max(4, rows - 10 - (open === null ? 0 : await bottestRows($, width)))
+  // Chrome: header, lens bar, watch row, autopilot row, two dividers, tray (3), hints; bot testing under a thread; task cards.
+  const taskCards = await drawTaskCards($, els, width, 'wide') // ── delegate ──
+  const room = Math.max(4, rows - 10 - taskCards.rows - (open === null ? 0 : await bottestRows($, width)))
   const listRows = Math.max(3, Math.floor(room * 0.4))
   const summary = await drawSummary($, els, width, false)
   return (
@@ -629,6 +634,7 @@ async function drawWide($: $, els: Els, width: number, rows: number): Promise<Re
       {LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
       {await drawWatchRow($, els)}
       {await drawAutopilotRow($, els)}
+      {...taskCards.elements}
       {...await drawDialogList($, els, width, listRows)}
       {Divider(els, { label: open?.peer.label ?? 'no dialog open', width })}
       {summary.element}
@@ -646,13 +652,15 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
   const where = await read($, nav)
   const open = await read($, thread)
   const isThread = where.view === 'thread' && open !== null
-  // Chrome: header, autopilot row, lens bar and watch row or summary and tray line, hints; 8-12 rows in all; bot testing under a thread.
-  const room = Math.max(5, Math.min(rows, 12) - 4 - (isThread ? await bottestRows($, width) : 0))
+  // Chrome: header, autopilot row, lens bar and watch row or summary and tray line, hints; 8-12 rows in all; bot testing under a thread; a task line each.
+  const taskRows = await drawTaskCards($, els, width, 'compact') // ── delegate ──
+  const room = Math.max(5, Math.min(rows, 12) - 4 - taskRows.rows - (isThread ? await bottestRows($, width) : 0))
   const summary = isThread ? await drawSummary($, els, width, true) : { element: await drawWatchRow($, els), rows: 1 }
   return (
     <Box flexDirection="column">
       {Header(els, { title: isThread ? `tg · ${open.peer.label}` : 'tg · dialogs', mode: 'compact', onMode: () => cycleMode($) })}
       {await drawAutopilotRow($, els)}
+      {...taskRows.elements}
       {isThread ? null : LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
       {summary.element}
       {...isThread
@@ -719,6 +727,7 @@ async function startTriage($: $): Promise<void> {
 function registerTriage(on: On): void {
   on('session.end', async ($, e, next) => {
     await Promise.allSettled([...listening.keys()].map(id => stopListening($, id)))
+    await apReleaseAll($) // ── delegate ──
     return next(e)
   })
 }
@@ -2254,6 +2263,7 @@ import type { PluginOptions } from 'claude-code'
 import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
 import { AutopilotCard, AutopilotLedger, AutopilotRow, DraftBand, NoteBand, UndoBand, type AllowView } from './autopilot/components'
 import {
+  AP_LEVELS,
   LEVEL_GLYPH,
   defaultDialog,
   parseDialogs as parseApDialogs,
@@ -2329,8 +2339,10 @@ async function startAutopilot($: $): Promise<void> {
     phase: {},
     view: value.view.kind === 'card' && dialogs[String(value.view.dialogId)] === undefined ? { kind: 'none' } : value.view,
   }))
+  // ── delegate ── a reload keeps this session's leases; one another session took meanwhile stops here.
+  const kept = await apKeepLeases($, state.running)
   await Promise.all(
-    state.running.flatMap(id => {
+    kept.flatMap(id => {
       const dialog = state.dialogs[String(id)]
       return dialog === undefined ? [] : [apListen($, dialog.peer)]
     }),
@@ -2406,6 +2418,8 @@ async function apUnlisten($: $, dialogId: number): Promise<void> {
   rt.abort?.abort()
   if (rt.seq !== null) await apPatch($, rt.seq, { outcome: { kind: 'skipped', reason: 'autopilot stopped' } })
   await unsubscribeWatch($, dialogId, AP_HUB)
+  await dgStopTasksOf($, dialogId, 'autopilot stopped') // ── delegate ──
+  await apReleaseLease($, dialogId) // ── delegate ──
 }
 
 async function onApEnd($: $, rt: ApRuntime, reason: string): Promise<void> {
@@ -2523,10 +2537,10 @@ async function apHistory($: $, rt: ApRuntime, limit: number): Promise<MessageVie
 
 type Said<T> = { ok: true; value: T } | { ok: false; reason: string }
 
-async function apAsk<T>($: $, rt: ApRuntime, dialog: ApDialog, prompt: string, parse: (text: string) => T | null): Promise<Said<T>> {
+async function apAsk<T>($: $, rt: ApRuntime, dialog: ApDialog, prompt: string, parse: (text: string) => T | null, system = speakerSystem(dialog)): Promise<Said<T>> {
   rt.abort = new AbortController()
   const result = await $.model.complete(
-    { model: speakerModel, system: speakerSystem(dialog), prompt, maxTokens: SPEAKER_MAX_TOKENS, timeoutMs: SPEAKER_TIMEOUT_MS },
+    { model: speakerModel, system, prompt, maxTokens: SPEAKER_MAX_TOKENS, timeoutMs: SPEAKER_TIMEOUT_MS },
     { signal: rt.abort.signal },
   )
   if (!result.isAnswered) return { ok: false, reason: modelFailure(result) }
@@ -2571,15 +2585,27 @@ async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
     return apDone($, rt, ids, { kind: 'listened' }, { reply: text })
   }
 
-  let spoken = await apAsk($, rt, dialog, replyPrompt({ peer, burst, history, canReadMore: true }), parseSpoken)
-  if (spoken.ok && spoken.value.action === 'read_history') {
+  // ── delegate ── a delegate dialog's Speaker also has the task actions, and sees the running task.
+  const task = dialog.level === 'delegate' ? await dgLiveTask($, rt.peer.id) : null
+  const speak = (context: MessageView[], canReadMore: boolean): Promise<Said<DelegateSpoken>> => {
+    const prompt = replyPrompt({ peer, burst, history: context, canReadMore })
+    return dialog.level === 'delegate'
+      ? apAsk($, rt, dialog, `${prompt}\n${delegateInstructions(task)}`, parseDelegate, delegateSystem(dialog))
+      : apAsk($, rt, dialog, prompt, text => {
+          const spoken = parseSpoken(text)
+          return spoken === null ? null : { spoken, task: null }
+        })
+  }
+  let asked = await speak(history, true)
+  if (asked.ok && asked.value.spoken.action === 'read_history') {
     const more = await apHistory($, rt, MORE_HISTORY_LIMIT)
     if (!alive()) return
-    spoken = await apAsk($, rt, dialog, replyPrompt({ peer, burst, history: more, canReadMore: false }), parseSpoken)
+    asked = await speak(more, false)
   }
   if (!alive()) return
-  if (!spoken.ok) return apDone($, rt, ids, { kind: 'failed', reason: spoken.reason })
-  const said = spoken.value
+  if (!asked.ok) return apDone($, rt, ids, { kind: 'failed', reason: asked.reason })
+  const said = asked.value.spoken
+  if (asked.value.task !== null) await dgOnTaskAction($, rt.peer, asked.value.task, { peer, burst, history }) // ── delegate ──
   if (said.action === 'none' || said.action === 'read_history') {
     return apDone($, rt, ids, { kind: 'skipped', reason: said.reason === '' ? 'nothing to answer' : said.reason }, { confidence: said.confidence, topics: said.topics })
   }
@@ -2667,6 +2693,10 @@ function writeFailure(result: WriteResult & { ok: false }, peer: PeerRef, at: nu
 async function apSendReply($: $, rt: ApRuntime, turn: number, ids: readonly number[], said: Spoken): Promise<void> {
   const isRunning = (await read($, autopilot)).running.includes(rt.peer.id)
   if (apRuntimes.get(rt.peer.id) !== rt || rt.turn !== turn || !isRunning) return
+  // ── delegate ── share and commit-on-behalf stop the Speaker's text until you answer.
+  const stopped = await dgOutgoing($, rt.peer, said.text, rt.seq)
+  if (apRuntimes.get(rt.peer.id) !== rt || rt.turn !== turn) return
+  if (stopped !== null) return apToDraft($, rt, ids, said, [stopped])
   await apSetPhase($, rt.peer.id, 'sending')
   rt.isSending = true
   let result: WriteResult
@@ -2683,6 +2713,7 @@ async function apSendReply($: $, rt: ApRuntime, turn: number, ids: readonly numb
   const sent = result.sent.map(one => one.id)
   for (const id of sent) rt.sentIds.add(id)
   const seq = rt.seq ?? 0
+  await dgOnSent($, rt.peer.id, said.text, at) // ── delegate ──
   await apDone($, rt, ids, { kind: 'sent', ids: sent, by: 'auto' }, { undo: { state: 'open', until: at + UNDO_MS } })
   await update($, autopilot, value => ({
     ...value,
@@ -2797,6 +2828,8 @@ async function apOpen($: $, peer: PeerRef): Promise<void> {
 
 /** The band in every mode: an undoable auto reply first (it has 30 s), then a draft, then a summary. */
 async function drawAutopilotBand($: $, els: Els, width: number): Promise<RenderElement | null> {
+  const hold = await drawHoldBand($, els, width) // ── delegate ──
+  if (hold !== null) return hold
   const state = await read($, autopilot)
   if (state.undo !== null && state.now < state.undo.until) {
     return UndoBand(els, { undo: state.undo, now: state.now, onUndo: () => apUndo($), onDismiss: () => apCloseUndo($, { state: 'expired' }) })
@@ -2866,10 +2899,11 @@ async function apEdit($: $, dialogId: number, change: (dialog: ApDialog) => ApDi
 }
 
 async function apSetLevel($: $, dialog: ApDialog, level: ApLevel): Promise<void> {
-  if (level === 'auto' && !(await apIsAllowed($, dialog.peer))) {
-    await apNotice($, `auto sends by itself, so ${dialog.peer.arg} must be in allow.toml first: run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, then press 3 again.`)
+  if ((level === 'auto' || level === 'delegate') && !(await apIsAllowed($, dialog.peer))) {
+    await apNotice($, `${level} sends by itself, so ${dialog.peer.arg} must be in allow.toml first: run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, then press ${level === 'auto' ? 3 : 4} again.`)
     return
   }
+  if (level === 'delegate' && !(await dgWarned($, dialog))) return // ── delegate ── the one-time warning
   await apNotice($, null)
   await apEdit($, dialog.peer.id, one => ({ ...one, level }))
 }
@@ -2884,8 +2918,19 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
     await refreshStatus($)
     return
   }
-  if (dialog.level === 'auto' && !(await apIsAllowed($, dialog.peer))) {
-    await apNotice($, `Not started: auto needs ${dialog.peer.arg} in allow.toml. Run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, or pick 2 draft.`)
+  if ((dialog.level === 'auto' || dialog.level === 'delegate') && !(await apIsAllowed($, dialog.peer))) {
+    await apNotice($, `Not started: ${dialog.level} needs ${dialog.peer.arg} in allow.toml. Run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, or pick 2 draft.`)
+    return
+  }
+  // ── delegate ── one session answers a dialog: the lease in $.store says which.
+  const guardText = dialog.level === 'delegate' ? await dgGuardText($) : null
+  if (guardText !== null) {
+    await apNotice($, `Not started: ${guardText}`)
+    return
+  }
+  const lease = await apTakeLease($, id)
+  if (!lease.ok) {
+    await apNotice($, `Not started: ${dialog.peer.label} is ${lease.reason}. Stop it there first.`)
     return
   }
   await apEdit($, id, one => one)
@@ -2899,6 +2944,7 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
 async function apStopAll($: $): Promise<number> {
   const running = (await read($, autopilot)).running
   await Promise.all(running.map(id => apUnlisten($, id)))
+  await dgStopAll($, 'kill switch') // ── delegate ──
   await update($, autopilot, value => ({ ...value, running: [], phase: {} }))
   await refreshStatus($)
   return running.length
@@ -2910,12 +2956,14 @@ async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
     const stopped = await apStopAll($)
     return { text: stopped === 0 ? 'tg autopilot: nothing was running.' : `tg autopilot off: ${stopped} dialog${stopped === 1 ? '' : 's'} stopped.` }
   }
-  if (args !== '') return { text: 'Usage: /tg autopilot [off]' }
+  if (args.startsWith(SKIP_FLAG)) return dgSkipCommand($, args) // ── delegate ──
+  if (args !== '') return { text: `Usage: /tg autopilot [off | ${SKIP_FLAG}[=publish,delete]]` }
   const state = await read($, autopilot)
   const lines = state.running.flatMap(id => {
     const dialog = state.dialogs[String(id)]
     return dialog === undefined ? [] : [`${LEVEL_GLYPH[dialog.level]} ${dialog.peer.label}: ${dialog.level}, ${rateText(dialog.perHour)}, ${state.phase[String(id)] ?? 'listening'}`]
   })
+  lines.push(...(await dgTaskLines($))) // ── delegate ──
   return { text: lines.length === 0 ? 'tg autopilot: off. Open a dialog in the pane and press q.' : ['tg autopilot:', ...lines].join('\n') }
 }
 
@@ -2927,19 +2975,24 @@ async function drawAutopilotView($: $, els: Els, width: number, rows: number): P
   const close = () => update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
   if (view.kind === 'ledger') {
     const at = await $.clock.now()
-    return AutopilotLedger(els, { ledger: state.ledger, now: Math.max(at, state.now), rows, width, onCard: null, onClose: close })
+    const ledger = await dgLedger($, state.ledger, state.dialogs) // ── delegate ── with the guard's stop events
+    return AutopilotLedger(els, { ledger, now: Math.max(at, state.now), rows, width, onCard: null, onClose: close })
   }
   const dialog = state.dialogs[String(view.dialogId)]
   if (dialog === undefined) return null
   const id = dialog.peer.id
   const edit = (change: (one: ApDialog) => ApDialog) => apEdit($, id, change)
+  const allow = apAllowView(dialog.peer, (await read($, bottest)).allow)
   return AutopilotCard(els, {
     dialog,
     isRunning: state.running.includes(id),
     phase: state.phase[String(id)],
-    allow: apAllowView(dialog.peer, (await read($, bottest)).allow),
+    allow,
     notice: view.notice,
     width,
+    // ── delegate ── offered only for dialogs in allow.toml; its rows while it is the level.
+    levels: (allow.kind === 'ok' && allow.isAllowed) || dialog.level === 'delegate' ? AP_LEVELS : AP_LEVELS.filter(one => one !== 'delegate'),
+    extra: dialog.level === 'delegate' ? await drawDelegateRows($, els, dialog) : null,
     onLevel: level => apSetLevel($, dialog, level),
     onBrief: (field, text) => edit(one => ({ ...one, brief: { ...one.brief, [field]: text.trim() } })),
     onRate: by => edit(one => ({ ...one, perHour: stepRate(one.perHour, by) })),
@@ -2983,21 +3036,876 @@ async function drawAutopilotRow($: $, els: Els): Promise<RenderElement> {
 }
 
 /** DialogRow's level mark for running dialogs: the glyph, and `auto 3/50` (sent this hour / limit). */
-async function autopilotMarks($: $): Promise<(dialogId: number) => { glyph: string; tail: string } | undefined> {
+async function autopilotMarks($: $): Promise<(dialogId: number) => { glyph: string; tail: string; warn?: string } | undefined> {
   const state = await read($, autopilot)
+  const noStopsOf = await dgNoStopsOf($) // ── delegate ──
   const at = Math.max(state.now, await $.clock.now())
   return dialogId => {
     const dialog = state.dialogs[String(dialogId)]
     if (dialog === undefined || !state.running.includes(dialogId)) return undefined
     const tail = dialog.level === 'auto' ? `auto ${sentLastHour(state.ledger, dialogId, at)}/${dialog.perHour ?? '∞'}` : dialog.level
-    return { glyph: LEVEL_GLYPH[dialog.level], tail }
+    const warn = dialog.level === 'delegate' ? noStopsOf(dialogId) : null // ── delegate ──
+    return warn === null ? { glyph: LEVEL_GLYPH[dialog.level], tail } : { glyph: LEVEL_GLYPH[dialog.level], tail, warn }
   }
 }
 
 /** The status line: an open undo window owns it (`tg ⟳ … u undo 28s`); waiting drafts add a tail. */
 async function autopilotStatus($: $): Promise<{ line: string | null; tail: string }> {
   const state = await read($, autopilot)
-  const line = state.undo !== null && state.now < state.undo.until ? undoStatus(state.undo, state.now) : null
-  return { line, tail: draftsTail(state.drafts) }
+  const dg = await dgStatus($) // ── delegate ── a hard stop waiting outranks the undo window.
+  const undo = state.undo !== null && state.now < state.undo.until ? `${undoStatus(state.undo, state.now)}${dg.tail}` : null
+  const line = dg.line ?? undo
+  return { line, tail: draftsTail(state.drafts) + dg.tail }
 }
 // ── /autopilot ──
+
+// ── delegate ──
+// Phase 4 (docs/design/dialogs-pane.md §6 "delegate"): a dialog's work handed
+// to a Worker. The Speaker (the autopilot's, with start_task and forward)
+// talks; the Worker, a subagent of its own type per task, works in fresh git
+// worktrees and never writes to Telegram. They meet in the task card
+// ($.state `delegate.tasks`): the Worker's ASK/DONE/FAIL turns go to the chat
+// through the Speaker, the chat's answers reach it through session.send.
+//
+// The grant and the Worker's hard stops are the guard plugin's
+// (mods/dialogs-pane-guard): every event of a loop this plugin spawned runs
+// under this plugin's frame, and the engine runs no hook of a plugin under its
+// own frame (measured live: a Worker's `git push` passed this plugin's hook
+// untouched). The guard is another plugin, so its tool.call hook runs there. It
+// reads the tasks, grants and skips from `delegate`, and holds a stop in the
+// engine's dialog. Its steps, holds and stop events come back through its own
+// $.state, drawn here. A task starts only once the guard answered for it (its
+// `armed` names the task); here, the .catch refuses a Worker's call from a
+// module mirror when the guard went silent or the task is over.
+// The Speaker's outgoing text meets share and commit-on-behalf in apSendReply,
+// held in the same dialog ($.ui.ask). dangerouslySkipHardStops skips stops by
+// name (the option, the session, a dialog), each skip in the ledger. The
+// leases in $.store keep a dialog to one session, at every level.
+import type { ApEntry, DgDialog, DgGrant, DgStop, DgTask, DgWorktree, Delegate, GuardEvent, GuardHold, GuardWork } from '../types'
+import type { Peer } from './packet/types'
+import { DelegateRows, HoldBand, TaskCard, TaskRow, warningText } from './delegate/components'
+import { armedOf, eventsOf, holdsOf as guardHoldsOf, workOf } from './delegate/guard'
+import { CHECK_FILES, DEFAULT_DG_DIALOG, checksOf, nextWeb, parseDgDialogs, parseDuration, parseRepos, workerTools } from './delegate/grant'
+import { HEARTBEAT_MS, holder, leaseKey, leaseOf } from './delegate/lease'
+import { resolvePath } from './delegate/paths'
+import { SKIP_FLAG, noStopsLabel, parseDialogSkip, parseSkipFlag, parseStops, skippedStops } from './delegate/skip'
+import { delegateInstructions, delegateSystem, parseDelegate, relayPrompt, type DelegateSpoken, type TaskAction } from './delegate/speaker'
+import { partition, stopQuestion, textHits, type StopHit } from './delegate/stops'
+import {
+  branchOf,
+  cardLines,
+  isLive,
+  parseWorker,
+  taskLine,
+  workerAnswer,
+  workerSystem,
+  workerTask,
+  workerType,
+  worktreePath,
+  type TaskView,
+  type WorkerSaid,
+} from './delegate/task'
+
+const NO_DELEGATE: Delegate = { dialogs: {}, tasks: [], sessionSkip: [], alwaysSkip: [], permissionMode: null, pending: null }
+const delegate = atom({ plugin: 'dialogs-pane', key: 'delegate' } as const, NO_DELEGATE)
+const STORE_DELEGATE = 'delegate.dialogs'
+const WORKER_PREFIX = 'dialogs-pane:worker-'
+/** The dialog lists No first, so a stray Enter is a no (seen live: an Enter meant for the prompt took the first option). */
+const ASK_YES = 'Yes, allow it'
+const ASK_NO = 'No'
+/** Steps shown in a Wide task card; finished cards stay until dismissed. */
+const CARD_STEPS = 4
+const CARDS_MAX = 2
+/** The guard heartbeats every 10 s; three missed and it counts as gone. */
+const GUARD_TTL_MS = 30_000
+const GUARD = 'dialogs-pane-guard'
+
+/** The mod option `dangerouslySkipHardStops`: stops skipped in every session, until removed. */
+let alwaysSkip: DgStop[] = []
+let optionProblem: string | null = null
+
+function configureDelegate(options: PluginOptions): void {
+  const value = options.dangerouslySkipHardStops
+  alwaysSkip = []
+  optionProblem = null
+  if (typeof value !== 'string' && !Array.isArray(value)) return
+  const parsed = parseStops(value)
+  if (parsed.ok) alwaysSkip = parsed.stops
+  else optionProblem = `dangerouslySkipHardStops: unknown stop ${parsed.unknown.join(', ')}; no stop is skipped by the option`
+}
+
+// Module state: a reload starts these over; $.state keeps the tasks.
+let dgHome = '/'
+let dgSession: string | null = null
+let dgHeartbeat: Timer | null = null
+const dgDeadlines = new Map<number, Timer>()
+let dgHoldSeq = 0
+
+/**
+ * What the .catch reads when the engine asks it in the hook's place (a
+ * Worker's loop runs under this plugin's frame, where its `$` calls reject):
+ * the Workers' agent ids, the live tasks, spawns in flight, the guard's last
+ * answer. Rebuilt on every `delegate` write and every guard read.
+ */
+const dgMirror = { workers: new Map<string, number>(), live: new Set<number>(), spawning: 0, isGuardFresh: false }
+
+function dgMirrorTasks(tasks: readonly DgTask[]): void {
+  dgMirror.workers = new Map(tasks.flatMap(task => (task.agentId === null ? [] : [[task.agentId, task.id] as const])))
+  dgMirror.live = new Set(tasks.filter(isLive).map(task => task.id))
+}
+
+/** Why a call must be refused without the guard's word; null: let it go on to the guard. */
+function dgRefuse(agentId: string | undefined): string | null {
+  if (agentId === undefined) return null
+  const taskId = dgMirror.workers.get(agentId)
+  if (taskId === undefined) return dgMirror.spawning > 0 ? 'A Worker is starting and the guard does not have it yet: refused. Try again in a moment.' : null
+  if (!dgMirror.live.has(taskId)) return 'This task is over. Stop here; end your turn.'
+  if (!dgMirror.isGuardFresh) return `The ${GUARD} plugin stopped answering, so nothing guards this call: refused.`
+  return null
+}
+
+/** Every write of `delegate` goes through here, so the mirror follows it. */
+async function dgUpdate($: $, change: (value: Delegate) => Delegate): Promise<Delegate> {
+  const next = await update($, delegate, change)
+  dgMirrorTasks(next.tasks)
+  return next
+}
+
+function registerDelegate(on: On): void {
+  // The Worker types are the mod's own: the model is never offered them.
+  on('agent.offer', ($, e, next) => (e.agent.startsWith(WORKER_PREFIX) ? { isOffered: false } : next(e))).catch(($, e, next) =>
+    e.agent.startsWith(WORKER_PREFIX) ? { isOffered: false } : next(e),
+  )
+
+  // Defense in depth for the guard plugin: a Worker's call is refused here when
+  // the guard went silent or its task is over. The engine asks the .catch in
+  // the hook's place for a Worker (re-entry), so both read only the mirror.
+  on('tool.call', ($, e, next) => {
+    const refused = dgRefuse(e.agentId)
+    return refused === null ? next(e) : { deny: refused }
+  }).catch(($, e, next) => {
+    if (next.called) return next(e)
+    const refused = dgRefuse(e.agentId)
+    return refused === null ? next(e) : { deny: refused }
+  })
+
+  // The guard's holds change the status line, which is set, not drawn: redo it on each guard write.
+  on('state.set', async ($, e, next) => {
+    const done = await next(e)
+    if (e.plugin === GUARD) await refreshStatus($)
+    return done
+  }).catch(($, e, next) => next(e))
+
+  // The session's permission mode, for `⚠ no stops · no permissions`: the classic
+  // events carry it (classic.PreToolUse's input here is the tool envelope alone).
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    await dgSeeMode($, e.permission_mode)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+  on('classic.SessionStart', async ($, e, next) => {
+    await dgSeeMode($, e.permission_mode)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+}
+
+/** A Worker's turn ended (routing's turn.complete hook calls this): ASK, DONE or FAIL goes to the chat through the Speaker. */
+function dgOnTurn($: $, agentId: string | undefined, reason: string, answer: string): void {
+  if (agentId === undefined || !dgMirror.workers.has(agentId)) return
+  dgOnWorkerTurn($, agentId, reason, answer).catch(() => {
+    // dgOnWorkerTurn records its own failures on the task card.
+  })
+}
+
+/** Closing the session lets go of its dialogs at once (else they free up after LEASE_TTL_MS); triage's session.end hook calls this. */
+async function apReleaseAll($: $): Promise<void> {
+  await Promise.all((await read($, autopilot)).running.map(id => apReleaseLease($, id)))
+}
+
+async function dgSeeMode($: $, mode: string | undefined): Promise<void> {
+  if (mode === undefined) return
+  const before = (await read($, delegate)).permissionMode
+  if (before === mode) return
+  await dgUpdate($, value => ({ ...value, permissionMode: mode }))
+  await refreshStatus($)
+}
+
+/** From session.start (and a reload): settings from $.store; live tasks keep their Worker and their deadline. */
+async function startDelegate($: $): Promise<void> {
+  dgHome = (await $.env.get('HOME')) ?? '/'
+  const dialogsStored = parseDgDialogs(await $.store.get(STORE_DELEGATE))
+  const state = await dgUpdate($, value => ({ ...value, dialogs: dialogsStored, alwaysSkip }))
+  await dgGuardArmed($)
+  const at = await $.clock.now()
+  for (const task of state.tasks.filter(isLive)) dgArmDeadline($, task, at)
+  dgHeartbeat?.cancel()
+  dgHeartbeat = $.clock.every(HEARTBEAT_MS, () => {
+    apBeat($).catch(() => {
+      // A missed beat is made up by the next; a lease lapses only after three.
+    })
+  })
+  if (optionProblem !== null) $.ui.toast(`tg: ${optionProblem}`)
+}
+
+// --- leases: one session per dialog ---
+
+async function apSessionId($: $): Promise<string> {
+  dgSession ??= await $.session.id()
+  return dgSession
+}
+
+/** Takes the dialog's lease, or says which session holds it. */
+async function apTakeLease($: $, dialogId: number): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const session = await apSessionId($)
+  const at = await $.clock.now()
+  const held = holder(leaseOf(await $.store.get(leaseKey(dialogId))), session, at)
+  if (held.kind === 'other') return { ok: false, reason: `running in another session (${held.session.slice(0, 8)}, alive ${Math.round(held.ageMs / 1000)} s ago)` }
+  await $.store.set(leaseKey(dialogId), { session, beat: at })
+  // Two sessions taking it at the same moment: the last write stands, and the other one sees that here.
+  const after = leaseOf(await $.store.get(leaseKey(dialogId)))
+  return after?.session === session ? { ok: true } : { ok: false, reason: 'running in another session' }
+}
+
+async function apReleaseLease($: $, dialogId: number): Promise<void> {
+  const session = await apSessionId($)
+  if (leaseOf(await $.store.get(leaseKey(dialogId)))?.session === session) await $.store.delete(leaseKey(dialogId))
+}
+
+/** The dialogs a reloaded session may keep running: the ones whose lease is still its own (or free). */
+async function apKeepLeases($: $, running: readonly number[]): Promise<number[]> {
+  const kept: number[] = []
+  for (const id of running) {
+    const lease = await apTakeLease($, id)
+    if (lease.ok) kept.push(id)
+    else $.ui.toast(`tg: autopilot stopped for dialog ${id}: ${lease.reason}.`)
+  }
+  if (kept.length !== running.length) await update($, autopilot, value => ({ ...value, running: value.running.filter(id => kept.includes(id)) }))
+  return kept
+}
+
+/** The heartbeat: renews this session's leases; a dialog another session took over stops here. */
+async function apBeat($: $): Promise<void> {
+  const session = await apSessionId($)
+  const at = await $.clock.now()
+  for (const id of (await read($, autopilot)).running) {
+    const held = holder(leaseOf(await $.store.get(leaseKey(id))), session, at)
+    if (held.kind === 'other') {
+      await apUnlisten($, id)
+      await update($, autopilot, value => ({ ...value, running: value.running.filter(one => one !== id) }))
+      $.ui.toast(`tg: autopilot stopped for dialog ${id}: another session took it over.`)
+      continue
+    }
+    await $.store.set(leaseKey(id), { session, beat: at })
+  }
+  await dgCheckDeadlines($, at)
+  // A guard gone silent leaves Workers unguarded: stop them.
+  const armed = await dgGuardArmed($)
+  if (armed === null && (await read($, delegate)).tasks.some(isLive)) {
+    await dgStopAll($, `the ${GUARD} plugin stopped answering`)
+    $.ui.toast(`tg: ⚡ every Worker stopped: the ${GUARD} plugin stopped answering.`)
+  }
+}
+
+// --- the guard plugin: its handshake and what it reports ---
+
+/** The guard's last answer while it is fresh (null: not loaded, or silent past GUARD_TTL_MS). */
+async function dgGuardArmed($: $): Promise<{ at: number; taskIds: number[] } | null> {
+  const armed = armedOf(await dgGuardValue($, 'armed'))
+  dgMirror.isGuardFresh = armed !== null && (await $.clock.now()) - armed.at <= GUARD_TTL_MS
+  return dgMirror.isGuardFresh ? armed : null
+}
+
+/** The guard's steps, holds and stop events, for drawing; empty while it has written none. */
+async function dgGuardView($: $): Promise<{ work: GuardWork[]; holds: GuardHold[]; events: GuardEvent[] }> {
+  const [work, holds, events] = await Promise.all([dgGuardValue($, 'work'), dgGuardValue($, 'holds'), dgGuardValue($, 'events')])
+  return { work: workOf(work), holds: guardHoldsOf(holds), events: eventsOf(events) }
+}
+
+/**
+ * One of the guard's values: another plugin's state, which this contract does
+ * not declare (declaring it here breaks the inference of every `update` call),
+ * so it is read as unknown and narrowed by ./delegate/guard.
+ */
+async function dgGuardValue($: $, key: 'armed' | 'work' | 'holds' | 'events'): Promise<unknown> {
+  // `as never`: the refs name the guard's keys, typed by its contract alone.
+  switch (key) {
+    case 'armed':
+      return (await $.state.get({ plugin: 'dialogs-pane-guard', key: 'armed' } as never)).value
+    case 'work':
+      return (await $.state.get({ plugin: 'dialogs-pane-guard', key: 'work' } as never)).value
+    case 'holds':
+      return (await $.state.get({ plugin: 'dialogs-pane-guard', key: 'holds' } as never)).value
+    case 'events':
+      return (await $.state.get({ plugin: 'dialogs-pane-guard', key: 'events' } as never)).value
+  }
+}
+
+function viewOf(task: DgTask, guard: { work: readonly GuardWork[]; holds: readonly GuardHold[] }): TaskView {
+  return { work: guard.work.find(one => one.taskId === task.id) ?? null, holds: guard.holds.filter(hold => hold.taskId === task.id) }
+}
+
+/** The guard's stop events as ledger rows, beside the autopilot's own. */
+function guardEntries(events: readonly GuardEvent[], dialogs: Record<string, ApDialog>): ApEntry[] {
+  return events.map(event => ({
+    seq: 1_000_000 + event.seq,
+    at: event.at,
+    peer: event.peer,
+    level: dialogs[String(event.peer.id)]?.level ?? 'delegate',
+    incoming: [],
+    reply: event.summary,
+    confidence: null,
+    topics: [],
+    checks: [],
+    outcome: { kind: 'stop', stops: event.stops, what: event.what, answer: event.answer, why: event.why },
+    undo: null,
+  }))
+}
+
+/** The card's `guard:` row while delegate cannot start here; null once the guard answers. */
+async function dgGuardText($: $): Promise<string | null> {
+  return (await dgGuardArmed($)) === null ? `delegate needs the ${GUARD} plugin loaded and answering: it holds the Worker's hard stops. Enable it, then press s.` : null
+}
+
+// --- settings and the card's rows ---
+
+async function dgSettings($: $, dialogId: number): Promise<DgDialog> {
+  return (await read($, delegate)).dialogs[String(dialogId)] ?? DEFAULT_DG_DIALOG
+}
+
+async function dgEdit($: $, dialogId: number, change: (dg: DgDialog) => DgDialog): Promise<void> {
+  const next = await dgUpdate($, value => ({ ...value, dialogs: { ...value.dialogs, [String(dialogId)]: change(value.dialogs[String(dialogId)] ?? DEFAULT_DG_DIALOG) } }))
+  await $.store.set(STORE_DELEGATE, next.dialogs)
+}
+
+async function dgEditGrant($: $, dialogId: number, change: (grant: DgGrant) => DgGrant): Promise<void> {
+  await dgEdit($, dialogId, dg => ({ ...dg, grant: change(dg.grant) }))
+}
+
+/** 4 in the card: the first time for a dialog it shows the warning and stops; the next press goes on. */
+async function dgWarned($: $, dialog: ApDialog): Promise<boolean> {
+  if ((await dgSettings($, dialog.peer.id)).isWarned) return true
+  await dgEdit($, dialog.peer.id, dg => ({ ...dg, isWarned: true }))
+  await apNotice($, warningText(dialog.peer.label))
+  return false
+}
+
+/** Every stop skipped for a dialog now, from the option, the session and the dialog. */
+async function dgSkipped($: $, dialogId: number): Promise<DgStop[]> {
+  const state = await read($, delegate)
+  return skippedStops({ always: alwaysSkip, session: state.sessionSkip, dialog: state.dialogs[String(dialogId)]?.skip ?? null, now: await $.clock.now() })
+}
+
+/** The red mark per dialog: null while every stop holds. */
+async function dgNoStopsOf($: $): Promise<(dialogId: number) => string | null> {
+  const state = await read($, delegate)
+  const at = await $.clock.now()
+  return dialogId =>
+    noStopsLabel(skippedStops({ always: alwaysSkip, session: state.sessionSkip, dialog: state.dialogs[String(dialogId)]?.skip ?? null, now: at }), state.permissionMode)
+}
+
+async function drawDelegateRows($: $, els: Els, dialog: ApDialog): Promise<RenderElement> {
+  const id = dialog.peer.id
+  const state = await read($, delegate)
+  const at = await $.clock.now()
+  return DelegateRows(els, {
+    guard: await dgGuardText($),
+    dg: state.dialogs[String(id)] ?? DEFAULT_DG_DIALOG,
+    label: dialog.peer.label,
+    noStops: (await dgNoStopsOf($))(id),
+    pending: state.pending?.dialogId === id ? state.pending : null,
+    now: at,
+    onWeb: () => dgEditGrant($, id, grant => ({ ...grant, web: nextWeb(grant.web) })),
+    onCommands: () => dgEditGrant($, id, grant => ({ ...grant, commands: grant.commands === 'checks' ? 'any' : 'checks' })),
+    onRepos: text => dgEditGrant($, id, grant => ({ ...grant, repos: parseRepos(text) })),
+    onDuration: async text => {
+      const parsed = parseDuration(text)
+      if (!parsed.ok) return apNotice($, `"${text}" is not a duration: write done, 2h, 90m or 1h30m.`)
+      await apNotice($, null)
+      await dgEditGrant($, id, grant => ({ ...grant, duration: parsed.value }))
+    },
+    onSkip: async text => {
+      const parsed = parseDialogSkip(text, await $.clock.now())
+      if (!parsed.ok) return apNotice($, parsed.why)
+      await apNotice($, null)
+      // Turning stops back on needs no confirmation; turning them off does.
+      if (parsed.skip === null) return dgEdit($, id, dg => ({ ...dg, skip: null }))
+      const skip = parsed.skip
+      await dgUpdate($, value => ({ ...value, pending: { dialogId: id, skip } }))
+    },
+    onConfirm: async text => {
+      const pending = (await read($, delegate)).pending
+      if (pending === null || pending.dialogId !== id) return
+      if (text.trim() !== dialog.peer.label) return apNotice($, `Not confirmed: type the dialog's name exactly, "${dialog.peer.label}".`)
+      await dgUpdate($, value => ({ ...value, pending: null }))
+      await dgEdit($, id, dg => ({ ...dg, skip: pending.skip }))
+      await apNotice($, null)
+      $.ui.toast(`tg: ⚠ hard stops ${pending.skip.stops.join(', ')} skipped for ${dialog.peer.label}.`)
+      await refreshStatus($)
+    },
+    onCancel: () => dgUpdate($, value => ({ ...value, pending: null })),
+  })
+}
+
+/** `/tg autopilot --dangerously-skip-hard-stops[=publish,delete]` (`=none` turns them back on). */
+async function dgSkipCommand($: $, args: string): Promise<{ text: string }> {
+  const parsed = parseSkipFlag(args)
+  if (parsed === null || !parsed.ok) return { text: `tg autopilot: unknown stop ${parsed === null ? args : parsed.unknown.join(', ')}. Stops: money, publish, share, delete, commit-on-behalf, or all; none turns them back on.` }
+  await dgUpdate($, value => ({ ...value, sessionSkip: parsed.stops }))
+  await refreshStatus($)
+  return {
+    text:
+      parsed.stops.length === 0
+        ? 'tg autopilot: hard stops are on again for this session.'
+        : `tg autopilot: ⚠ hard stops skipped until this session ends: ${parsed.stops.join(', ')}. The kill switch and allow.toml still hold; each skipped stop is logged.`,
+  }
+}
+
+// --- tasks ---
+
+async function dgLiveTask($: $, dialogId: number): Promise<DgTask | null> {
+  return (await read($, delegate)).tasks.find(task => task.peer.id === dialogId && isLive(task)) ?? null
+}
+
+async function dgPatchTask($: $, taskId: number, change: (task: DgTask) => DgTask): Promise<DgTask | null> {
+  const next = await dgUpdate($, value => ({ ...value, tasks: value.tasks.map(task => (task.id === taskId ? change(task) : task)) }))
+  return next.tasks.find(task => task.id === taskId) ?? null
+}
+
+const STOPPED_PLACEHOLDER: DgTask = {
+  id: 0,
+  peer: { id: 0, arg: '', label: '', kind: 'unknown' },
+  summary: '',
+  agentId: null,
+  startedAt: 0,
+  deadline: null,
+  grant: DEFAULT_DG_DIALOG.grant,
+  worktrees: [],
+  holds: [],
+  question: null,
+  chat: null,
+  status: 'stopped',
+  reason: 'its task is gone',
+}
+
+/** The Speaker's task action: start a Worker, or pass the chat's answer to the running one. */
+async function dgOnTaskAction($: $, peer: PeerRef, action: TaskAction, chat: { peer: Peer; burst: readonly MessageView[]; history: readonly MessageView[] }): Promise<void> {
+  const packet = buildPacket({ messages: chat.burst, context: chat.history.filter(one => !chat.burst.some(b => b.id === one.id)), peer: chat.peer, intent: { id: 'raw', text: '' }, redact: false, replay: false }).text
+  const live = await dgLiveTask($, peer.id)
+  if (action.kind === 'forward' || live !== null) {
+    if (live === null) return
+    const text = action.kind === 'forward' ? action.text : action.summary
+    await dgForward($, live, text, packet)
+    return
+  }
+  // The ack goes out meanwhile: the worktrees and the spawn take seconds.
+  dgStartTask($, peer, action.summary, packet).catch(() => {
+    // dgStartTask marks its task failed with the reason.
+  })
+}
+
+async function dgForward($: $, task: DgTask, text: string, packet: string): Promise<void> {
+  if (task.agentId === null) return
+  const sent = await $.session.send({ to: { agentId: task.agentId }, text: workerAnswer(text, packet) })
+  if (!sent.isDelivered) {
+    $.ui.toast(`tg: ⚡ the answer did not reach the Worker for ${task.peer.label}: ${sent.reason}`)
+    return
+  }
+  await dgPatchTask($, task.id, one => ({ ...one, question: null, status: one.status === 'asking' ? 'working' : one.status }))
+}
+
+/** Starts a task: worktrees of the granted repos, a Worker type with the granted tools, the spawn, the deadline. */
+async function dgStartTask($: $, peer: PeerRef, summary: string, packet: string): Promise<void> {
+  const settings = await dgSettings($, peer.id)
+  const grant = settings.grant
+  const at = await $.clock.now()
+  const state = await dgUpdate($, value => {
+    const id = value.tasks.reduce((top, one) => Math.max(top, one.id), 0) + 1
+    const deadline = grant.duration.kind === 'deadline' ? at + grant.duration.minutes * 60_000 : null
+    const task: DgTask = { ...STOPPED_PLACEHOLDER, id, peer, summary, startedAt: at, deadline, grant, status: 'starting', reason: '' }
+    return { ...value, tasks: [...value.tasks, task] }
+  })
+  const task = state.tasks.at(-1)
+  if (task === undefined) return
+  const fail = async (reason: string) => {
+    await dgPatchTask($, task.id, one => ({ ...one, status: 'failed', reason }))
+    $.ui.toast(`tg: ⚡ the task for ${peer.label} did not start: ${reason}`)
+    await refreshStatus($)
+  }
+  await refreshStatus($)
+  const made = await dgWorktrees($, task)
+  if (!made.ok) return fail(made.reason)
+  const worktrees = made.value
+  if (!isLive((await dgPatchTask($, task.id, one => ({ ...one, worktrees }))) ?? STOPPED_PLACEHOLDER)) return
+  // The handshake: the guard saw this write and guards the task, or nothing starts.
+  const armed = await dgGuardArmed($)
+  if (armed === null || !armed.taskIds.includes(task.id)) return fail(`the ${GUARD} plugin is not loaded or did not answer for this task, so nothing would hold the Worker's hard stops`)
+  try {
+    await $.agent.register({
+      name: workerType(task.id),
+      description: 'The Worker of a delegated Telegram dialog; spawned by the dialogs-pane mod only.',
+      prompt: workerSystem({ grant, worktrees, deadline: task.deadline }),
+      tools: workerTools(grant),
+      disallowedTools: ['Agent', 'Task'],
+      background: true,
+    })
+  } catch (error) {
+    return fail(`the Worker type was refused: ${reasonOf(error)}`)
+  }
+  let spawned: Awaited<ReturnType<typeof $.agent.spawn>>
+  dgMirror.spawning += 1
+  try {
+    spawned = await $.agent.spawn({
+      subagentType: `${WORKER_PREFIX}${task.id}`,
+      prompt: workerTask(summary, packet),
+      description: `⚡ ${peer.label}: ${oneLine(summary, 40)}`,
+      cwd: worktrees[0]?.path,
+    })
+  } catch (error) {
+    dgMirror.spawning -= 1
+    return fail(`the Worker did not start: ${reasonOf(error)}`)
+  }
+  if (spawned.deny !== undefined) {
+    dgMirror.spawning -= 1
+    return fail(`the Worker was refused: ${spawned.deny}`)
+  }
+  // Core names the agent; where it does not, the session's list does, by the Worker's type.
+  const listed = spawned.agentId === undefined ? (await $.agent.list()).find(one => one.type === `${WORKER_PREFIX}${task.id}`)?.id : undefined
+  const agentId = spawned.agentId ?? listed ?? null
+  if (agentId === null) {
+    dgMirror.spawning -= 1
+    return fail('the Worker started with no local loop, so nothing here could guard it')
+  }
+  const started = await dgPatchTask($, task.id, one => ({ ...one, agentId, status: one.status === 'starting' ? 'working' : one.status }))
+  dgMirror.spawning -= 1
+  if (started !== null && !isLive(started)) {
+    // Stopped while it spawned: stop the Worker too.
+    await dgKillWorker($, agentId)
+    return
+  }
+  if (started !== null) dgArmDeadline($, started, await $.clock.now())
+  await refreshStatus($)
+}
+
+/** A fresh worktree per granted repo, beside tg's state; a task with no repo gets a scratch directory. */
+async function dgWorktrees($: $, task: DgTask): Promise<{ ok: true; value: DgWorktree[] } | { ok: false; reason: string }> {
+  const root = (await $.env.get('TG_KIT_CONFIG_DIR')) ?? `${dgHome}/.config/tg-kit`
+  const out: DgWorktree[] = []
+  for (const raw of task.grant.repos) {
+    const repo = resolvePath(raw, dgHome, dgHome)
+    const top = await dgGit($, ['git', '-C', repo, 'rev-parse', '--show-toplevel'])
+    if (!top.ok) return { ok: false, reason: `${repo} is not a git repository: ${top.reason}` }
+    const checkout = top.stdout.trim()
+    const path = worktreePath(root, checkout, task.id)
+    const branch = branchOf(task.summary, task.id)
+    const made = await dgGit($, ['git', '-C', checkout, 'worktree', 'add', '-b', branch, path, 'HEAD'])
+    if (!made.ok) return { ok: false, reason: `git worktree add in ${checkout}: ${made.reason}` }
+    const files = await Promise.all(
+      CHECK_FILES.map(async name => {
+        const file = `${path}/${name}`
+        if (!(await $.fs.exists(file))) return { name, text: null }
+        try {
+          return { name, text: await $.fs.read(file) }
+        } catch {
+          // Unreadable (too large, a race): counted as present with no text, so no scripts are read off it.
+          return { name, text: '' }
+        }
+      }),
+    )
+    out.push({ repo: checkout, path, branch, checks: checksOf(files) })
+  }
+  if (out.length === 0) {
+    const path = `${root}/worktrees/task-${task.id}`
+    const made = await dgGit($, ['mkdir', '-p', path])
+    if (!made.ok) return { ok: false, reason: `mkdir ${path}: ${made.reason}` }
+    out.push({ repo: '', path, branch: '', checks: [] })
+  }
+  return { ok: true, value: out }
+}
+
+async function dgGit($: $, argv: readonly string[]): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
+  try {
+    const result = await $.process.run(argv, { timeoutMs: 60_000 })
+    return result.exitCode === 0 ? { ok: true, stdout: result.stdout } : { ok: false, reason: oneLine(result.stderr.trim() || `exit ${result.exitCode}`, 160) }
+  } catch (error) {
+    return { ok: false, reason: reasonOf(error) }
+  }
+}
+
+function dgArmDeadline($: $, task: DgTask, at: number): void {
+  dgDeadlines.get(task.id)?.cancel()
+  dgDeadlines.delete(task.id)
+  if (task.deadline === null) return
+  dgDeadlines.set(
+    task.id,
+    $.clock.after(Math.max(0, task.deadline - at), () => {
+      dgStopTask($, task.id, 'the deadline passed').catch(() => {
+        // The guard refuses every call past the deadline all the same.
+      })
+    }),
+  )
+}
+
+async function dgCheckDeadlines($: $, at: number): Promise<void> {
+  for (const task of (await read($, delegate)).tasks) {
+    if (isLive(task) && task.deadline !== null && task.deadline <= at) await dgStopTask($, task.id, 'the deadline passed')
+  }
+}
+
+async function dgKillWorker($: $, agentId: string): Promise<void> {
+  try {
+    await $.tool.call({ tool: 'TaskStop', task_id: agentId })
+  } catch {
+    // An agent that already ended cannot be stopped; the guard refuses its calls all the same.
+  }
+}
+
+/** Stops one task: the guard refuses the Worker's calls from now on, and the Worker is stopped. */
+async function dgStopTask($: $, taskId: number, reason: string): Promise<void> {
+  dgDeadlines.get(taskId)?.cancel()
+  dgDeadlines.delete(taskId)
+  const before = (await read($, delegate)).tasks.find(task => task.id === taskId)
+  if (before === undefined || !isLive(before)) return
+  await dgPatchTask($, taskId, task => ({ ...task, status: 'stopped', reason, holds: [] }))
+  if (before.agentId !== null) await dgKillWorker($, before.agentId)
+  await refreshStatus($)
+}
+
+async function dgStopTasksOf($: $, dialogId: number, reason: string): Promise<void> {
+  for (const task of (await read($, delegate)).tasks) {
+    if (task.peer.id === dialogId && isLive(task)) await dgStopTask($, task.id, reason)
+  }
+}
+
+/** The kill switch's half: every Worker. */
+async function dgStopAll($: $, reason: string): Promise<void> {
+  for (const task of (await read($, delegate)).tasks) {
+    if (isLive(task)) await dgStopTask($, task.id, reason)
+  }
+}
+
+// --- the guard: grant, hard stops, steps ---
+
+/** A ledger row for a hard stop: asked (yes / no and why) or skipped. */
+async function dgLogStop($: $, task: DgTask, hits: readonly StopHit[], answer: 'yes' | 'no' | 'skipped', why: string): Promise<void> {
+  if (hits.length === 0) return
+  const dialog = await apDialog($, task.peer.id)
+  await apLog($, {
+    at: await $.clock.now(),
+    peer: task.peer,
+    level: dialog?.level ?? 'delegate',
+    incoming: [],
+    reply: task.summary,
+    confidence: null,
+    topics: [],
+    checks: [],
+    outcome: { kind: 'stop', stops: hits.map(hit => hit.stop), what: hits.map(hit => hit.what).join('; '), answer, why },
+    undo: null,
+  })
+}
+
+/**
+ * Asks you about a hard stop in the engine's dialog and waits for the answer.
+ * Fail closed: anything but "Yes" (No, free text, a dismissal, `-p`) is no.
+ */
+async function dgAskStop($: $, task: DgTask, hits: readonly StopHit[], who: string): Promise<{ yes: boolean; why: string }> {
+  dgHoldSeq += 1
+  const id = dgHoldSeq
+  const since = await $.clock.now()
+  await dgPatchTask($, task.id, one => ({ ...one, holds: [...one.holds, { id, stops: hits.map(hit => hit.stop), what: hits.map(hit => hit.what).join('; '), since }] }))
+  await refreshStatus($)
+  let answer: string
+  try {
+    answer = await $.ui.ask(stopQuestion(hits, who), { options: [ASK_NO, ASK_YES], header: 'HARD STOP' })
+  } catch (error) {
+    answer = `(no answer: ${reasonOf(error)})`
+  }
+  const after = await dgPatchTask($, task.id, one => ({ ...one, holds: one.holds.filter(hold => hold.id !== id) }))
+  await refreshStatus($)
+  const at = await $.clock.now()
+  // A task stopped meanwhile (the kill switch, its card, the deadline) is a no, whatever was answered.
+  if (after !== null && !isLive(after)) return { yes: false, why: `the task was ${after.status} while it waited (${after.reason})` }
+  if (after !== null && after.deadline !== null && after.deadline <= at) return { yes: false, why: 'the deadline passed while it waited' }
+  return answer === ASK_YES ? { yes: true, why: 'you' } : { yes: false, why: answer === ASK_NO ? 'you' : answer }
+}
+
+
+/**
+ * The Speaker's text in a delegate dialog, right before it is sent: share and
+ * commit-on-behalf ask you (a skipped one is logged). Null: send it; else why
+ * it becomes a draft.
+ */
+async function dgOutgoing($: $, peer: PeerRef, text: string, seq: number | null): Promise<string | null> {
+  const dialog = await apDialog($, peer.id)
+  if (dialog?.level !== 'delegate') return null
+  const split = partition(textHits(text), await dgSkipped($, peer.id))
+  const task = (await dgLiveTask($, peer.id)) ?? { ...STOPPED_PLACEHOLDER, peer, summary: `reply in ${peer.label}` }
+  await dgLogStop($, task, split.skipped, 'skipped', 'dangerouslySkipHardStops')
+  if (split.ask.length === 0) return null
+  const answer = await dgAskStop($, task, split.ask, `reply in ${peer.label}`)
+  await dgLogStop($, task, split.ask, answer.yes ? 'yes' : 'no', answer.why)
+  if (answer.yes) return null
+  const reason = `HARD STOP ${split.ask.map(hit => hit.stop).join(' + ')}: not sent (${answer.why})`
+  if (seq !== null) await apPatch($, seq, { topics: [] })
+  return reason
+}
+
+/** A message the Speaker sent for a dialog with a running task: the card's `chat:` line. */
+async function dgOnSent($: $, dialogId: number, text: string, at: number): Promise<void> {
+  const task = await dgLiveTask($, dialogId)
+  if (task !== null) await dgPatchTask($, task.id, one => ({ ...one, chat: { text, at } }))
+}
+
+/** A Worker's turn ended: the card follows ASK / DONE / FAIL, and the Speaker tells the chat. */
+async function dgOnWorkerTurn($: $, agentId: string, reason: string, answer: string): Promise<void> {
+  const task = (await read($, delegate)).tasks.find(one => one.agentId === agentId)
+  if (task === undefined || !isLive(task)) return
+  if (reason !== 'answer') {
+    await dgPatchTask($, task.id, one => ({ ...one, status: 'failed', reason: `the Worker's turn ended: ${reason}` }))
+    $.ui.toast(`tg: ⚡ the Worker for ${task.peer.label} stopped: ${reason}.`)
+    await refreshStatus($)
+    return
+  }
+  const said = parseWorker(answer)
+  if (said.kind !== 'ask') {
+    dgDeadlines.get(task.id)?.cancel()
+    dgDeadlines.delete(task.id)
+  }
+  const after = await dgPatchTask($, task.id, one =>
+    said.kind === 'ask'
+      ? { ...one, status: 'asking', question: said.text }
+      : { ...one, status: said.kind === 'done' ? 'done' : 'failed', reason: said.text, question: null },
+  )
+  await refreshStatus($)
+  if (after !== null) await dgRelay($, after, said)
+}
+
+/** The Speaker phrases the Worker's question or result for the chat; it goes out as an auto reply would, or waits as a draft. */
+async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
+  const dialog = await apDialog($, task.peer.id)
+  if (dialog === null) return
+  const history = await runTg($, tg.read(task.peer.arg, { limit: HISTORY_LIMIT }))
+  const messages = history.ok ? history.value : []
+  const peer = peerOf(task.peer, loaded(await read($, dialogs)) ?? [])
+  const packet = buildPacket({ messages: messages.slice(-1), context: messages.slice(0, -1), peer, intent: { id: 'raw', text: '' }, redact: false, replay: false }).text
+  const result = await $.model.complete({ model: speakerModel, system: delegateSystem(dialog), prompt: relayPrompt({ said, task, packet }), maxTokens: SPEAKER_MAX_TOKENS, timeoutMs: SPEAKER_TIMEOUT_MS })
+  const at = await $.clock.now()
+  const incoming = [{ id: 0, text: `Worker ${said.kind.toUpperCase()}: ${said.text}` }]
+  const spoken = result.isAnswered ? parseSpoken(result.text) : null
+  if (spoken === null || spoken.text === '') {
+    const why = result.isAnswered ? 'the Speaker answered in a shape the autopilot cannot read' : modelFailure(result)
+    await apLog($, { at, peer: task.peer, level: dialog.level, incoming, reply: '', confidence: null, topics: [], checks: [], outcome: { kind: 'failed', reason: why }, undo: null })
+    $.ui.toast(`tg: ⚡ could not tell ${task.peer.label} what the Worker said: ${why}`)
+    return
+  }
+  const seq = await apLog($, { at, peer: task.peer, level: dialog.level, incoming, reply: spoken.text, confidence: spoken.confidence, topics: spoken.topics, checks: [], outcome: { kind: 'working' }, undo: null })
+  const toDraft = async (reasons: string[]) => {
+    const draft: ApDraft = { seq, peer: task.peer, incoming: incoming[0]?.text ?? '', text: spoken.text, confidence: spoken.confidence, reasons, state: { kind: 'ready' } }
+    await update($, autopilot, value => ({ ...value, drafts: putDraft(value.drafts, draft), ledger: patchEntry(value.ledger, seq, { outcome: { kind: 'drafted', reasons } }) }))
+    await refreshStatus($)
+  }
+  if (said.kind === 'fail') return toDraft([`the task failed: ${oneLine(said.text, 60)}`])
+  const action = spoken.action === 'reply' || spoken.action === 'draft' || spoken.action === 'escalate' ? spoken.action : 'draft'
+  const verdict = gate(dialog, { ...spoken, action }, {
+    sentLastHour: sentLastHour((await read($, autopilot)).ledger, task.peer.id, at),
+    minutes: localMinutes(at),
+    isAllowed: await apIsAllowed($, task.peer),
+  })
+  if (verdict.kind === 'draft') return toDraft(verdict.reasons)
+  const stopped = await dgOutgoing($, task.peer, spoken.text, seq)
+  if (stopped !== null) return toDraft([stopped])
+  const rt = apRuntimes.get(task.peer.id)
+  if (rt !== undefined) rt.isSending = true
+  let sent: WriteResult
+  try {
+    sent = await runWrite($, apSendArgv(task.peer.arg), spoken.text)
+  } finally {
+    if (rt !== undefined) rt.isSending = false
+  }
+  const done = await $.clock.now()
+  if (!sent.ok) return toDraft([writeFailure(sent, task.peer, done)])
+  const ids = sent.sent.map(one => one.id)
+  for (const id of ids) rt?.sentIds.add(id)
+  await dgPatchTask($, task.id, one => ({ ...one, chat: { text: spoken.text, at: done } }))
+  await update($, autopilot, value => ({
+    ...value,
+    now: done,
+    ledger: patchEntry(value.ledger, seq, { outcome: { kind: 'sent', ids, by: 'auto' }, undo: { state: 'open', until: done + UNDO_MS } }),
+    undo: { seq, peer: task.peer, ids, text: spoken.text, confidence: spoken.confidence, until: done + UNDO_MS },
+  }))
+  apStartTicker($)
+  await refreshStatus($)
+}
+
+// --- what shows: task cards, the band, the status line ---
+
+/** The status line: a hard stop waiting owns it; running tasks and skipped stops add a tail. */
+async function dgStatus($: $): Promise<{ line: string | null; tail: string }> {
+  const state = await read($, delegate)
+  const guard = await dgGuardView($)
+  const live = state.tasks.filter(isLive)
+  const held = live.flatMap(task => holdsOfView(task, guard).map(hold => ({ task, hold })))[0]
+  const line = held === undefined ? null : `tg ⏸ HARD STOP ${held.hold.stops.join(' + ')}: ${oneLine(held.hold.what, 50)} · ⚡ ${held.task.peer.label} · answer in the dialog`
+  const pilot = await read($, autopilot)
+  const noStopsOf = await dgNoStopsOf($)
+  const marks = pilot.running.filter(id => pilot.dialogs[String(id)]?.level === 'delegate').map(noStopsOf)
+  const noStops = marks.find((one): one is string => one !== null)
+  const tasks = live.length === 0 ? '' : ` · ⚡ ${live.length} task${live.length === 1 ? '' : 's'}`
+  return { line, tail: `${tasks}${noStops === undefined ? '' : ` · ${noStops}`}` }
+}
+
+/** A task's waiting stops: the Speaker's (on the task) and the Worker's (the guard's). */
+function holdsOfView(task: DgTask, guard: { holds: readonly GuardHold[] }): { stops: readonly string[]; what: string }[] {
+  return [...task.holds, ...guard.holds.filter(hold => hold.taskId === task.id)]
+}
+
+async function drawHoldBand($: $, els: Els, width: number): Promise<RenderElement | null> {
+  const guard = await dgGuardView($)
+  for (const task of (await read($, delegate)).tasks.filter(isLive)) {
+    const hold = holdsOfView(task, guard)[0]
+    if (hold !== undefined) return HoldBand(els, { label: task.peer.label, stops: hold.stops, what: hold.what, width })
+  }
+  return null
+}
+
+/** Task cards under the autopilot row: Wide draws the card, Compact one line per running task. */
+async function drawTaskCards($: $, els: Els, width: number, kind: 'wide' | 'compact'): Promise<{ elements: RenderElement[]; rows: number }> {
+  const state = await read($, delegate)
+  if (state.tasks.length === 0) return { elements: [], rows: 0 }
+  const guard = await dgGuardView($)
+  const live = state.tasks.filter(isLive)
+  const stop = (task: DgTask) => () => dgStopTask($, task.id, 'stopped from the task card')
+  const noStopsOf = await dgNoStopsOf($)
+  if (kind === 'compact') {
+    const rows = live.slice(0, CARDS_MAX).map(task => TaskRow(els, { task, view: viewOf(task, guard), noStops: noStopsOf(task.peer.id), onStop: stop(task) }))
+    return { elements: rows, rows: rows.length }
+  }
+  const shown = [...live, ...state.tasks.filter(task => !isLive(task)).reverse()].slice(0, CARDS_MAX)
+  const at = await $.clock.now()
+  const elements = shown.map(task =>
+    TaskCard(els, {
+      task,
+      view: viewOf(task, guard),
+      now: at,
+      width,
+      rows: CARD_STEPS,
+      noStops: noStopsOf(task.peer.id),
+      onStop: stop(task),
+      onDismiss: () => dgUpdate($, value => ({ ...value, tasks: value.tasks.filter(one => one.id !== task.id) })),
+    }),
+  )
+  // Border (2) and header (1), then one row a line of the card.
+  const rows = shown.reduce((sum, task) => sum + 3 + cardLines(task, viewOf(task, guard), CARD_STEPS).length, 0)
+  return { elements, rows }
+}
+
+/** One line per task for `/tg autopilot`. */
+async function dgTaskLines($: $): Promise<string[]> {
+  const guard = await dgGuardView($)
+  return (await read($, delegate)).tasks.filter(isLive).map(task => taskLine(task, viewOf(task, guard)))
+}
+
+/** The ledger tab: the autopilot's rows and the guard's stop events, in time order. */
+async function dgLedger($: $, ledger: readonly ApEntry[], dialogs: Record<string, ApDialog>): Promise<ApEntry[]> {
+  const events = guardEntries((await dgGuardView($)).events, dialogs)
+  return [...ledger, ...events].sort((a, b) => a.at - b.at)
+}
+// ── /delegate ──

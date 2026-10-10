@@ -63,14 +63,24 @@ function allowText(allow: AllowView, arg: string): { text: string; color?: strin
     case 'ok':
       return allow.isAllowed
         ? { text: `${GLYPH.done} in allow.toml`, color: TOKEN.ok }
-        : { text: `not in allow.toml: auto needs it. Run \`! tg allow add ${arg} --yes\` in the prompt`, color: TOKEN.warn }
+        : { text: `not in allow.toml: auto and delegate need it. Run \`! tg allow add ${arg} --yes\` in the prompt`, color: TOKEN.warn }
   }
 }
 
 /** `autopilot · Contact A`: the level, the brief, the limits, quiet hours, escalation, the allowlist. */
 export function AutopilotCard(
   els: Els,
-  props: { dialog: ApDialog; isRunning: boolean; phase: ApPhase | undefined; allow: AllowView; notice: string | null; width: number } & CardHandlers,
+  props: {
+    dialog: ApDialog
+    isRunning: boolean
+    phase: ApPhase | undefined
+    allow: AllowView
+    notice: string | null
+    width: number
+    /** ── delegate ── the levels offered (delegate only for dialogs in allow.toml), and its rows under the limits. */
+    levels: readonly ApLevel[]
+    extra: RenderElement | null
+  } & CardHandlers,
 ): RenderElement {
   const { Box, Text, Button } = els
   const { dialog } = props
@@ -85,11 +95,15 @@ export function AutopilotCard(
       <Box flexDirection="row">
         {Label(els, 'level:')}
         <Box flexDirection="row" columnGap={2}>
-          {AP_LEVELS.map((level, index) => (
-            <Button key={`ap:level:${level}`} plain hotkey={String(index + 1)} dimColor={level !== dialog.level} onPress={() => props.onLevel(level)}>
-              {level === dialog.level ? <Text color={TOKEN.accent} bold>{`[${LEVEL_GLYPH[level]} ${level}]`}</Text> : `${LEVEL_GLYPH[level]} ${level}`}
-            </Button>
-          ))}
+          {...AP_LEVELS.flatMap((level, index) =>
+            props.levels.includes(level)
+              ? [
+                  <Button key={`ap:level:${level}`} plain hotkey={String(index + 1)} dimColor={level !== dialog.level} onPress={() => props.onLevel(level)}>
+                    {level === dialog.level ? <Text color={TOKEN.accent} bold>{`[${LEVEL_GLYPH[level]} ${level}]`}</Text> : `${LEVEL_GLYPH[level]} ${level}`}
+                  </Button>,
+                ]
+              : [],
+          )}
         </Box>
       </Box>
       <Box flexDirection="row">
@@ -146,6 +160,7 @@ export function AutopilotCard(
           })}
         </Box>
       </Box>
+      {props.extra}
       <Box flexDirection="row">
         {Label(els, 'allow:')}
         <Text color={allow.color} wrap="wrap">{allow.text}</Text>

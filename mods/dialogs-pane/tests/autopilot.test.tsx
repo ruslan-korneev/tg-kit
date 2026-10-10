@@ -94,6 +94,11 @@ function world(
     seen.store.set(e.key, e.value)
     return { value: undefined }
   })
+  on('store.delete', (_$, e) => {
+    seen.store.delete(e.key)
+    return { value: undefined }
+  })
+  on('session.id', () => ({ value: 'session-a' }))
   on('process.run', (_$, e) => {
     const ran: Ran = { argv: e.argv, stdin: e.init?.stdin }
     seen.runs.push(ran)
@@ -338,7 +343,7 @@ describe('auto', () => {
     await ui.press({ key: 'hint:down' })
     await ui.press({ key: 'ap:card-open' })
     await clock.settle()
-    expect(await ui.find({ type: 'Text', text: /not in allow\.toml: auto needs it/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /not in allow\.toml: auto and delegate need it/ })).toBeDefined()
     await ui.press({ key: 'ap:level:auto' })
     expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first: run `! tg allow add 1002 --yes`/ })).toBeDefined()
     expect(seen.children).toHaveLength(0)
