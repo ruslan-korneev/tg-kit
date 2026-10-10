@@ -228,6 +228,70 @@ export type ReplyDraft = { peer: PeerRef; replyTo: number; text: string; from: s
 
 // ── /routing ──
 
+// ── bottest ──
+
+/** One message a recorded step printed, in tg's output order (send: sent first). */
+export type StepMessage = { id: number; out: boolean; text: string; buttons: string[][] }
+
+/** What a recorded step got back: tg's exit code (0, or 6 for no reply) and the messages. */
+export type StepOutcome = { exit: number; messages: StepMessage[]; answer: string | null; latency_ms: number | null }
+
+/**
+ * The message a press acted on: its id now, and where it came from, so a replay
+ * can find it again (ids differ on every run). `from` is null for a message that
+ * was there before the recording started.
+ */
+export type StepTarget = { id: number; from: { step: number; position: number } | null }
+
+/** A send or press done from the pane; `--wait` is part of each, so waits are not steps of their own. */
+export type BotStep =
+  | { kind: 'send'; peer: string; text: string; wait_s: number; at: number; outcome: StepOutcome }
+  | {
+      kind: 'press'
+      peer: string
+      target: StepTarget
+      row: number
+      col: number
+      label: string
+      wait_s: number
+      at: number
+      outcome: StepOutcome
+    }
+
+export type Recording = { startedAt: number; steps: BotStep[] }
+
+/** A stopped recording: its steps, the shell script, and where the script was written. */
+export type Recorded = Recording & { stoppedAt: number; script: string; path: string | null }
+
+/**
+ * Reply timing. `measured` (ms, by message id) is local timing from `tg watch`;
+ * `pressedAt` (local ms, by message id) marks what a pane press brought back.
+ * `lastPress.messageId` is the pressed message until its first edit is timed.
+ */
+export type Timing = {
+  watch: 'off' | 'starting' | 'live'
+  lastOut: { id: number; at: number } | null
+  lastPress: { at: number; messageId: number | null } | null
+  measured: Record<string, number>
+  pressedAt: Record<string, number>
+}
+
+export type Notice = { tone: 'info' | 'warn' | 'danger'; text: string }
+
+export type BotTest = {
+  /** Allowlisted peer ids (`tg allow list --json`). */
+  allow: Load<number[]>
+  /** The tg write running now, as the bar shows it. */
+  busy: string | null
+  notice: Notice | null
+  composing: boolean
+  recording: Recording | null
+  recorded: Recorded | null
+  /** The two message ids being compared, older first. */
+  diff: [number, number] | null
+  timing: Timing
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'dialogs-pane': {
@@ -252,6 +316,7 @@ declare module 'claude-code' {
       pins: Pin[]
       draft: ReplyDraft | null
       // ── /routing ──
+      bottest: BotTest
     }
   }
 }

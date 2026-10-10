@@ -137,15 +137,19 @@ export function MessageCard(
     width: number
     now: number
     onPress: () => void
+    /** Bot testing: the reply's latency stamp, and pressable chips in place of the display row. */
+    stamp?: { text: string; isSlow: boolean } | null
+    buttonRow?: RenderElement | null
   },
 ): RenderElement {
   const { Box, Button, Text } = els
   const { message } = props
   const sender = senderLabel(message)
   const id = `#${message.id}`
+  const stamp = props.stamp ?? null
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
-  // cursor(1) time(11) sender(6) text, then " #id": one column spare so nothing wraps.
-  const textWidth = Math.max(10, props.width - 20 - id.length)
+  // cursor(1) time(11) sender(6) text, then " ⏱1.4s" and " #id": one column spare so nothing wraps.
+  const textWidth = Math.max(10, props.width - 20 - id.length - (stamp === null ? 0 : stamp.text.length + 1))
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
   return (
     <Box key={`card:${message.id}`} flexDirection="column">
@@ -156,9 +160,10 @@ export function MessageCard(
         <Text color={color} inverse={props.isSelected}>
           {pad(oneLine(body, textWidth), textWidth)}
         </Text>
+        {stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>}
         <Text dimColor> {id}</Text>
       </Button>
-      {message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
+      {props.buttonRow !== undefined ? props.buttonRow : message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
     </Box>
   )
 }
