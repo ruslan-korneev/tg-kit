@@ -34,6 +34,24 @@ npx skills add ruslan-korneev/tg-kit -g -a claude-code -a codex     # chosen age
 Leave out `-g` to install into the current project instead (`.claude/skills/`, `.agents/skills/`,
 …). The skill needs the `tg` CLI on PATH (see Install) and a logged-in account (see Log in).
 
+## Dialogs pane (Claude Code mod)
+
+`mods/dialogs-pane` adds a pane to Claude Code. It lists your Telegram dialogs, sends a message or a
+range as a full `<tg-packet>` to the current agent or to other agents, tests bots (press, record,
+diff, latency), and runs an autopilot per dialog (listen, draft, auto, delegate).
+`mods/dialogs-pane-guard` enforces the delegate Worker's grant and hard stops. Install it with the
+pane if you plan to use `delegate`. The design is in
+[`docs/design/dialogs-pane.md`](docs/design/dialogs-pane.md).
+
+```bash
+claude plugin marketplace add ruslan-korneev/tg-kit      # or a local checkout's path
+claude plugin install dialogs-pane@tg-kit
+claude plugin install dialogs-pane-guard@tg-kit
+```
+
+Then type `/tg` in a session. The pane needs the `tg` CLI on PATH with `tg watch`, and a logged-in
+account.
+
 ## Log in
 
 1. Store the app credentials from <https://my.telegram.org> in the system keychain once:
