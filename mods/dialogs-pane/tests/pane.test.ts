@@ -261,6 +261,8 @@ describe('hidden mode', () => {
       },
     })
     expect((await band.find({ type: 'Text', text: 'Dev Team: "deploy is green"' }))).toBeDefined()
+    // o, x and ⏎ reach the band only once it holds the keys: the band says how.
+    expect(await band.find({ type: 'Text', text: 'ctrl+x tab:' })).toBeDefined()
     await band.press({ key: 'band:dismiss' })
     expect(status.at(-1)).toBe('tg ● 8 unread')
     await band.unmount()

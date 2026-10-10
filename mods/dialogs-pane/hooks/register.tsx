@@ -202,7 +202,7 @@ export const register: Register = on => {
     if (e.props.hasSurvey || event === null || (await read($, mode)) !== 'hidden') return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const isBot = event.kind === 'bot'
-    const room = Math.max(10, e.props.bodyColumns - event.label.length - 40)
+    const room = Math.max(10, e.props.bodyColumns - event.label.length - 52)
     return (
       <Box flexDirection="row" gap={2}>
         <Text wrap="truncate-end">
@@ -210,6 +210,9 @@ export const register: Register = on => {
           {`${event.label}: "${oneLine(event.text, room)}"`}
         </Text>
         {await bandLatency($, $.ui.resolve(e), event)}
+        {/* The engine gives band hotkeys and ⏎ the keys only once the band holds
+            them (ctrl+x tab or a click); typed at the prompt they are text. */}
+        <Text dimColor>ctrl+x tab:</Text>
         <Button key="band:main" plain autoFocus onPress={() => bandToMain($)}>
           ⏎ send to main
         </Button>
