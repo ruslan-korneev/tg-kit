@@ -101,6 +101,7 @@ tg info PEER                             # bio / description / bot commands / me
 tg download PEER ID [--out DIR] [--max-size 200]   # prints the path; never overwrites
 tg drafts
 tg transcribe PEER ID                    # voice → text (Premium or its trial)
+tg watch PEER… [--jsonl] [--events message,edit,typing,delete] [--after ID | --since 2h] [--idle-exit 30s]
 
 # write: every command supports --dry-run and goes through the guard
 tg send PEER TEXT|- [--reply-to ID] [--no-preview] [--md|--html|--plain] [--silent] [--wait 10s]
@@ -217,6 +218,55 @@ Per command:
 | `raw` | the TL result's `to_dict()`, with bytes as base64 and dates as ISO |
 | `--dry-run` | the plan: `{"action", "target", "steps": [{"method", "params"}], "guard"}` |
 
+`tg watch` streams, so it takes `--jsonl` instead of `--json` (see below).
+
+### `tg watch` (`--jsonl`)
+
+`tg watch PEER…` stays connected and prints each event in the watched chats as it arrives: one
+JSON object per line with `--jsonl` (flushed per line), compact lines without it. It runs until
+Ctrl-C or SIGTERM (exit 0), until `--idle-exit DURATION` passes with nothing printed (exit 0),
+or until the process reading its stdout pipe exits (exit 0). It is read-only.
+
+```jsonl
+{"event": "message", "id": 677795, "chat_id": 123456, "date": "2026-09-29T11:06:00Z", "sender": {"id": 123456, "kind": "bot", "username": "example_bot", "name": "Example"}, "out": false, "text": "Done", …}
+{"event": "ready", "date": "2026-09-29T11:06:01.5Z", "peers": [{"chat_id": 123456, "kind": "bot", "username": "example_bot", "title": "Example"}]}
+{"event": "typing", "chat_id": 123456, "date": "2026-09-29T11:06:10.2Z", "sender": {"id": 123456, "kind": "bot", "username": "example_bot", "name": "Example"}, "action": "typing"}
+{"event": "message", "id": 677796, "chat_id": 123456, …}
+{"event": "edit", "id": 677796, "chat_id": 123456, "edited": "2026-09-29T11:06:14Z", …}
+{"event": "delete", "chat_id": 123456, "date": "2026-09-29T11:06:20.9Z", "ids": [677796]}
+```
+
+- `message` and `edit` are the message object above plus `"event"`. An `edit` carries the
+  message's whole new state. `edits` is always 0 here. Both directions count: `out` is true for
+  your own messages, including ones sent from another device.
+- `typing`: `action` is `typing`, `cancel` (stopped), `record_audio`, `record_video`,
+  `record_round`, `upload_photo`, `upload_video`, `upload_audio`, `upload_document`,
+  `upload_round`, `choose_sticker`, `choose_contact`, `geo_location`, `game_play`,
+  `text_draft`, … (the TL action name in snake_case, so new kinds still come through). Telegram
+  repeats a `typing` about every 5 s while it lasts and treats it as over after about 6 s without
+  one. `sender` comes from the local cache and may be `{"kind": "unknown", "name": "<id>"}`.
+  `date` is when tg received it.
+- `delete`: `date` is when tg received it. In private chats and basic groups Telegram does not
+  say which chat a deletion is in, so tg reports deletions there only for messages this watch has
+  printed. Channels and supergroups report every deletion.
+- `ready` is printed once, after tg has subscribed and replayed. Lines before it are the replay
+  of `--after ID` (one PEER) or `--since 2h|2026-09-01`: up to 200 messages per chat, oldest
+  first, as `message` events. Lines after it are live. A message that shows up in both is printed
+  once. `chat_id` in `ready` is the id that events carry: for `me` that is your own user id.
+- `--events message,edit,typing,delete` picks the kinds (default all). `ready` is always printed.
+- Connecting, resolving and the replay must finish within `--timeout`; after `ready` there is no
+  deadline. A lost connection exits 1 with `error: lost the connection to Telegram`; rerun with
+  `--after LAST_ID` to replay what was missed.
+
+Compact lines, with `[chat]` added when several chats are watched:
+
+```
+ready: watching @example_bot
+#677795 09-29 14:06 @example_bot: Done
+~ 09-29 14:06 @example_bot: typing
+✗ 09-29 14:06 deleted #677796
+```
+
 ## Exit codes
 
 | Code | Meaning | What to do |
@@ -231,7 +281,8 @@ Per command:
 | 7 | refused by the guard or a policy; nothing was sent | see Safety |
 
 Errors go to stderr as one line (`error: …`) followed by `  fix: …`. There are no tracebacks
-unless you pass `-v`. Ctrl-C exits 130 and SIGTERM exits 143, both after a clean disconnect.
+unless you pass `-v`. Ctrl-C exits 130 and SIGTERM exits 143, both after a clean disconnect;
+`tg watch` exits 0 on both, since stopping is how it is meant to end.
 
 ## Safety
 

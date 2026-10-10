@@ -2,13 +2,15 @@
 
 Pins what unit tests cannot: several `tg` processes sharing one account at the
 same time (the SQLite "database is locked" failure the session split exists to
-prevent). Reads Saved Messages only; sends nothing.
+prevent), and `tg watch` receiving real updates. Touches Saved Messages only:
+the watch test sends one message there, edits it and deletes it.
 
 Run: TG_KIT_LIVE=1 uv run pytest tests/live -q
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -51,3 +53,32 @@ def test_parallel_commands_all_succeed() -> None:
     assert not any("locked" in r.stderr for r in results)
     # Parallel, not serialised: well under the sum of sequential runs (~1 s each).
     assert elapsed < len(commands) * 0.8
+
+
+def test_watch_streams_a_message_its_edit_and_its_deletion_in_saved_messages() -> None:
+    watcher = subprocess.Popen(  # noqa: S603 — fixed argv
+        [TG, "watch", "me", "--jsonl", "--idle-exit", "15s"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert watcher.stdout is not None
+        ready = json.loads(watcher.stdout.readline())  # subscribed from here on
+        assert ready["event"] == "ready"
+        sent = _run(["send", "me", "tg-kit live: watch", "--json"])
+        assert sent.returncode == 0, sent.stderr
+        msg_id = json.loads(sent.stdout)["sent"][0]["id"]
+        assert _run(["edit", "me", str(msg_id), "tg-kit live: watch (edited)"]).returncode == 0
+        assert _run(["delete", "me", str(msg_id), "--yes"]).returncode == 0
+        lines = [json.loads(watcher.stdout.readline()) for _ in range(3)]
+    finally:
+        watcher.terminate()
+        code = watcher.wait(timeout=30)
+    assert [(e["event"], e.get("id"), e.get("ids")) for e in lines] == [
+        ("message", msg_id, None),
+        ("edit", msg_id, None),
+        ("delete", None, [msg_id]),
+    ]
+    assert lines[1]["text"] == "tg-kit live: watch (edited)"
+    assert code == 0  # SIGTERM is a clean stop

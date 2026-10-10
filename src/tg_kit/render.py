@@ -6,16 +6,37 @@ Compact, one line per message, buttons on indented lines under it:
       [0:0 cb "My bot"] [0:1 cb "Back"]
     #677792 09-29 14:02 me ↩677791: /start
     #677794 09-29 14:05 @example_bot ✎×2: updated text {👍3}
+
+`tg watch` adds typing and delete lines, and one JSON object per line with `--jsonl`:
+
+    ~ 09-29 14:06 @example_bot: typing
+    ✗ 09-29 14:07 deleted #677792 #677793
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, tzinfo
 
 from tg_kit.buttons import format_grid
-from tg_kit.model import Media, MessageView
+from tg_kit.model import (
+    Media,
+    MessageEvent,
+    MessageView,
+    Sender,
+    TypingEvent,
+    WatchEvent,
+)
 
-__all__ = ["LIST_TRUNCATE", "compact", "message_json", "sender_label"]
+__all__ = [
+    "LIST_TRUNCATE",
+    "compact",
+    "event_json",
+    "event_lines",
+    "message_json",
+    "ready_json",
+    "sender_label",
+]
 
 # List commands cut text here; `tg msg` and `--full` never do. 300 keeps a
 # 20-message listing around 6–8 k characters, far under a tool-output limit.
@@ -23,7 +44,10 @@ LIST_TRUNCATE = 300
 
 
 def sender_label(view: MessageView) -> str:
-    s = view.sender
+    return _who(view.sender)
+
+
+def _who(s: Sender) -> str:
     if s.kind == "self":
         return "me"
     if s.username:
@@ -154,12 +178,7 @@ def message_json(view: MessageView) -> dict[str, object]:
         "id": view.id,
         "chat_id": view.chat_id,
         "date": _iso(view.date),
-        "sender": {
-            "id": view.sender.id,
-            "kind": view.sender.kind,
-            "username": view.sender.username,
-            "name": view.sender.name,
-        },
+        "sender": _sender_json(view.sender),
         "out": view.out,
         "text": view.text,
         "reply_to": view.reply_to,
@@ -184,3 +203,51 @@ def message_json(view: MessageView) -> dict[str, object]:
         "links": [{"text": text, "url": url} for text, url in view.links],
         **({"chat_title": view.chat_title} if view.chat_title else {}),
     }
+
+
+def _sender_json(s: Sender) -> dict[str, object]:
+    return {"id": s.id, "kind": s.kind, "username": s.username, "name": s.name}
+
+
+# --- `tg watch` ---------------------------------------------------------------
+
+
+def event_json(event: WatchEvent) -> dict[str, object]:
+    """One `tg watch --jsonl` line (documented in README → `tg watch`)."""
+    if isinstance(event, MessageEvent):
+        return {"event": "edit" if event.edit else "message", **message_json(event.view)}
+    if isinstance(event, TypingEvent):
+        return {
+            "event": "typing",
+            "chat_id": event.chat_id,
+            "date": _iso(event.date),
+            "sender": _sender_json(event.sender),
+            "action": event.action,
+        }
+    return {
+        "event": "delete",
+        "chat_id": event.chat_id,
+        "date": _iso(event.date),
+        "ids": list(event.ids),
+    }
+
+
+def ready_json(peers: list[dict[str, object]], date: datetime) -> dict[str, object]:
+    """The line `tg watch` prints once it is subscribed and any replay is done."""
+    return {"event": "ready", "date": _iso(date), "peers": peers}
+
+
+def event_lines(
+    event: WatchEvent, *, now: datetime, tz: tzinfo | None = None, chat: str | None = None
+) -> list[str]:
+    """Compact `tg watch` lines. `chat` names the chat when several are watched."""
+    if isinstance(event, MessageEvent):
+        view = replace(event.view, chat_title=chat) if chat else event.view
+        return compact(view, now=now, tz=tz, peer_hint=str(view.chat_id), truncate=LIST_TRUNCATE)
+    tz = tz or now.tzinfo or UTC
+    local = event.date.astimezone(tz)
+    head = local.strftime("%m-%d %H:%M" if local.year == now.year else "%Y-%m-%d %H:%M")
+    where = f"[{chat}] " if chat else ""
+    if isinstance(event, TypingEvent):
+        return [f"~ {head} {where}{_who(event.sender)}: {event.action}"]
+    return [f"✗ {head} {where}deleted " + " ".join(f"#{i}" for i in event.ids)]

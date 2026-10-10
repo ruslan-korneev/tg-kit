@@ -52,6 +52,12 @@ def test_accounts_is_empty_and_succeeds_without_login(tmp_path: Path) -> None:
         (("press", "@example_bot", "1", "--data", "x", "--data-hex", "00"), 2, "not both"),
         (("login",), 3, "needs a terminal"),
         (("logout",), 3, "not logged in"),
+        (("watch", "me", "--jsonl"), 3, "not logged in"),
+        (("watch", "me", "@example_bot", "--after", "5"), 2, "--after takes one PEER"),
+        (("watch", "me", "--after", "5", "--since", "2h"), 2, "pass one"),
+        (("watch", "me", "--events", "message,typo"), 2, "message,edit,typing,delete"),
+        (("watch", "me", "--idle-exit", "0"), 2, "must be positive"),
+        (("--json", "watch", "me"), 2, "use --jsonl"),
     ],
 )
 def test_failures_exit_with_the_contracted_code_and_one_line(

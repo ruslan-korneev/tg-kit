@@ -7,7 +7,18 @@ from datetime import datetime
 
 from tg_kit.buttons import ButtonGrid
 
-__all__ = ["Forward", "Media", "MessageView", "Reaction", "Sender", "with_edits"]
+__all__ = [
+    "DeleteEvent",
+    "Forward",
+    "Media",
+    "MessageEvent",
+    "MessageView",
+    "Reaction",
+    "Sender",
+    "TypingEvent",
+    "WatchEvent",
+    "with_edits",
+]
 
 
 @dataclass(frozen=True)
@@ -72,3 +83,36 @@ class MessageView:
 
 def with_edits(view: MessageView, edits: int) -> MessageView:
     return replace(view, edits=edits)
+
+
+# --- `tg watch` events ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MessageEvent:
+    """A new message (`edit=False`) or a new state of an edited one (`edit=True`)."""
+
+    view: MessageView
+    edit: bool = False
+
+
+@dataclass(frozen=True)
+class TypingEvent:
+    """Someone in a chat is typing, recording, uploading…, or stopped (`cancel`)."""
+
+    chat_id: int
+    sender: Sender
+    action: str  # typing | cancel | record_audio | upload_photo | … (snake_case TL name)
+    date: datetime  # when tg received it (typing updates carry no date)
+
+
+@dataclass(frozen=True)
+class DeleteEvent:
+    """Messages deleted. `chat_id` None: Telegram did not say where (private chats, groups)."""
+
+    chat_id: int | None
+    ids: tuple[int, ...]
+    date: datetime  # when tg received it
+
+
+WatchEvent = MessageEvent | TypingEvent | DeleteEvent
