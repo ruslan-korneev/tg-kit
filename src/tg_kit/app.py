@@ -174,12 +174,19 @@ Body = Callable[[Runtime], Coroutine[Any, Any, int | None]]
 
 
 def run(  # noqa: C901 — one branch per case keeps the contract readable in one place
-    g: Globals, body: Body, *, extra_budget: float = 0.0, timeout_hint: str | None = None
+    g: Globals,
+    body: Body,
+    *,
+    extra_budget: float = 0.0,
+    timeout_hint: str | None = None,
+    unbounded: bool = False,
 ) -> NoReturn:
     """Run one command body and exit with its code.
 
     The whole body runs under `g.timeout + extra_budget` seconds (`extra_budget`
     is a command's own `--wait`), so nothing can hang past what was asked for.
+    `unbounded` is for streams that run until stopped (`tg watch`); such a body
+    bounds its own setup.
     """
     _setup_logging(verbose=g.verbose)
     code = EXIT_UNEXPECTED
@@ -206,7 +213,8 @@ def run(  # noqa: C901 — one branch per case keeps the contract readable in on
         )
         # Telethon may sleep through a FLOOD_WAIT up to the configured threshold;
         # that sleep must not be cut short by our own timeout and misreported.
-        async with asyncio.timeout(g.timeout + extra_budget + rt.config.flood_sleep_threshold):
+        budget = None if unbounded else g.timeout + extra_budget + rt.config.flood_sleep_threshold
+        async with asyncio.timeout(budget):
             return await body(rt)
 
     try:

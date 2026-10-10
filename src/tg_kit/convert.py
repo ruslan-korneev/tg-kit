@@ -7,6 +7,7 @@ one-class-per-kind `KeyboardButtonCallback`, `KeyboardButtonUrl`, ….
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,10 +15,16 @@ from telethon import utils
 from telethon.tl import types
 
 from tg_kit.buttons import Button, ButtonGrid
-from tg_kit.model import Forward, Media, MessageView, Reaction, Sender
-from tg_kit.session import entity_kind
+from tg_kit.model import DeleteEvent, Forward, Media, MessageView, Reaction, Sender, TypingEvent
+from tg_kit.session import EntityRow, entity_kind
 
-__all__ = ["convert_buttons", "convert_message"]
+__all__ = [
+    "convert_buttons",
+    "convert_delete",
+    "convert_message",
+    "convert_typing",
+    "typing_action",
+]
 
 _INLINE_TYPES: dict[type, str] = {
     types.InlineButtonTypeCallback: "cb",
@@ -263,3 +270,76 @@ def _reactions(reactions: Any) -> tuple[Reaction, ...]:
 
 def _snake(name: str) -> str:
     return "".join(f"_{ch.lower()}" if ch.isupper() else ch for ch in name).lstrip("_") or "unknown"
+
+
+# --- `tg watch`: raw updates → events ----------------------------------------
+# Layer 229 shapes (checked against the installed telethon.tl.types):
+#   updateUserTyping user_id action top_msg_id?           (private chat: the chat is the user)
+#   updateChatUserTyping chat_id from_id:Peer action      (basic group)
+#   updateChannelUserTyping channel_id from_id:Peer action top_msg_id?
+#   updateDeleteMessages messages                         (no chat: ids are per account)
+#   updateDeleteChannelMessages channel_id messages
+
+TYPING_UPDATES = (
+    types.UpdateUserTyping,
+    types.UpdateChatUserTyping,
+    types.UpdateChannelUserTyping,
+)
+DELETE_UPDATES = (types.UpdateDeleteMessages, types.UpdateDeleteChannelMessages)
+
+
+def typing_action(action: Any) -> str:
+    """`SendMessageRecordAudioAction` → `record_audio`; unknown future kinds still convert."""
+    name = type(action).__name__.removeprefix("SendMessage").removesuffix("Action")
+    return _snake(name)
+
+
+def convert_typing(
+    update: Any,
+    *,
+    self_id: int | None,
+    find: Callable[[int], EntityRow | None],
+    now: datetime,
+) -> TypingEvent | None:
+    """A typing update → event; `find` looks a sender up in the local entity cache."""
+    if isinstance(update, types.UpdateUserTyping):
+        chat_id = from_id = int(update.user_id)
+    elif isinstance(update, types.UpdateChatUserTyping):
+        chat_id = int(utils.get_peer_id(types.PeerChat(update.chat_id)))
+        from_id = int(utils.get_peer_id(update.from_id))
+    elif isinstance(update, types.UpdateChannelUserTyping):
+        chat_id = int(utils.get_peer_id(types.PeerChannel(update.channel_id)))
+        from_id = int(utils.get_peer_id(update.from_id))
+    else:
+        return None
+    return TypingEvent(
+        chat_id=chat_id,
+        sender=_cached_sender(from_id, self_id, find),
+        action=typing_action(update.action),
+        date=_utc(now),
+    )
+
+
+def _cached_sender(
+    peer_id: int, self_id: int | None, find: Callable[[int], EntityRow | None]
+) -> Sender:
+    # Typing updates come without user objects; the cache is all there is offline.
+    row = find(peer_id)
+    username = row.username if row else None
+    if peer_id == self_id:
+        return Sender(id=peer_id, kind="self", username=username, name="me")
+    if row is None:
+        return Sender(id=peer_id, kind="unknown", username=None, name=str(peer_id))
+    return Sender(
+        id=peer_id, kind=row.kind or "unknown", username=username, name=row.name or str(peer_id)
+    )
+
+
+def convert_delete(update: Any, *, now: datetime) -> DeleteEvent | None:
+    if isinstance(update, types.UpdateDeleteChannelMessages):
+        chat_id: int | None = int(utils.get_peer_id(types.PeerChannel(update.channel_id)))
+    elif isinstance(update, types.UpdateDeleteMessages):
+        chat_id = None
+    else:
+        return None
+    return DeleteEvent(chat_id=chat_id, ids=tuple(int(i) for i in update.messages), date=_utc(now))

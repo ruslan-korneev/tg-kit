@@ -8,7 +8,7 @@ from typing import Annotated
 
 import typer
 
-from tg_kit import cmd_allow, cmd_bots, cmd_raw, cmd_read, cmd_write
+from tg_kit import cmd_allow, cmd_bots, cmd_raw, cmd_read, cmd_watch, cmd_write
 from tg_kit.app import (
     AccountOpt,
     JsonOpt,
@@ -30,7 +30,7 @@ __all__ = ["app", "main"]
 
 auth_app = typer.Typer(no_args_is_help=True, help="Manage the Telegram app credentials.")
 app.add_typer(auth_app, name="auth")
-for module in (cmd_read, cmd_write, cmd_bots, cmd_raw, cmd_allow):
+for module in (cmd_read, cmd_write, cmd_bots, cmd_watch, cmd_raw, cmd_allow):
     module.register(app)
 
 # Login time can be long: code delivery + a human typing it in.
