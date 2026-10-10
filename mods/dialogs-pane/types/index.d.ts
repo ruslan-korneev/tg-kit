@@ -353,6 +353,106 @@ export type BotTest = {
   timing: Timing
 }
 
+// ── autopilot ──
+// Phase 3 (docs/design/dialogs-pane.md §6): dialogs answered as you, per level.
+// Pure rules in hooks/autopilot/.
+
+/** listen ◉ reads and summarizes; draft ✎ writes into the band; auto ⟳ sends within the limits. */
+export type ApLevel = 'listen' | 'draft' | 'auto'
+
+/** Escalation topics: a reply touching an enabled one goes to you as a draft. */
+export type ApTopic = 'money' | 'dates' | 'promises' | 'opinions' | 'personal'
+
+/** What the Speaker may use: your words, never the chat's. */
+export type ApBrief = { tone: string; promises: string; facts: string }
+
+/** One dialog handed to the autopilot, kept in $.store (`autopilot.dialogs`). */
+export type ApDialog = {
+  peer: PeerRef
+  level: ApLevel
+  brief: ApBrief
+  /** Auto replies per hour; null is ∞ (no limit). */
+  perHour: number | null
+  /** Messages closer than this are one burst, answered once. */
+  gapS: number
+  /** Enabled escalation topics. */
+  topics: ApTopic[]
+  /** Below this confidence an auto reply becomes a draft. */
+  threshold: number
+  /** Local minutes of the day; inside, the dialog acts as `draft`. null: off. */
+  quiet: { from: number; to: number } | null
+}
+
+/** Check before sending, when new messages came while the reply was written. */
+export type ApCheck = 'send' | 'regenerate' | 'send_then_answer'
+
+export type ApOutcome =
+  | { kind: 'working' }
+  | { kind: 'sent'; ids: number[]; by: 'auto' | 'you' }
+  | { kind: 'drafted'; reasons: string[] }
+  | { kind: 'dropped' }
+  | { kind: 'listened' }
+  | { kind: 'skipped'; reason: string }
+  | { kind: 'failed'; reason: string }
+
+export type ApUndo = { state: 'open'; until: number } | { state: 'undone' } | { state: 'expired' } | { state: 'failed'; reason: string }
+
+/** One burst the autopilot handled: the autopilot ledger. */
+export type ApEntry = {
+  seq: number
+  at: number
+  peer: PeerRef
+  level: ApLevel
+  incoming: { id: number; text: string }[]
+  reply: string
+  confidence: number | null
+  topics: ApTopic[]
+  /** Every check-before-send choice, in order. */
+  checks: ApCheck[]
+  outcome: ApOutcome
+  undo: ApUndo | null
+}
+
+export type ApDraftState = { kind: 'ready' } | { kind: 'editing' } | { kind: 'sending' } | { kind: 'failed'; reason: string }
+
+/** A reply waiting for you in the band: ⏎ send, e edit, x drop, o open. */
+export type ApDraft = {
+  seq: number
+  peer: PeerRef
+  incoming: string
+  text: string
+  confidence: number | null
+  reasons: string[]
+  state: ApDraftState
+}
+
+/** A `listen` dialog's summary of a burst. */
+export type ApNote = { seq: number; peer: PeerRef; text: string }
+
+export type ApPhase = 'listening' | 'gathering' | 'typing' | 'thinking' | 'checking' | 'sending'
+
+export type ApView = { kind: 'none' } | { kind: 'card'; dialogId: number; notice: string | null } | { kind: 'ledger' }
+
+/** The newest auto reply while `u` may still delete it. */
+export type ApUndoWindow = { seq: number; peer: PeerRef; ids: number[]; text: string; confidence: number | null; until: number }
+
+export type Autopilot = {
+  /** Per dialog id; mirrors $.store. */
+  dialogs: Record<string, ApDialog>
+  /** Dialog ids answered in this session: started from the card, never resumed by a new session. */
+  running: number[]
+  phase: Record<string, ApPhase>
+  view: ApView
+  ledger: ApEntry[]
+  drafts: ApDraft[]
+  notes: ApNote[]
+  undo: ApUndoWindow | null
+  /** Ticks each second while an undo window is open. */
+  now: number
+}
+
+// ── /autopilot ──
+
 declare module 'claude-code' {
   interface PluginState {
     'dialogs-pane': {
@@ -379,6 +479,7 @@ declare module 'claude-code' {
       draft: ReplyDraft | null
       // ── /routing ──
       bottest: BotTest
+      autopilot: Autopilot
     }
   }
 }
