@@ -1004,9 +1004,13 @@ Flow 4 · Compact · the card in 12 rows
 ```
 
 ```text
-Flow 4 · Hidden · a draft, then an auto reply's undo window
-✎ Contact A: "Can we call tomorrow at 10?" → "Tomorrow is packed, can I write after 18?"         1/2
-  dates · conf 0.62   ctrl+x tab ›  ⏎ send   e: edit   d: drop   o: open   j: next
+Flow 4 · Hidden · a draft on a row of its own, so one ⏎ sends it; then an auto reply's undo window
+✎ Contact A: "Can we call tomorrow at 10?" · dates · conf 0.62                 1/2  ctrl+x tab: keys
+  → Tomorrow is packed, can I write after 18?
+
+the same item once the band holds the keys (ctrl+x tab):
+✎ Contact A: "Can we call tomo…" · dates · 0.62      1/2  ⏎ send  e: edit  d: drop  o: open  j: next
+  → Tomorrow is packed, can I write after 18?
 
 ⟳ Dev Team replied "Merged, thanks" · conf 0.93
   ctrl+x tab ›  u: undo 28s   d: ok
@@ -1331,15 +1335,21 @@ allowlist that grows between two presses lets the second through.
 
 **T0d — the owner's own writes pass `--yes`** (½–1 h; decision 9; on today's pane). The argv
 builders in `bottest/calls.ts` take `byOwner`, false by default; the composer's send (`n`), a press
-of a bot's button and ⏎ on a draft set it and add `--yes`. Autopilot's auto replies, delegate's
-replies and the recorder's script never do: an agent sends or replays those. The owner's writes
-skip the "not in the allowlist" refusal of `readOnlyReason` (`bottest/keyboard.ts`) and keep the
-BotFather one; the card's check for auto and delegate (`apAllowView`, `register.tsx:2381`) stays as
-it is. In the band, ⏎ on a draft sends only when the band shows the whole draft; otherwise it opens
-it, as `o` does. Tests: `n` and a press in a chat outside allow.toml run `tg send` and `tg press`
-with `--yes`; an auto reply and the recorded script carry no `--yes`; auto on a chat outside
-allow.toml is still refused; a draft cut short in the band opens instead of sending; BotFather
-runs nothing.
+of a bot's button and ⏎ on a draft set it and add `--yes`. A draft is autopilot's in the band, or
+routing's Draft reply, whose check (the dry run) and `send reply` both pass it. Autopilot's auto
+replies, delegate's replies and the recorder's script never do: an agent sends or replays those.
+The owner's writes skip the "not in the allowlist" refusal of `readOnlyReason`
+(`bottest/keyboard.ts`) and keep the BotFather one; the card's check for auto and delegate
+(`apAllowView`, `register.tsx:2381`) stays as it is. ⏎ sends a draft only when its whole text is
+on screen. In the band, a draft cut short reads `⏎ open`: it opens the chat, as `o` does, and
+unfolds the whole draft in the band (`ApDraftState` `unfolded`), and the next ⏎ sends; today's pane
+has no draft row to open it on, and T3 and T5 replace this. Routing's Draft reply draws its whole
+text, wrapped, before `send reply`. Width is counted in cells, erring wide: from U+2000 up a
+character counts two. Tests: `n` and a press in a chat outside allow.toml run `tg send` and
+`tg press` with `--yes`; so do routing's check and `send reply`; an auto reply and the recorded
+script carry no `--yes`; auto on a chat outside allow.toml is still refused; a draft cut short in
+the band unfolds instead of sending, and the next ⏎ sends it; a wide emoji (✅) counts two cells;
+BotFather runs nothing.
 
 **T1 — frame, key table, menu, focus** (1–1.5 days; first, one agent).
 - `hooks/ui/keys.ts` (pure): one table of every key: letter or digit, label, the views it serves,
@@ -1389,12 +1399,18 @@ runs nothing.
   each `!` prompt and on every card open (fixes the stale cache).
 - Drafts (autopilot's and routing's "Draft reply") as rows of their chat: ⏎ send, `e`, `d`, with
   the guard's verdict shown first; ⏎ sends with `--yes` (T0d), so `draft` never asks for
-  allow.toml, while `auto` and `delegate` do (decision 9).
+  allow.toml, while `auto` and `delegate` do (decision 9). A draft row always shows its whole
+  text, wrapped.
+- With the rows in place, ⏎ on a draft the band cuts short opens the pane on that draft's row, and
+  ⏎ there sends it, as §9 has it. T0d's `unfolded` state and the band's unfolded text go, so a draft
+  has one place where it is read and sent, and the band keeps its two rows.
 - Levels by kind follow decision 8: `5` delegate only in person chats.
 - Tests: `a ⏎` starts draft; `a 4` on a chat not allowed fills the prompt and starts nothing; after
   the allow, ⏎ starts; `a 5 ⏎ ⏎` starts with the guard stand-in; a person lists five levels, a
   group four, a channel and a bot two; skip stops only from options with the typed name; draft row
-  keys; `a 3 ⏎` on a chat outside allow.toml starts draft, and its draft sends.
+  keys; `a 3 ⏎` on a chat outside allow.toml starts draft, and its draft sends; a draft the band
+  cuts short opens the pane on its row, ⏎ there sends it with `--yes`, and no `unfolded` state is
+  left.
 
 **T4 — running, activity, the kill switch** (1 day; after T1).
 - `0` stops every follow, autopilot and Worker, drawn red only while something runs.
@@ -1412,12 +1428,17 @@ runs nothing.
   chats that are not muted once T8 gives `muted`; every unread chat until then.
 - The band as a queue: one item (two rows), `1/3 j: next`, priority hold > draft > undo > watched
   reply > summary > task news, keys ⏎ `e d o u j k`, one `ctrl+x tab ›`; skip what the pane shows.
-  ⏎ on a draft the band cuts short opens it in the pane instead of sending (decision 9).
+- A draft's item: the incoming message on the first row, the draft alone on the second, the full
+  width, so a draft that fits its row sends with one ⏎. Today's line gives the draft half a row
+  (`room` in `draftLine`), so at 64–100 columns most drafts need two ⏎. A draft longer than its
+  row is never sent cut short (decision 9): until T3's rows land, ⏎ unfolds it in the band as T0d
+  does and the next ⏎ sends; after that, ⏎ opens its row (T3).
 - `UserMessage`: this plugin's packets as one row while not expanded (as the probe did).
 - `/tg help` (the key table from `keys.ts`) and `/tg status` (the summary, what runs) as
   `CommandOutput` cards; the command's description and `argumentHint` list the subcommands.
 - Tests: label text per state; the status line clears without an alarm; queue order and `j`; only
-  this plugin's packets are compacted; `/tg help` matches the table.
+  this plugin's packets are compacted; `/tg help` matches the table; at 64 columns a draft that
+  fits its row sends with one ⏎, and a longer one does not send on the first ⏎.
 
 **T6 — bot testing** (1 day; after T2).
 - Only in bot chats (§4.6): `r`, and `f` in the bar only on a reply with a pair; `n` only where
