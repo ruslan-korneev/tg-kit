@@ -1836,16 +1836,23 @@ async function flushAgentPins($: $): Promise<void> {
 
 // --- drafted replies: dry run first, then the same tg send; the owner's, so --yes ---
 
-async function setDraftStep($: $, step: ReplyDraft['step']): Promise<void> {
-  await update($, draft, value => (value === null ? null : { ...value, step }))
+/** The step of `of`, only while it is still the draft in the row: a turn can put another in its place meanwhile. */
+async function setDraftStep($: $, of: ReplyDraft, step: ReplyDraft['step']): Promise<void> {
+  await update($, draft, value =>
+    value !== null && value.peer.id === of.peer.id && value.replyTo === of.replyTo && value.text === of.text ? { ...value, step } : value,
+  )
 }
 
 async function runDraft($: $, current: ReplyDraft, isDryRun: boolean) {
+  if (isBotFather(current.peer.arg)) {
+    await setDraftStep($, current, { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) })
+    return null
+  }
   try {
     // The owner checks and sends it after reading it whole: their own write (decision 9).
     return await $.process.run(draftArgv(current, isDryRun, true), { stdin: current.text, timeoutMs: TG_TIMEOUT_MS })
   } catch (error) {
-    await setDraftStep($, { kind: 'failed', reason: `tg did not run: ${reasonOf(error)}` })
+    await setDraftStep($, current, { kind: 'failed', reason: `tg did not run: ${reasonOf(error)}` })
     return null
   }
 }
@@ -1854,33 +1861,32 @@ async function runDraft($: $, current: ReplyDraft, isDryRun: boolean) {
 async function checkDraft($: $): Promise<void> {
   const current = await read($, draft)
   if (current === null) return
-  if (isBotFather(current.peer.arg)) return setDraftStep($, { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) })
-  await setDraftStep($, { kind: 'checking' })
+  await setDraftStep($, current, { kind: 'checking' })
   const ran = await runDraft($, current, true)
   if (ran === null) return
   const plan = ran.exitCode === 0 ? parsePlan(ran.stdout) : null
   if (plan === null) {
     const failure = failureOf(ran.exitCode, ran.stderr)
-    await setDraftStep($, { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failure.kind })
+    await setDraftStep($, current, { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failure.kind })
     return
   }
-  await setDraftStep($, { kind: 'planned', ...plan })
+  await setDraftStep($, current, { kind: 'planned', ...plan })
 }
 
 /** send reply: only after a check the guard allowed, and the same argv minus --dry-run. */
 async function sendDraft($: $): Promise<void> {
   const current = await read($, draft)
   if (current === null || current.step.kind !== 'planned' || !current.step.isAllowed) return
-  await setDraftStep($, { kind: 'sending' })
+  await setDraftStep($, current, { kind: 'sending' })
   const ran = await runDraft($, current, false)
   if (ran === null) return
   const ids = ran.exitCode === 0 ? parseSent(ran.stdout) : null
   if (ids === null) {
     const failure = failureOf(ran.exitCode, ran.stderr)
-    await setDraftStep($, { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failure.kind })
+    await setDraftStep($, current, { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failure.kind })
     return
   }
-  await setDraftStep($, { kind: 'sent', ids })
+  await setDraftStep($, current, { kind: 'sent', ids })
   const open = await read($, thread)
   if (open?.peer.id === current.peer.id) await loadThread($, open.peer)
 }

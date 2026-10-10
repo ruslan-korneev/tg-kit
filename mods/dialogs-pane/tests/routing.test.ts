@@ -64,6 +64,8 @@ function world(
   on: On,
   options: {
     tg?: (ran: Ran) => ProcessRunResult
+    /** As `tg`, for a run that has to wait on something, such as a turn finishing meanwhile. */
+    tgAsync?: (ran: Ran) => Promise<ProcessRunResult>
     watch?: readonly string[]
     /** A prompt.submit hook refuses every prompt with this reason. */
     drop?: string
@@ -80,9 +82,10 @@ function world(
     store.set(e.key, e.value)
     return { value: undefined }
   })
-  on('process.run', (_$, e) => {
+  on('process.run', async (_$, e) => {
     const ran: Ran = { argv: e.argv, stdin: e.init?.stdin }
     seen.runs.push(ran)
+    if (options.tgAsync !== undefined) return { value: await options.tgAsync(ran) }
     return { value: (options.tg ?? (one => tgAnswer(one.argv)))(ran) }
   })
   on('process.spawn', async function* (_$, e) {
@@ -472,6 +475,76 @@ describe('drafted reply', () => {
     expect((await ui.find({ key: 'draft' }))?.text).not.toContain('tg allow add')
     expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
     expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run'))).toEqual([])
+    await ui.unmount()
+  })
+
+  test('edit on a planned draft reopens the field and drops the plan: send needs a new check', async ($, on) => {
+    const { ui } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
+    await ui.press({ key: 'draft:check' })
+    await ui.press({ key: 'draft:edit' })
+    expect(await ui.find({ key: 'draft:text' })).toBeDefined()
+    expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
+    expect(await ui.find({ key: 'draft:check' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  /** A first draft for @example_bot, and a second Draft reply packet (from `second`) that main is working on. */
+  async function twoDrafts($: Engine, on: On, tgAsync: (ran: Ran) => Promise<ProcessRunResult>, second: number) {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { tgAsync })
+    const ui = await openAndSelect($, clock)
+    for (let i = 0; i < 4; i++) await ui.press({ key: 'intent' })
+    await ui.press({ key: 'send' })
+    await $.turn.start({ text: '', turnId: 't-1' })
+    await $.turn.complete({ answer: 'First draft.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
+    if (second !== 1001) await ui.press({ key: `dialog:${second}` })
+    await ui.press({ key: 'hint:up' })
+    await ui.press({ key: 'hint:select' })
+    for (let i = 0; i < 6 && !((await ui.find({ key: 'intent' }))?.text ?? '').includes('[Draft reply]'); i++) await ui.press({ key: 'intent' })
+    await ui.press({ key: 'send' })
+    await $.turn.start({ text: '', turnId: 't-2' })
+    return { ui, seen }
+  }
+
+  const finishSecond = ($: Engine) =>
+    $.turn.complete({ answer: 'Second draft.', durationMs: 1, isAborted: false, turnId: 't-2', reason: 'answer' })
+
+  test('a draft that lands while check runs gets no plan of its own, and BotFather is never sent to', async ($, on) => {
+    const dialogs = DIALOGS.map(one => (one.id === 1002 ? { ...one, kind: 'bot', username: 'BotFather', title: 'BotFather' } : one))
+    let isFinished = false
+    const { ui, seen } = await twoDrafts($, on, async ran => {
+      if (ran.argv[1] === 'dialogs') return json(dialogs)
+      if (ran.argv[1] !== 'send') return tgAnswer(ran.argv)
+      if (ran.argv.includes('--dry-run') && !isFinished) {
+        isFinished = true
+        await finishSecond($) // main answers the BotFather packet while the first draft's dry run is out
+      }
+      return ran.argv.includes('--dry-run') ? json({ action: 'send', target: {}, steps: [], guard: { allowed: true, reason: 'confirmed with --yes' } }) : json({ sent: [{ id: 677900 }] })
+    }, 1002)
+    await ui.press({ key: 'draft:check' })
+    expect((await ui.find({ key: 'draft' }))?.text).toContain('in @BotFather')
+    expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
+    expect(seen.runs.filter(one => one.argv[1] === 'send' && one.argv[2] === '@BotFather')).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a draft that lands while send runs is not marked sent', async ($, on) => {
+    let isFinished = false
+    const { ui, seen } = await twoDrafts($, on, async ran => {
+      if (ran.argv[1] !== 'send') return tgAnswer(ran.argv)
+      if (ran.argv.includes('--dry-run')) return json({ action: 'send', target: {}, steps: [], guard: { allowed: true, reason: 'confirmed with --yes' } })
+      if (!isFinished) {
+        isFinished = true
+        await finishSecond($) // main answers the second packet while the first draft is being sent
+      }
+      return json({ sent: [{ id: 677900 }] })
+    }, 1001)
+    // twoDrafts sent the second packet after the first draft came; check the first one now.
+    await ui.press({ key: 'draft:check' })
+    await ui.press({ key: 'draft:send' })
+    expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.stdin)).toEqual(['First draft.'])
+    expect((await ui.find({ key: 'draft' }))?.text).toContain('Second draft.')
+    expect((await ui.find({ key: 'draft' }))?.text).not.toContain('sent #677900')
     await ui.unmount()
   })
 })
