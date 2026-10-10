@@ -294,7 +294,7 @@ for: a hard stop waiting (`$.ui.notify` too), stops skipped while delegate runs,
 - **Never here**: it cannot work in this kind of chat, or must not. Not drawn, not in the menu, no
   hotkey. Recording in a person chat, writing in a channel, delegate in a group.
 - **Not now**: it works after one step. Listed in the menu, dim, with the step:
-  `f: diff · needs a reply with an earlier pair`, `n: write · needs allow.toml`.
+  `f: diff · needs a reply with an earlier pair`; on the card, `4: auto · needs allow.toml`.
 - **Here and now**: in the action bar when it is one of this kind of chat's common verbs, in the
   menu otherwise.
 
@@ -381,13 +381,14 @@ newest message's sender.
 - **Fix, Reproduce, Test** stay with bots: their templates search the repo for the reply's handler
   and run the `<replay>` command (`packet/intents.ts:13–30`).
 
-**The owner's own words** (decision 9, open). The pane sends what the owner typed (`n`) or
-approved (⏎ on a draft) without `--yes`, so allow.toml, which says where *agents* may write, also
-decides where the owner may. Proposed: these two sends pass `--yes`. The key press is the owner's
-consent, the target is an id, and no model sits between the key and the send. allow.toml keeps
-gating what leaves with nobody looking: auto replies, delegate's replies, the Worker. Until the
-owner decides, `n` in a chat outside allow.toml is "not now": dim in the menu, with
-`! tg allow add` one ⏎ away (as the card does).
+**The owner's own words** (decision 9). What the owner sends with their own key goes out with
+`--yes`: a message typed after `n`, ⏎ on a draft whose whole text is on screen, a press of a bot's
+button. The key press is the owner's consent, the target is an id, and no model sits between the
+key and the send. allow.toml gates only what agents send on their own: auto replies, delegate's
+replies, the Worker, an agent replaying a recording. Two refusals stay: BotFather (read-only by the
+repo's rule, checked before tg runs) and `readonly = true` in tg's config (the guard's first rule;
+the notice row shows its reason). A band item that cuts a draft short does not send it on ⏎; it
+opens the draft in the pane first.
 
 ### 4.7 Folders
 
@@ -778,9 +779,9 @@ transcript, after ⏎ (ctrl+o shows the whole packet):
 ### 5.2 Bot testing: send, press, record, diff
 
 The cursor message's buttons get the digits (`1: Retry 2: Back`); other messages draw theirs in
-brackets. A chat not in allow.toml, or BotFather, draws them dim with `ro`, and a press says why
-instead of running tg. `n` writes, `r` records, `f` diffs. Results land in place, with one notice
-row instead of toasts.
+brackets. A press is the owner's own write and goes out with `--yes` (decision 9); BotFather draws
+its buttons dim with `ro`, and a press there says why instead of running tg. `n` writes, `r`
+records, `f` diffs. Results land in place, with one notice row instead of toasts.
 
 `r` and `f` exist only in a chat with a bot (§4.6): a recording replays what was sent, and a diff
 compares a bot's text and keyboards. `f` joins the bar when the cursor reply has an earlier reply to
@@ -921,9 +922,10 @@ Flow 4 · Wide · a: the agent card for a chat (it takes the thread's place; the
 └────────────────────────────────────────────────────────────────┘
 ```
 
-When a level needs allow.toml, the card says so and ⏎ puts the command in the prompt
-(`$.prompt.fill`); the human still runs it. The card re-reads the allowlist after any `!` command
-(the stale cache of §2.4 is fixed).
+When a level needs allow.toml (auto and delegate: they send on their own), the card says so and ⏎
+puts the command in the prompt (`$.prompt.fill`); the human still runs it. The card re-reads the
+allowlist after any `!` command (the stale cache of §2.4 is fixed). `draft` never needs it: the
+owner sends each draft with their own key (decision 9).
 
 ```text
 Flow 4 · Wide · 4: auto on a chat that is not in allow.toml
@@ -1272,7 +1274,8 @@ Cards align their labels in a 7-column left column (`brief`, `limits`, `asks`, `
 | flood wait | yellow `Telegram asks to wait 23 s · retrying`, counting down |
 | not logged in | `Not logged in. ⏎ puts ! tg login in your prompt` (login stays a human act) |
 | tg missing | `tg is not on PATH. README → Install` and `g: retry` |
-| read-only chat | dim buttons and `ro`; a press explains, runs nothing |
+| BotFather | dim buttons and `ro`; a press explains, runs nothing |
+| a write tg refuses (`readonly = true`) | the guard's reason in the notice row; nothing is retried |
 | guard missing | the card's `guard` row in red with how to install it; delegate dim |
 | keys elsewhere | `ctrl+x tab: keys` in the header, the action bar dim |
 
@@ -1286,7 +1289,8 @@ inline. Each keeps its `$` code in its marked block of `register.tsx` as today.
 ```text
 T0a fake tg          ─┐
 T0b kill switch now  ─┤  independent and small: any time, before T1 is fine
-T0c allowlist fix    ─┘
+T0c allowlist fix    ─┤
+T0d owner's writes   ─┘
 T8 tg folders (CLI)  ─── independent (Python); T9 needs it
 T1 frame, keys, menu, focus ──┬─▶ T2 send sheet ──┬─▶ T6 bot testing ──┐
                               ├─▶ T3 agent card    │                   │
@@ -1295,14 +1299,15 @@ T1 frame, keys, menu, focus ──┬─▶ T2 send sheet ──┬─▶ T6 bot
                               └─▶ T9 folders, For you (needs T8) ──────┘
 ```
 
-With one builder at a time: T0b, T0c, T1, T4, T2, T8, T9, T5, T3, T6, T7. Safety first, then the
-flow the owner uses most (send), then the owner's folders, then what runs at a glance, then the
-agent card.
+With one builder at a time: T0b, T0c, T0d, T1, T4, T2, T8, T9, T5, T3, T6, T7. Safety first, then
+the flow the owner uses most (send), then the owner's folders, then what runs at a glance, then
+the agent card.
 
 **T0a — a fake tg for live runs** (½ h, optional). `mods/dialogs-pane/dev/fake-tg` answering
 `dialogs`, `read`, `msg`, `whoami`, `allow list`, `send` (with `--dry-run`), `press`, `delete` and
 `watch` (live events from a spool file), and after T8 `folders` and `dialogs --folder`, with
-placeholder chats and folders only. Appendix A lists the calls.
+placeholder chats and folders only. Its guard honours `--yes` as tg's does. Appendix A lists the
+calls.
 Every builder before this one wrote their own.
 
 **T0b — the kill switch, on today's pane** (1–2 h; before the redesign). Register `/tg` with
@@ -1313,6 +1318,18 @@ hotkey `0` (free in the pane; only the broadcast overlay uses it, and that repla
 **T0c — the card re-reads the allowlist** (½ h). `apSetLevel` and `apToggleRun` read
 `tg allow list` again before refusing, so "press 3 again" works after `! tg allow add`. Test: an
 allowlist that grows between two presses lets the second through.
+
+**T0d — the owner's own writes pass `--yes`** (½–1 h; decision 9; on today's pane). The argv
+builders in `bottest/calls.ts` take `byOwner`, false by default; the composer's send (`n`), a press
+of a bot's button and ⏎ on a draft set it and add `--yes`. Autopilot's auto replies, delegate's
+replies and the recorder's script never do: an agent sends or replays those. The owner's writes
+skip the "not in the allowlist" refusal of `readOnlyReason` (`bottest/keyboard.ts`) and keep the
+BotFather one; the card's check for auto and delegate (`apAllowView`, `register.tsx:2381`) stays as
+it is. In the band, ⏎ on a draft sends only when the band shows the whole draft; otherwise it opens
+it, as `o` does. Tests: `n` and a press in a chat outside allow.toml run `tg send` and `tg press`
+with `--yes`; an auto reply and the recorded script carry no `--yes`; auto on a chat outside
+allow.toml is still refused; a draft cut short in the band opens instead of sending; BotFather
+runs nothing.
 
 **T1 — frame, key table, menu, focus** (1–1.5 days; first, one agent).
 - `hooks/ui/keys.ts` (pure): one table of every key: letter or digit, label, the views it serves,
@@ -1361,11 +1378,13 @@ allowlist that grows between two presses lets the second through.
 - allow.toml: ⏎ fills `! tg allow add PEER --yes` (`$.prompt.fill`); the allowlist is re-read after
   each `!` prompt and on every card open (fixes the stale cache).
 - Drafts (autopilot's and routing's "Draft reply") as rows of their chat: ⏎ send, `e`, `d`, with
-  the guard's verdict shown first.
+  the guard's verdict shown first; ⏎ sends with `--yes` (T0d), so `draft` never asks for
+  allow.toml, while `auto` and `delegate` do (decision 9).
+- Levels by kind follow decision 8: `5` delegate only in person chats.
 - Tests: `a ⏎` starts draft; `a 4` on a chat not allowed fills the prompt and starts nothing; after
   the allow, ⏎ starts; `a 5 ⏎ ⏎` starts with the guard stand-in; a person lists five levels, a
   group four, a channel and a bot two; skip stops only from options with the typed name; draft row
-  keys.
+  keys; `a 3 ⏎` on a chat outside allow.toml starts draft, and its draft sends.
 
 **T4 — running, activity, the kill switch** (1 day; after T1).
 - `0` stops every follow, autopilot and Worker, drawn red only while something runs.
@@ -1383,6 +1402,7 @@ allowlist that grows between two presses lets the second through.
   chats that are not muted once T8 gives `muted`; every unread chat until then.
 - The band as a queue: one item (two rows), `1/3 j: next`, priority hold > draft > undo > watched
   reply > summary > task news, keys ⏎ `e d o u j k`, one `ctrl+x tab ›`; skip what the pane shows.
+  ⏎ on a draft the band cuts short opens it in the pane instead of sending (decision 9).
 - `UserMessage`: this plugin's packets as one row while not expanded (as the probe did).
 - `/tg help` (the key table from `keys.ts`) and `/tg status` (the summary, what runs) as
   `CommandOutput` cards; the command's description and `argumentHint` list the subcommands.
@@ -1392,11 +1412,14 @@ allowlist that grows between two presses lets the second through.
 **T6 — bot testing** (1 day; after T2).
 - Only in bot chats (§4.6): `r`, and `f` in the bar only on a reply with a pair; `n` only where
   one can write. A group's bot messages still take press digits.
-- Digits press the cursor message's buttons on writable chats; `ro` explains; `b` walks past nine.
+- Digits press the cursor message's buttons, with `--yes` (T0d); BotFather stays `ro` and
+  explains; `b` walks past nine.
 - Buttons on the message row from 90 columns; ids on the cursor row only; time 5 + day dividers.
 - `f` with nothing marked diffs the cursor reply with the last reply to the same outgoing message.
 - Recording stopped: `1` hands it to an agent as a live test (T2's sheet, intent Test, the steps
-  and script path in the packet), `2` copies the path (`$.ui.copy`), `d` discards.
+  and script path in the packet), `2` copies the path (`$.ui.copy`), `d` discards. The agent's
+  replay is an agent's write: when the bot is not in allow.toml, the sheet says so and ⏎ fills
+  `! tg allow add`.
 - Tests: a digit runs `tg press` with its row and col; `ro` runs nothing; `f` pairs; the hand-off
   builds a Test packet; a person, group and channel thread draws neither `r` nor `f`.
 
@@ -1470,15 +1493,17 @@ Made here on the second pass; the owner may revisit:
 7. **Intents follow the message's sender** (§4.6), with a new Do it for requests from people; Fix,
    Reproduce and Test stay with bots.
 
-Open, for the owner:
+Decided by the owner after the second pass (2026-10-10):
 
-8. **Delegate only in person chats.** In a group every member could steer the Worker. The spec
-   said "not public groups"; this is stricter, and the card cannot tell a public group from a
-   private one by its kind alone.
-9. **The owner's own writes pass `--yes`**: `n`, and ⏎ on a draft the owner has read. Today
-   allow.toml decides where the owner may write as well as where agents may, so `n` refuses the
-   owner's own words in every chat outside it. With this, allow.toml gates only what leaves with
-   nobody looking (auto, delegate, the Worker). Until decided, `n` outside allow.toml is listed dim.
+8. **Delegate only in person chats.** In a group every member could steer the Worker. Stricter
+   than the spec's "not public groups": the card cannot tell a public group from a private one by
+   its kind alone. Task T3 carries it.
+9. **The owner's own writes pass `--yes`**: a message typed after `n`, ⏎ on a draft whose whole
+   text is on screen, and a press of a bot's button (it follows from the rule as the owner put it:
+   allow.toml gates only what agents send on their own). allow.toml gates auto, delegate's replies,
+   the Worker and an agent replaying a recording; BotFather and `readonly = true` still refuse.
+   Rejected: allow.toml for the owner's writes too, which refused the owner's own words in every
+   chat outside it (`bottest/keyboard.ts:46`). Tasks T0d, T3, T5 and T6 carry it.
 
 ## 10. Rejected
 
