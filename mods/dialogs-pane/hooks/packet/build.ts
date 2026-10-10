@@ -253,12 +253,12 @@ export function decodeBase64(s: string): Uint8Array | null {
   return Uint8Array.from(out)
 }
 
-function toHex(bytes: Uint8Array): string {
+export function toHex(bytes: Uint8Array): string {
   return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** The callback data as text when it is valid UTF-8 with no control characters. */
-function printableUtf8(bytes: Uint8Array): string | null {
+export function printableUtf8(bytes: Uint8Array): string | null {
   // The environment's TextDecoder has no `fatal`: invalid bytes decode to U+FFFD, so a
   // round trip that changes the bytes means the data is binary and data_hex alone carries it.
   const text = new TextDecoder('utf-8').decode(bytes)

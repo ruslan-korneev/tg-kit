@@ -107,7 +107,8 @@ describe('the pane', () => {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: 'dialog:1001' })
     expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('Something went wrong')
-    expect((await ui.find({ type: 'Text', text: '[ Retry ] [ Back ]' }))).toBeDefined()
+    expect((await ui.find({ key: 'btn:677791:0:0' }))?.text).toContain('Retry')
+    expect((await ui.find({ key: 'btn:677791:0:1' }))?.text).toContain('Back')
 
     // The cursor starts on the newest message; k moves up, x selects it.
     await ui.press({ key: 'hint:up' })
