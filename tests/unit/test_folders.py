@@ -1,6 +1,8 @@
 """Pins Telegram folders: membership (tdlib's `need_dialog`), order, lookup by id or
 title, the layer-229 conversion of `DialogFilter*` and dialogs, the `dialogs` and
-`folders` output, and how getPeerDialogs survives a chat Telegram refuses.
+`folders` output, the folder list's order (All chats first when the server omits
+it), default mutes that fail to load, and how getPeerDialogs survives a chat
+Telegram refuses and skips it on later runs.
 
 TL objects are real Telethon classes built offline. Not covered: folders fetched
 live (the live test reads `tg folders`), and type-built folders past the latest
@@ -10,20 +12,30 @@ live (the live test reads `tg folders`), and type-built folders past the latest
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 from telethon import errors
 from telethon.tl import custom, functions, types
 
-from tg_kit.cmd_read import _fetch_peer_dialogs
+from tg_kit.client import Connected
+from tg_kit.cmd_read import (
+    REFUSED_FOR,
+    _fetch_peer_dialogs,
+    _folders_of,
+    _mute_defaults,
+    _peer_dialogs,
+)
 from tg_kit.convert import convert_dialog, convert_folder, folder_input_peers
 from tg_kit.errors import EXIT_NOT_FOUND, NotFoundError
 from tg_kit.folders import ALL_CHATS, Folder, find_folder, folder_order, in_folder, unread_chats
 from tg_kit.model import DialogView
 from tg_kit.render import dialog_json, dialog_line, folder_json, folder_line
+from tg_kit.session import TgSession
 
 from .conftest import BOT, CHANNEL, PERSON, SELF_ID
 
@@ -332,7 +344,7 @@ def test_saved_messages_is_self_and_a_contact_is_flagged() -> None:
 
 
 class _PeerDialogsClient:
-    """Answers getPeerDialogs, refusing any batch that holds the channel."""
+    """Answers getPeerDialogs for users, refusing any batch that holds a channel."""
 
     _self_id = SELF_ID
 
@@ -343,9 +355,9 @@ class _PeerDialogsClient:
         assert isinstance(request, functions.messages.GetPeerDialogsRequest)
         peers = [p.peer for p in request.peers]
         self.calls.append(len(peers))
-        if CHANNEL_PEER in peers:
+        if any(isinstance(p, types.InputPeerChannel) for p in peers):
             raise errors.ChannelPrivateError(request=request)
-        users = [u for u in (BOT, PERSON) if types.InputPeerUser(u.id, u.access_hash) in peers]
+        users = [types.User(id=p.user_id, access_hash=p.access_hash, first_name="U") for p in peers]
         dialogs = [
             types.Dialog(
                 peer=types.PeerUser(u.id),
@@ -371,9 +383,97 @@ class _PeerDialogsClient:
 
 def test_a_refused_chat_is_dropped_and_the_rest_still_come() -> None:
     client = _PeerDialogsClient()
-    found = asyncio.run(_fetch_peer_dialogs(client, [BOT_PEER, CHANNEL_PEER, PERSON_PEER]))
+    refused: list[int] = []
+    peers = [(BOT.id, BOT_PEER), (CHANNEL_ID, CHANNEL_PEER), (PERSON.id, PERSON_PEER)]
+    found = asyncio.run(_fetch_peer_dialogs(client, peers, refused))
     assert sorted(d.id for d in found) == [PERSON.id, BOT.id]
+    assert refused == [CHANNEL_ID]
     assert client.calls == [3, 1, 2, 1, 1]
+
+
+@pytest.fixture
+def session(tmp_path: Path) -> Iterator[TgSession]:
+    s = TgSession(tmp_path / "a.session", tmp_path / "a.cache.db")
+    yield s
+    s.close()
+
+
+def test_a_refused_chat_is_skipped_on_the_next_run_until_its_time_is_up(
+    session: TgSession,
+) -> None:
+    client = _PeerDialogsClient()
+    conn = Connected(client=client, session=session, account="a", me=None)
+    users = {5000 + i: types.InputPeerUser(5000 + i, 1) for i in range(99)}
+    peers = {**dict(list(users.items())[:40]), CHANNEL_ID: CHANNEL_PEER, **users}
+
+    def run(now: datetime) -> list[DialogView]:
+        client.calls.clear()
+        return asyncio.run(_peer_dialogs(conn, peers, {}, now))
+
+    first = run(NOW)
+    assert len(first) == 99
+    assert sum(client.calls) > 100  # halving to find the refused chat
+
+    second = run(NOW + timedelta(hours=1))
+    assert len(second) == 99
+    assert client.calls == [99]
+
+    run(NOW + REFUSED_FOR + timedelta(minutes=1))
+    assert sum(client.calls) > 100  # asked again once its time is up
+
+
+# --- folder list ---------------------------------------------------------------------
+
+WORK_TL = types.DialogFilter(
+    id=2, title=title("Work"), pinned_peers=[], include_peers=[BOT_PEER], exclude_peers=[]
+)
+TEAM_TL = types.DialogFilterChatlist(
+    id=11, title=title("Team"), pinned_peers=[], include_peers=[CHANNEL_PEER]
+)
+
+
+def test_the_servers_order_is_kept_with_all_chats_in_the_middle() -> None:
+    found = _folders_of([WORK_TL, types.DialogFilterDefault(), TEAM_TL], self_id=SELF_ID)
+    assert [(f.id, f.kind) for f, _ in found] == [(2, "folder"), (0, "all"), (11, "shared")]
+    assert [peers for _, peers in found] == [{BOT.id: BOT_PEER}, {}, {CHANNEL_ID: CHANNEL_PEER}]
+
+
+def test_without_a_default_filter_all_chats_comes_first() -> None:
+    found = _folders_of([WORK_TL, TEAM_TL], self_id=SELF_ID)
+    assert [(f.id, f.kind) for f, _ in found] == [(0, "all"), (2, "folder"), (11, "shared")]
+    assert _folders_of([], self_id=SELF_ID) == [(ALL_CHATS, {})]
+
+
+# --- default mutes -------------------------------------------------------------------
+
+
+class _NotifyClient:
+    """Answers account.getNotifySettings; `fail` scopes raise an RPC error."""
+
+    def __init__(self, fail: set[type]) -> None:
+        self._fail = fail
+
+    async def __call__(self, request: Any) -> Any:
+        assert isinstance(request, functions.account.GetNotifySettingsRequest)
+        if type(request.peer) in self._fail:
+            raise errors.RPCError(request=request, message="INTERNAL_ERROR", code=500)
+        return types.PeerNotifySettings(mute_until=NOW + timedelta(days=1))
+
+
+def test_a_failed_default_mute_counts_as_not_muted_with_a_note(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _NotifyClient(fail={types.InputNotifyBroadcasts})
+    defaults = asyncio.run(_mute_defaults(client))
+    assert defaults == {
+        "users": NOW + timedelta(days=1),
+        "chats": NOW + timedelta(days=1),
+        "broadcasts": None,
+    }
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no default mute for broadcasts" in captured.err
+    assert "counted as not muted" in captured.err
 
 
 # --- output --------------------------------------------------------------------------

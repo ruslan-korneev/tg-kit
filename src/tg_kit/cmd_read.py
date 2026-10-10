@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -30,7 +30,7 @@ from tg_kit.client import Connected, rpc_error_name, telegram_errors
 from tg_kit.common import HARD_MAX, print_views, resolve_spec, self_id, view_of
 from tg_kit.convert import MUTE_SCOPES, convert_dialog, convert_folder, folder_input_peers
 from tg_kit.errors import NotFoundError, RefusedError, TgError, UsageError
-from tg_kit.folders import Folder, find_folder, folder_order, unread_chats
+from tg_kit.folders import ALL_CHATS, Folder, find_folder, folder_order, unread_chats
 from tg_kit.model import DialogView
 from tg_kit.parsing import parse_since
 from tg_kit.peers import message_id_in, parse_peer
@@ -63,6 +63,11 @@ FILTERS: dict[str, Any] = {
 SCAN = 500
 # Peers per messages.getPeerDialogs call; a folder lists at most 100 + pinned.
 PEER_DIALOGS_CHUNK = 100
+# How long a chat getPeerDialogs refused is skipped. Finding one again costs about
+# log2(100) * 2 calls and ~300 peers of a ~180-per-30-s budget. A chat left or
+# banned from rarely comes back; one that does is in the latest-chats scan anyway,
+# and a hand-picked folder shows it again within this time.
+REFUSED_FOR = timedelta(hours=6)
 
 # Default download dir and size guard (MB): big enough for voice/photos/short
 # videos, small enough that a stray 2 GB file is never pulled by accident.
@@ -517,10 +522,19 @@ _SCOPE_INPUTS: dict[str, Any] = {
 
 async def _folders(conn: Connected) -> list[FolderWithPeers]:
     result = await conn.client(functions.messages.GetDialogFiltersRequest())
-    me = self_id(conn)
-    return [
-        (convert_folder(f, self_id=me), folder_input_peers(f, self_id=me)) for f in result.filters
+    return _folders_of(result.filters, self_id=self_id(conn))
+
+
+def _folders_of(filters: list[Any], *, self_id: int | None) -> list[FolderWithPeers]:
+    """The server's order. No dialogFilterDefault in the list means All chats is first
+    (tdlib reads a missing one as position 0)."""
+    found = [
+        (convert_folder(f, self_id=self_id), folder_input_peers(f, self_id=self_id))
+        for f in filters
     ]
+    if not any(f.kind == "all" for f, _ in found):
+        found.insert(0, (ALL_CHATS, {}))
+    return found
 
 
 def _pick(found: list[FolderWithPeers], spec: str) -> FolderWithPeers:
@@ -560,7 +574,7 @@ async def _folder_chats(
         scan_folder = 0 if folder.exclude_archived else None
         chats = await _scan_then_listed(conn, inputs, defaults, now, folder=scan_folder)
     else:
-        chats = await _peer_dialogs(conn, list(inputs.values()), defaults, now)
+        chats = await _peer_dialogs(conn, inputs, defaults, now)
     return folder_order(folder, chats)
 
 
@@ -579,24 +593,35 @@ async def _scan_then_listed(
     has are not fetched again.
     """
     chats = {r.id: r async for r in _scan(conn, defaults, now, limit=SCAN, folder=folder)}
-    missing = [p for i, p in inputs.items() if i not in chats]
+    missing = {i: p for i, p in inputs.items() if i not in chats}
     for r in await _peer_dialogs(conn, missing, defaults, now):
         chats.setdefault(r.id, r)
     return list(chats.values())
 
 
 async def _mute_defaults(client: Any) -> dict[str, datetime | None]:
-    """The account's mute per kind of chat, for chats that follow the default."""
+    """The account's mute per kind of chat, for chats that follow the default.
+
+    A scope Telegram does not answer counts as not muted, with a note: `muted` is
+    enrichment, and a listing must not fail for it.
+    """
     settings = await asyncio.gather(
         *(
             client(functions.account.GetNotifySettingsRequest(_SCOPE_INPUTS[scope]()))
             for scope in MUTE_SCOPES
-        )
+        ),
+        return_exceptions=True,
     )
-    return {
-        scope: getattr(s, "mute_until", None)
-        for scope, s in zip(MUTE_SCOPES, settings, strict=True)
-    }
+    defaults: dict[str, datetime | None] = {}
+    for scope, s in zip(MUTE_SCOPES, settings, strict=True):
+        if isinstance(s, errors.RPCError):
+            note(f"note: no default mute for {scope} ({rpc_error_name(s)}); counted as not muted")
+            defaults[scope] = None
+        elif isinstance(s, BaseException):
+            raise s
+        else:
+            defaults[scope] = getattr(s, "mute_until", None)
+    return defaults
 
 
 async def _scan(
@@ -614,33 +639,48 @@ async def _scan(
 
 
 async def _peer_dialogs(
-    conn: Connected, peers: list[Any], defaults: dict[str, datetime | None], now: datetime
+    conn: Connected,
+    peers: dict[int, Any],
+    defaults: dict[str, datetime | None],
+    now: datetime,
 ) -> list[DialogView]:
     """Chats by InputPeer, however old (messages.getPeerDialogs). Ones Telegram refuses
-    (left, banned, deleted) are skipped, as the apps skip them in a folder."""
+    (left, banned, deleted) are skipped, as the apps skip them in a folder, and are
+    remembered for `REFUSED_FOR` so the next run does not pay to find them again."""
     me = self_id(conn)
+    stamp = now.timestamp()
+    skip = conn.session.refused_peers(stamp)
+    wanted = [(i, p) for i, p in peers.items() if i not in skip]
     rows: list[DialogView] = []
-    for start in range(0, len(peers), PEER_DIALOGS_CHUNK):
-        found = await _fetch_peer_dialogs(conn.client, peers[start : start + PEER_DIALOGS_CHUNK])
+    refused: list[int] = []
+    for start in range(0, len(wanted), PEER_DIALOGS_CHUNK):
+        chunk = wanted[start : start + PEER_DIALOGS_CHUNK]
+        found = await _fetch_peer_dialogs(conn.client, chunk, refused)
         rows.extend(convert_dialog(d, self_id=me, mute_defaults=defaults, now=now) for d in found)
+    if refused:
+        conn.session.remember_refused(refused, now=stamp, until=stamp + REFUSED_FOR.total_seconds())
     return rows
 
 
-async def _fetch_peer_dialogs(client: Any, peers: list[Any]) -> list[Any]:
+async def _fetch_peer_dialogs(
+    client: Any, peers: list[tuple[int, Any]], refused: list[int]
+) -> list[Any]:
+    """`peers` as (id, InputPeer); the ids of chats Telegram refuses go to `refused`."""
     if not peers:
         return []
     try:
         r = await client(
-            functions.messages.GetPeerDialogsRequest([types.InputDialogPeer(p) for p in peers])
+            functions.messages.GetPeerDialogsRequest([types.InputDialogPeer(p) for _, p in peers])
         )
     except (errors.BadRequestError, errors.ForbiddenError):
         # One inaccessible chat fails the whole call: halve until it is alone, then drop it.
         if len(peers) == 1:
+            refused.append(peers[0][0])
             return []
         mid = len(peers) // 2
         return [
-            *await _fetch_peer_dialogs(client, peers[:mid]),
-            *await _fetch_peer_dialogs(client, peers[mid:]),
+            *await _fetch_peer_dialogs(client, peers[:mid], refused),
+            *await _fetch_peer_dialogs(client, peers[mid:], refused),
         ]
     # As Telethon's iter_dialogs builds its custom.Dialog objects.
     entities = {

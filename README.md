@@ -255,7 +255,8 @@ Per command:
 - `kind` is one of `self` `user` `bot` `group` `supergroup` `channel` `unknown`.
 - `mentions` is Telegram's count of unread mentions of you.
 - `muted`: the chat's own mute, or, when it has none, your default for that kind of chat
-  (private chats, groups, channels).
+  (private chats, groups, channels). If Telegram does not return a default, that kind counts as
+  not muted and a note goes to stderr.
 - `pinned` is pinned in the list shown: the chat list, the archive (`--archived`), or the folder
   (`--folder`).
 
@@ -285,7 +286,8 @@ Per command:
   read or archived chats when the folder says so. An unread mention keeps a muted or read chat
   in. A shared folder holds only its listed chats. Chats joining by type come from the latest 500.
 - Listed chats are fetched by id, so an old one still shows. Telegram rate-limits that by chats:
-  about 180 in 30 seconds. Past that, tg sleeps out the FLOOD_WAIT or exits 5.
+  about 180 in 30 seconds. Past that, tg sleeps out the FLOOD_WAIT or exits 5. A listed chat
+  Telegram refuses (left, banned, deleted) is left out and not asked for again for 6 hours.
 - `--archived` is the Archive, which is not a folder, so it does not combine with `--folder`.
 
 ### `tg watch` (`--jsonl`)
