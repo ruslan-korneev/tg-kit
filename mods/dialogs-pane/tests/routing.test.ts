@@ -392,7 +392,8 @@ describe('hidden band', () => {
     await $.session.start(START)
     await clock.settle()
     unread = 3
-    await clock.advance(60_000)
+    // The dialogs poll is 5 min since triage made watched dialogs live.
+    await clock.advance(300_000)
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect((await band.find({ key: 'band:main' }))?.text).toContain('send to main')
     await band.press({ key: 'band:main' })

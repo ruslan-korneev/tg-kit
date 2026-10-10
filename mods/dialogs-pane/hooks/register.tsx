@@ -5,9 +5,29 @@
 // Every function that takes `$` lives in this file: the engine follows `$`
 // only into functions declared beside the hook. ./ui and ./tg stay pure.
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
+import type { EngineInterface, ModelCompleteResult, Register, RenderElement, Timer } from 'claude-code'
 
-import type { Lens, Load, Mode, PeerRef, TgDialog, TgFailure } from '../types'
+import type {
+  BandEvent,
+  Lens,
+  LensDraft,
+  Load,
+  Mode,
+  Nav,
+  PeerRef,
+  SavedLens,
+  Summary,
+  TgDialog,
+  TgFailure,
+  WatchHealth,
+} from '../types'
+import { EmptySavedLens, LensEditor, LensTabs, SummaryBlock, WatchRow, summaryRows, watchMark } from './triage/components'
+import { MAX_LENSES, draftFrom, parseLenses, toggleGroup, togglePicked, upsertLens } from './triage/lenses'
+import { EMPTY_TRIAGE, RECENT, applyToDialogs, applyToMessages, hiddenStatus, latencyText, repliesToYou, reportReply } from './triage/live'
+import { RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, toAsk, verdictKey, type Me } from './triage/needs'
+import { SUMMARY_LIMIT, SUMMARY_MAX_TOKENS, SUMMARY_SYSTEM, SUMMARY_TIMEOUT_MS, TRIAGE_MODEL, summaryPrompt } from './triage/summary'
+import { NO_ME, triageDialogs } from './triage/view'
+import { MAX_WATCHED, parseWatched } from './triage/watch'
 // ── routing ──
 import type { AgentInfo, HookStream, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import type { BroadcastRow, LedgerEntry, Leg, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, TgMessage } from '../types'
@@ -40,7 +60,7 @@ import {
   spawnDescription,
   toIntent,
 } from './routing/route'
-import { watchArgv, watchLines, type WatchEvent } from './watch/watch'
+import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import {
@@ -71,16 +91,16 @@ import {
   peerArg,
   rangeSelect,
   selectWhole,
-  statusText,
   toggleSelected,
-  visibleDialogs,
 } from './ui/model'
 
 type $ = EngineInterface
 
 const PANE = 'tg'
 const STORE_MODE = 'mode'
-const POLL_MS = 60_000
+// Watched dialogs and the open thread are live through `tg watch` (triage);
+// this slow poll keeps the unread counts of everything else.
+const POLL_MS = 300_000
 const THREAD_LIMIT = 30
 const MODE_ARGS: readonly Mode[] = ['wide', 'compact', 'hidden']
 
@@ -99,6 +119,7 @@ const band = atom({ plugin: 'dialogs-pane', key: 'band' } as const, null)
 const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
 
 export const register: Register = on => {
+  registerTriage(on)
   registerBottest(on)
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -121,6 +142,7 @@ export const register: Register = on => {
     }
     const started = await next(e)
     await startRouting($) // ── routing ──
+    await startTriage($)
     return started
   })
 
@@ -147,6 +169,7 @@ export const register: Register = on => {
       await update($, mode, () => 'hidden')
       await $.store.set(STORE_MODE, 'hidden')
       await refreshStatus($)
+      await syncWatches($)
     }
     return done
   }).catch(($, e, next) => next(e))
@@ -181,6 +204,7 @@ export const register: Register = on => {
           <Text color={isBot ? TOKEN.bot : TOKEN.accent}>{isBot ? GLYPH.bot : GLYPH.unread} </Text>
           {`${event.label}: "${oneLine(event.text, room)}"`}
         </Text>
+        {await bandLatency($, $.ui.resolve(e), event)}
         <Button key="band:main" plain autoFocus onPress={() => bandToMain($)}>
           ⏎ send to main
         </Button>
@@ -257,6 +281,7 @@ async function setMode($: $, next: Mode): Promise<void> {
     await $.ui.open({ id: PANE, title: 'tg · dialogs', focus: true, ...seat })
   }
   await refreshStatus($)
+  await syncWatches($)
 }
 
 async function cycleMode($: $): Promise<void> {
@@ -268,7 +293,7 @@ async function refreshStatus($: $): Promise<void> {
     $.ui.status(undefined)
     return
   }
-  $.ui.status(statusText(await read($, dialogs), await read($, band)) + ledgerStatus(await read($, ledger)))
+  $.ui.status(hiddenStatus(await read($, dialogs), await read($, band), (await read($, triage)).reply) + ledgerStatus(await read($, ledger)))
 }
 
 async function poll($: $): Promise<void> {
@@ -323,6 +348,9 @@ async function loadDialogs($: $, options: { isQuiet?: boolean } = {}): Promise<v
     return
   }
   await update($, dialogs, () => ({ status: 'ok', value: result.value }))
+  afterDialogs($).catch(() => {
+    // Ranking is a convenience: without verdicts the list keeps tg's order.
+  })
   const grown = before === undefined ? undefined : grownDialog(before, result.value)
   if (grown !== undefined && (await read($, mode)) === 'hidden') {
     await update($, band, () => ({ dialogId: grown.id, label: dialogLabel(grown), kind: grown.kind, text: grown.last_text }))
@@ -337,6 +365,7 @@ async function openThread($: $, dialog: TgDialog): Promise<void> {
   await update($, nav, value => ({ ...value, view: 'thread', messageCursor: 0 }))
   await bottestThreadOpened($, peer)
   await loadThread($, peer)
+  await syncWatches($)
 }
 
 async function loadThread($: $, peer: PeerRef): Promise<void> {
@@ -368,7 +397,7 @@ async function reload($: $): Promise<void> {
 // --- keys: one action per hint or hotkey ---
 
 async function shownDialogs($: $): Promise<TgDialog[]> {
-  return visibleDialogs(loaded(await read($, dialogs)) ?? [], await read($, nav))
+  return visibleTriaged($, loaded(await read($, dialogs)) ?? [], await read($, nav))
 }
 
 async function threadMessages($: $) {
@@ -482,10 +511,13 @@ async function drawDialogList($: $, els: Els, width: number, rows: number): Prom
   const where = await read($, nav)
   const at = await read($, now)
   const open = await read($, thread)
+  const editor = await drawLensEditor($, els, rows)
+  if (editor !== null) return [editor]
   const waiting = LoadState(els, { load, now: at, rows, onReload: () => reload($) })
   if (waiting !== null) return [waiting]
-  const list = visibleDialogs(loaded(load) ?? [], where)
-  if (list.length === 0) return [EmptyLens(els, where)]
+  const list = await visibleTriaged($, loaded(load) ?? [], where)
+  if (list.length === 0) return [(await emptySavedLens($, els)) ?? EmptyLens(els, where)]
+  const markOf = await watchMarks($)
   const cursor = clamp(where.dialogCursor, list.length)
   const shown = windowAround(list, cursor, rows)
   const pinned = new Set((await read($, pins)).map(pin => pin.peer.id))
@@ -498,6 +530,7 @@ async function drawDialogList($: $, els: Els, width: number, rows: number): Prom
       width,
       now: at,
       onOpen: () => openThread($, dialog),
+      mark: markOf(dialog.id),
     }),
   )
 }
@@ -550,7 +583,10 @@ function lensProps($: $, where: { lens: Lens; query: string }) {
   return {
     lens: where.lens,
     query: where.query,
-    onLens: (lens: Lens) => update($, nav, value => ({ ...value, lens, dialogCursor: 0 })),
+    onLens: async (lens: Lens) => {
+      await update($, nav, value => ({ ...value, lens, dialogCursor: 0 }))
+      await selectSavedLens($, null)
+    },
     onSearch: async (query: string) => {
       await update($, nav, value => ({ ...value, view: 'dialogs', query: query.trim(), dialogCursor: 0 }))
       // Hand the keys back to the list, or j/k would keep typing into the field.
@@ -564,16 +600,19 @@ async function drawWide($: $, els: Els, width: number, rows: number): Promise<Re
   const { Box } = els
   const where = await read($, nav)
   const open = await read($, thread)
-  // Chrome: header, lens bar, two dividers, tray (3), hints; bot testing under a thread.
-  const room = Math.max(4, rows - 8 - (open === null ? 0 : await bottestRows($, width)))
+  // Chrome: header, lens bar, watch row, two dividers, tray (3), hints; bot testing under a thread.
+  const room = Math.max(4, rows - 9 - (open === null ? 0 : await bottestRows($, width)))
   const listRows = Math.max(3, Math.floor(room * 0.4))
+  const summary = await drawSummary($, els, width, false)
   return (
     <Box flexDirection="column">
       {Header(els, { title: 'tg · dialogs', mode: 'wide', onMode: () => cycleMode($) })}
-      {LensBar(els, lensProps($, where))}
+      {LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
+      {await drawWatchRow($, els)}
       {...await drawDialogList($, els, width, listRows)}
       {Divider(els, { label: open?.peer.label ?? 'no dialog open', width })}
-      {...await drawThread($, els, width, room - listRows)}
+      {summary.element}
+      {...await drawThread($, els, width, Math.max(1, room - listRows - summary.rows))}
       {...await drawBottest($, els)}
       {Divider(els, { label: '', width })}
       {await tray($, els, 'full')}
@@ -587,13 +626,17 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
   const where = await read($, nav)
   const open = await read($, thread)
   const isThread = where.view === 'thread' && open !== null
-  // Chrome: header, lens bar or tray line, hints; 8-12 rows in all; bot testing under a thread.
+  // Chrome: header, lens bar and watch row or summary and tray line, hints; 8-12 rows in all; bot testing under a thread.
   const room = Math.max(5, Math.min(rows, 12) - 3 - (isThread ? await bottestRows($, width) : 0))
+  const summary = isThread ? await drawSummary($, els, width, true) : { element: await drawWatchRow($, els), rows: 1 }
   return (
     <Box flexDirection="column">
       {Header(els, { title: isThread ? `tg · ${open.peer.label}` : 'tg · dialogs', mode: 'compact', onMode: () => cycleMode($) })}
-      {isThread ? null : LensBar(els, lensProps($, where))}
-      {...isThread ? await drawThread($, els, width, room) : await drawDialogList($, els, width, room)}
+      {isThread ? null : LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
+      {summary.element}
+      {...isThread
+        ? await drawThread($, els, width, Math.max(1, room - summary.rows))
+        : await drawDialogList($, els, width, Math.max(1, room - summary.rows))}
       {...isThread ? await drawBottest($, els) : []}
       {isThread ? await tray($, els, 'line') : null}
       {HintsRow(els, { hints: hintsFor(isThread ? 'thread' : 'dialogs', await read($, selection)), onHint: key => onHint($, key) })}
@@ -601,14 +644,469 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
   )
 }
 
+// ── triage ──
+// Live updates through the watch hub, watched dialogs in Hidden mode, saved
+// lenses, summaries and needs-you ranking (design §5 ideas 11–14). Every `$`
+// function of the triage phase is in this block; its pure rules are in
+// ./triage. Keys: w watch, t summary, z lens editor, y needs-you, 4–9 lenses.
+// `On`, `MessageView` and `failureText` come from the bottest block's imports
+// (imports hoist; one module may import a name once).
+
+const triage = atom({ plugin: 'dialogs-pane', key: 'triage' } as const, EMPTY_TRIAGE)
+const STORE_WATCHED = 'triage.watched'
+const STORE_LENSES = 'triage.lenses'
+const STORE_RANKED = 'triage.ranked'
+const RANK_TIMEOUT_MS = 20_000
+const HUB_NAME = 'triage'
+
+/**
+ * A peer triage listens to on the watch hub, and what it has seen there.
+ * Module state: a reload drops the hub's children with it, and session.start
+ * subscribes again.
+ */
+type Listening = {
+  peer: PeerRef
+  /** Watched dialogs must not idle out; the open thread may, and is listened to again. */
+  isBounded: boolean
+  /** The hub gave up: kept, so syncWatches does not retry it until `w` does. */
+  hasFailed: boolean
+  recent: MessageView[]
+}
+
+const listening = new Map<number, Listening>()
+let me: Me | null = null
+let scoring: Promise<void> | null = null
+let summaryAbort: AbortController | null = null
+
+/** From pane-core's session.start: what $.store kept, then the watches it calls for. */
+async function startTriage($: $): Promise<void> {
+  const watched = parseWatched(await $.store.get(STORE_WATCHED))
+  const lenses = parseLenses(await $.store.get(STORE_LENSES))
+  const isRanked = (await $.store.get(STORE_RANKED)) === true
+  // After a reload the old subscriptions are gone, so their health is too.
+  await update($, triage, value => ({
+    ...value,
+    watched,
+    lenses,
+    isRanked,
+    health: {},
+    lens: lenses.some(lens => lens.id === value.lens) ? value.lens : null,
+  }))
+  await syncWatches($)
+}
+
+function registerTriage(on: On): void {
+  on('session.end', async ($, e, next) => {
+    await Promise.allSettled([...listening.keys()].map(id => stopListening($, id)))
+    return next(e)
+  })
+}
+
+function peerRefOf(dialog: TgDialog): PeerRef {
+  return { id: dialog.id, arg: peerArg(dialog), label: dialogLabel(dialog), kind: dialog.kind }
+}
+
+// --- live updates: the watch hub, for the watched dialogs and the open thread ---
+
+/**
+ * Listens to what should be live and stops the rest: every dialog marked
+ * with `w` (unbounded), plus the open thread while the pane is up (bounded,
+ * like bot testing's, so joining its child does not restart it). Called
+ * whenever one of those changes.
+ */
+async function syncWatches($: $): Promise<void> {
+  const state = await read($, triage)
+  const open = await read($, thread)
+  const wanted = new Map(state.watched.map(peer => [peer.id, { peer, isBounded: false }]))
+  if ((await read($, mode)) !== 'hidden' && open !== null && !wanted.has(open.peer.id)) {
+    wanted.set(open.peer.id, { peer: open.peer, isBounded: true })
+  }
+  for (const id of [...listening.keys()]) {
+    if (!wanted.has(id)) await stopListening($, id)
+  }
+  const listed = loaded(await read($, dialogs)) ?? []
+  for (const { peer, isBounded } of wanted.values()) {
+    const current = listening.get(peer.id)
+    if (current !== undefined && (current.isBounded === isBounded || current.hasFailed)) continue
+    // Replay from what the pane already has, so nothing between that read and `ready` is lost.
+    const shown = open?.peer.id === peer.id ? loaded(open.load)?.at(-1)?.id : undefined
+    await listen($, peer, isBounded, shown ?? listed.find(dialog => dialog.id === peer.id)?.last_id ?? null)
+  }
+  await update($, triage, value => ({
+    ...value,
+    health: Object.fromEntries(Object.entries(value.health).filter(([id]) => listening.has(Number(id)))),
+  }))
+}
+
+/** Subscribes, or subscribes again (the hub replaces a subscription by name). */
+async function listen($: $, peer: PeerRef, isBounded: boolean, after: number | null): Promise<void> {
+  const entry: Listening = { peer, isBounded, hasFailed: false, recent: listening.get(peer.id)?.recent ?? [] }
+  listening.set(peer.id, entry)
+  await setHealth($, peer.id, 'connecting')
+  await subscribeWatch($, peer, {
+    name: HUB_NAME,
+    isBounded,
+    after,
+    onEvent: (event, isReplay) => onTriageEvent($, entry, event, isReplay),
+    onRestart: () => (listening.get(peer.id) === entry ? setHealth($, peer.id, 'retrying') : Promise.resolve()),
+    onEnd: (reason, how) => onTriageEnd($, entry, reason, how),
+  })
+}
+
+async function stopListening($: $, dialogId: number): Promise<void> {
+  listening.delete(dialogId)
+  await unsubscribeWatch($, dialogId, HUB_NAME)
+}
+
+async function onTriageEnd($: $, entry: Listening, reason: string, how: 'quiet' | 'failed'): Promise<void> {
+  if (listening.get(entry.peer.id) !== entry) return
+  if (how === 'quiet') {
+    // Idled out (the open thread's bounded watch) or stopped from outside. Not
+    // listened to again from here, or a watch that ends at once would loop:
+    // the next syncWatches (opening a thread, a mode change, `w`) starts it.
+    listening.delete(entry.peer.id)
+    await update($, triage, value => ({ ...value, health: Object.fromEntries(Object.entries(value.health).filter(([id]) => id !== String(entry.peer.id))) }))
+    return
+  }
+  entry.hasFailed = true
+  await setHealth($, entry.peer.id, 'failed')
+  $.ui.toast(`tg watch ${entry.peer.label}: ${reason}`)
+}
+
+async function setHealth($: $, dialogId: number, health: WatchHealth): Promise<void> {
+  if (!listening.has(dialogId)) return
+  await update($, triage, value => ({ ...value, health: { ...value.health, [String(dialogId)]: health } }))
+}
+
+async function onTriageEvent($: $, entry: Listening, event: WatchEvent, isReplay: boolean): Promise<void> {
+  if (listening.get(entry.peer.id) !== entry) return
+  const { peer } = entry
+  if (event.event === 'ready') {
+    await setHealth($, peer.id, 'live')
+    return
+  }
+  if (event.event === 'typing') return
+  if (event.event !== 'delete') entry.recent = [...entry.recent, event.message].slice(-RECENT)
+  const open = await read($, thread)
+  if (open?.peer.id === peer.id && open.load.status === 'ok') {
+    const atEnd = (await read($, nav)).messageCursor >= open.load.value.length - 1
+    const after = await update($, thread, value =>
+      value?.peer.id === peer.id && value.load.status === 'ok'
+        ? { ...value, load: { status: 'ok', value: applyToMessages(value.load.value, event, message => message) } }
+        : value,
+    )
+    // A cursor on the newest message follows new ones; one placed higher stays.
+    const count = after !== null && after.load.status === 'ok' ? after.load.value.length : 0
+    if (atEnd) await update($, nav, value => ({ ...value, messageCursor: Math.max(0, count - 1) }))
+  }
+  if (event.event !== 'message') return
+  const { message } = event
+  await update($, dialogs, value => (value.status === 'ok' ? { status: 'ok', value: applyToDialogs(value.value, peer.id, message) } : value))
+  if (isReplay || message.out) {
+    await refreshStatus($)
+    return
+  }
+  if (repliesToYou(message, entry.recent)) {
+    await update($, triage, value => ({ ...value, repliedToYou: { ...value.repliedToYou, [String(peer.id)]: message.id } }))
+  }
+  if (!(await read($, triage)).watched.some(one => one.id === peer.id)) {
+    await refreshStatus($)
+    return
+  }
+  const report = reportReply(peer, message, entry.recent)
+  await update($, triage, value => ({ ...value, reply: report.reply }))
+  if ((await read($, mode)) === 'hidden') await update($, band, () => report.band)
+  await refreshStatus($)
+}
+
+async function toggleWatch($: $, peer: PeerRef | undefined): Promise<void> {
+  if (peer === undefined) return
+  const state = await read($, triage)
+  const isWatched = state.watched.some(one => one.id === peer.id)
+  if (!isWatched && state.watched.length >= MAX_WATCHED) {
+    $.ui.toast(`tg: ${MAX_WATCHED} dialogs are watched already; press w on one to unwatch it first.`)
+    return
+  }
+  const watched = isWatched ? state.watched.filter(one => one.id !== peer.id) : [...state.watched, peer]
+  await update($, triage, value => ({ ...value, watched }))
+  await $.store.set(STORE_WATCHED, watched)
+  // Marking a dialog again is how a failed watch gets a fresh start.
+  if (!isWatched && listening.get(peer.id)?.hasFailed === true) await stopListening($, peer.id)
+  await syncWatches($)
+}
+
+/** `w`'s dialog: the open thread's in the thread view, else the one at the cursor. */
+async function watchTarget($: $): Promise<PeerRef | undefined> {
+  const where = await read($, nav)
+  const open = await read($, thread)
+  if (where.view === 'thread' && open !== null) return open.peer
+  const list = await shownDialogs($)
+  const dialog = list[clamp(where.dialogCursor, list.length)]
+  return dialog === undefined ? undefined : peerRefOf(dialog)
+}
+
+async function drawWatchRow($: $, els: Els): Promise<RenderElement | null> {
+  const state = await read($, triage)
+  if (state.editor !== null) return null
+  const target = await watchTarget($)
+  const where = await read($, nav)
+  const list = await shownDialogs($)
+  return WatchRow(els, {
+    cursor: where.view === 'thread' ? (loaded(await read($, dialogs)) ?? []).find(one => one.id === target?.id) : list[clamp(where.dialogCursor, list.length)],
+    isWatched: target !== undefined && state.watched.some(one => one.id === target.id),
+    health: state.health,
+    isSavedLens: state.lens !== null,
+    onWatch: async () => toggleWatch($, await watchTarget($)),
+    onLensEditor: () => openLensEditor($),
+  })
+}
+
+/** The band's "⏎ send to main" hook point: the watched reply's own message id, when the band shows one. */
+async function watchedReplyId($: $, dialogId: number): Promise<number | null> {
+  const reply = (await read($, triage)).reply
+  return reply !== null && reply.dialogId === dialogId ? reply.messageId : null
+}
+
+/** The latency on Hidden's band, when the band shows the watched reply. */
+async function bandLatency($: $, els: Els, event: BandEvent): Promise<RenderElement | null> {
+  const reply = (await read($, triage)).reply
+  if (reply === null || reply.dialogId !== event.dialogId || reply.latencyMs === null) return null
+  const { Text } = els
+  return <Text color={reply.latencyMs > 3000 ? TOKEN.warn : undefined} dimColor={reply.latencyMs <= 3000}>{`${GLYPH.latency}${latencyText(reply.latencyMs)}`}</Text>
+}
+
+// --- saved lenses ---
+
+async function visibleTriaged($: $, list: readonly TgDialog[], where: Nav): Promise<TgDialog[]> {
+  return triageDialogs(list, where, await read($, triage), me ?? NO_ME)
+}
+
+async function lensExtras($: $, els: Els): Promise<{ extra: RenderElement; isSavedLens: boolean }> {
+  const state = await read($, triage)
+  return {
+    isSavedLens: state.lens !== null,
+    extra: LensTabs(els, {
+      lenses: state.lenses,
+      active: state.lens,
+      isRanked: state.isRanked,
+      onLens: id => selectSavedLens($, id),
+      onRank: () => toggleRanking($),
+    }),
+  }
+}
+
+async function selectSavedLens($: $, id: string | null): Promise<void> {
+  await update($, triage, value => ({ ...value, lens: id }))
+  await update($, nav, value => ({ ...value, view: 'dialogs', dialogCursor: 0 }))
+}
+
+async function openLensEditor($: $): Promise<void> {
+  const state = await read($, triage)
+  const saved = state.lenses.find(lens => lens.id === state.lens)
+  if (saved === undefined && state.lenses.length >= MAX_LENSES) {
+    $.ui.toast(`tg: ${MAX_LENSES} lenses at most; open one (4–9) and press z to edit or delete it.`)
+    return
+  }
+  const id = `lens-${(await $.clock.now()).toString(36)}`
+  const draft: LensDraft = saved === undefined ? { lens: draftFrom(await read($, nav), state.lenses, id), isNew: true } : { lens: saved, isNew: false }
+  await update($, triage, value => ({ ...value, editor: draft }))
+  await update($, nav, value => ({ ...value, view: 'dialogs' }))
+}
+
+async function editDraft($: $, change: (lens: SavedLens) => SavedLens): Promise<void> {
+  await update($, triage, value => (value.editor === null ? value : { ...value, editor: { ...value.editor, lens: change(value.editor.lens) } }))
+}
+
+async function saveLens($: $): Promise<void> {
+  const draft = (await read($, triage)).editor
+  if (draft === null) return
+  const lenses = upsertLens((await read($, triage)).lenses, draft.lens)
+  await update($, triage, value => ({ ...value, lenses, editor: null, lens: draft.lens.id }))
+  await update($, nav, value => ({ ...value, dialogCursor: 0 }))
+  await $.store.set(STORE_LENSES, lenses)
+}
+
+async function deleteLens($: $): Promise<void> {
+  const draft = (await read($, triage)).editor
+  if (draft === null) return
+  const lenses = (await read($, triage)).lenses.filter(lens => lens.id !== draft.lens.id)
+  await update($, triage, value => ({ ...value, lenses, editor: null, lens: value.lens === draft.lens.id ? null : value.lens }))
+  await $.store.set(STORE_LENSES, lenses)
+}
+
+/** The editor in place of the dialog list while it is open; null otherwise. */
+async function drawLensEditor($: $, els: Els, rows: number): Promise<RenderElement | null> {
+  const draft = (await read($, triage)).editor
+  if (draft === null) return null
+  return LensEditor(els, {
+    draft,
+    dialogs: loaded(await read($, dialogs)) ?? [],
+    rows,
+    onName: name => editDraft($, lens => ({ ...lens, name })),
+    onQuery: query => editDraft($, lens => ({ ...lens, query: query.trim() })),
+    onKind: group => editDraft($, lens => toggleGroup(lens, group)),
+    onUnread: () => editDraft($, lens => ({ ...lens, isUnreadOnly: !lens.isUnreadOnly })),
+    onPick: dialogId => editDraft($, lens => togglePicked(lens, dialogId)),
+    onSave: () => saveLens($),
+    onDelete: () => deleteLens($),
+    onCancel: () => update($, triage, value => ({ ...value, editor: null })),
+  })
+}
+
+async function emptySavedLens($: $, els: Els): Promise<RenderElement | null> {
+  const state = await read($, triage)
+  const saved = state.lenses.find(lens => lens.id === state.lens)
+  return saved === undefined ? null : EmptySavedLens(els, { lens: saved })
+}
+
+/** The `◎` mark of each watched dialog's row, colored by its watch's health. */
+async function watchMarks($: $): Promise<(dialogId: number) => { text: string; color?: string } | undefined> {
+  const state = await read($, triage)
+  const watched = new Set(state.watched.map(peer => peer.id))
+  return dialogId => (watched.has(dialogId) ? watchMark(state.health[String(dialogId)]) : undefined)
+}
+
+// --- summary of the open thread ---
+
+async function setSummary($: $, peerId: number, summary: Summary | null): Promise<void> {
+  await update($, triage, value => (value.summary === null || value.summary.peerId === peerId ? { ...value, summary } : value))
+}
+
+function modelFailure(result: Exclude<ModelCompleteResult, { isAnswered: true }>): string {
+  switch (result.reason) {
+    case 'api-error':
+      return `the model call failed (${result.error})`
+    case 'empty-reply':
+      return 'the model gave no text'
+    case 'aborted':
+      return 'the model took too long'
+  }
+}
+
+/** `t`: summarize the open thread; again while it runs cancels, once shown hides it. */
+async function toggleSummary($: $): Promise<void> {
+  const open = await read($, thread)
+  if (open === null) return
+  const peer = open.peer
+  const current = (await read($, triage)).summary
+  summaryAbort?.abort()
+  summaryAbort = null
+  if (current?.peerId === peer.id && current.status !== 'error') {
+    await update($, triage, value => ({ ...value, summary: null }))
+    return
+  }
+  const abort = new AbortController()
+  summaryAbort = abort
+  await update($, triage, value => ({ ...value, summary: { peerId: peer.id, status: 'loading' } }))
+  const fetched = await runTg($, tg.read(peer.arg, { limit: SUMMARY_LIMIT }))
+  if (abort.signal.aborted) return
+  if (!fetched.ok) {
+    await setSummary($, peer.id, { peerId: peer.id, status: 'error', message: failureText(fetched.failure, await $.clock.now()) })
+    return
+  }
+  const result = await $.model.complete(
+    {
+      model: TRIAGE_MODEL,
+      system: SUMMARY_SYSTEM,
+      prompt: summaryPrompt(peer.label, fetched.value),
+      maxTokens: SUMMARY_MAX_TOKENS,
+      effort: 'low',
+      timeoutMs: SUMMARY_TIMEOUT_MS,
+    },
+    { signal: abort.signal },
+  )
+  if (abort.signal.aborted) return
+  summaryAbort = null
+  await setSummary(
+    $,
+    peer.id,
+    result.isAnswered
+      ? { peerId: peer.id, status: 'ok', text: result.text, count: fetched.value.length }
+      : { peerId: peer.id, status: 'error', message: modelFailure(result) },
+  )
+}
+
+/** The summary block above the thread, and the rows it takes. */
+async function drawSummary($: $, els: Els, width: number, hasWatchKey: boolean): Promise<{ element: RenderElement | null; rows: number }> {
+  const open = await read($, thread)
+  if (open === null) return { element: null, rows: 0 }
+  const state = await read($, triage)
+  const summary = state.summary?.peerId === open.peer.id ? state.summary : null
+  return {
+    rows: summaryRows(summary),
+    element: SummaryBlock(els, {
+      summary,
+      isWatched: state.watched.some(peer => peer.id === open.peer.id),
+      width,
+      onSummary: () => toggleSummary($),
+      ...(hasWatchKey && { onWatch: () => toggleWatch($, open.peer) }),
+    }),
+  }
+}
+
+// --- needs-you ranking ---
+
+async function toggleRanking($: $): Promise<void> {
+  const isRanked = !(await read($, triage)).isRanked
+  await update($, triage, value => ({ ...value, isRanked }))
+  await update($, nav, value => ({ ...value, dialogCursor: 0 }))
+  await $.store.set(STORE_RANKED, isRanked)
+  if (isRanked) await scoreUnread($)
+}
+
+/** After each `tg dialogs`: drop verdicts for messages no longer on top, and score the new ones. */
+async function afterDialogs($: $): Promise<void> {
+  const list = loaded(await read($, dialogs)) ?? []
+  await update($, triage, value => ({ ...value, verdicts: pruneVerdicts(value.verdicts, list) }))
+  if ((await read($, triage)).isRanked) await scoreUnread($)
+}
+
+/** One scoring pass at a time; a second caller shares the one in flight. */
+function scoreUnread($: $): Promise<void> {
+  scoring ??= askModel($).finally(() => {
+    scoring = null
+  })
+  return scoring
+}
+
+async function askModel($: $): Promise<void> {
+  me ??= await whoAmI($)
+  const state = await read($, triage)
+  const asked = toAsk(loaded(await read($, dialogs)) ?? [], me, state.verdicts, state.repliedToYou)
+  if (asked.length === 0) return
+  const result = await $.model.complete({
+    model: TRIAGE_MODEL,
+    system: RANK_SYSTEM,
+    prompt: rankPrompt(asked),
+    maxTokens: 200,
+    effort: 'low',
+    timeoutMs: RANK_TIMEOUT_MS,
+  })
+  // No answer: the heuristics rank alone, and the next pass asks again.
+  if (!result.isAnswered) return
+  // A dialog the reply skipped counts as fyi, so it is not asked about again until a new message.
+  const verdicts = { ...Object.fromEntries(asked.map(dialog => [verdictKey(dialog), 'fyi' as const])), ...parseVerdicts(result.text, asked) }
+  await update($, triage, value => ({ ...value, verdicts: { ...value.verdicts, ...verdicts } }))
+}
+
+/** Who "you" is, for mentions; unknown when tg cannot say. */
+async function whoAmI($: $): Promise<Me> {
+  const result = await runTg($, { argv: ['tg', 'whoami', '--json'], decode: parseMe })
+  return result.ok ? result.value : NO_ME
+}
+
 // ── watch hub ──
 // One `tg watch PEER --jsonl` child per peer, shared by everyone who listens:
 // bot testing (the open bot thread: live replies, local timing), routing
-// (pinned dialogs) and, next, triage. A listener subscribes by name; the last
-// one out stops the child. The argv and the line parser are ./watch/watch.
+// (pinned dialogs) and triage (the open thread, watched dialogs). A listener
+// subscribes by name; the last one out stops the child. A child that dies
+// (exit 1, a signal, a flood wait) is restarted with --after the newest id,
+// backing off (restartPlan); listeners hear onRestart, and onEnd only once
+// the hub gives up or the watch ends quietly. The argv, the line parser and
+// the restart rule are ./watch/watch.
 //
 //   await subscribeWatch($, peer, { name: 'triage', isBounded: true, after: null,
-//     onEvent: async (event, isReplay) => { … }, onEnd: async reason => { … } })
+//     onEvent: async (event, isReplay) => { … }, onEnd: async (reason, how) => { … } })
 //   await unsubscribeWatch($, peer.id, 'triage')
 
 type WatchSubscriber = {
@@ -620,8 +1118,14 @@ type WatchSubscriber = {
   after: number | null
   /** Every event in order. `isReplay`: printed before `ready`, so missed while no child ran. */
   onEvent: (event: WatchEvent, isReplay: boolean) => Promise<void>
-  /** The child ended by itself or never started; an unsubscribe does not call it. */
-  onEnd: (reason: string) => Promise<void>
+  /**
+   * The watch is over: `quiet` when it ended on its own (`--idle-exit`,
+   * Ctrl-C), `failed` when it never started or the hub gave up restarting.
+   * An unsubscribe does not call it.
+   */
+  onEnd: (reason: string, how: 'quiet' | 'failed') => Promise<void>
+  /** The child died and a new one starts after `delayMs`; the subscription stays. */
+  onRestart?: (reason: string, delayMs: number) => Promise<void>
 }
 
 type WatchHub = {
@@ -632,6 +1136,10 @@ type WatchHub = {
   isLive: boolean
   /** The newest message id seen, so a restart replays only what it missed. */
   lastId: number | null
+  /** Children in a row that died before `ready`. */
+  attempt: number
+  /** The pending restart after a child died. */
+  retry: Timer | null
 }
 
 const hubs = new Map<number, WatchHub>()
@@ -658,24 +1166,39 @@ async function unsubscribeWatch($: $, peerId: number, name: string): Promise<voi
   // Still wanted: the child goes on (an unbounded one stays so until the last leaves).
   if (hub.subscribers.size > 0) return
   hubs.delete(peerId)
+  hub.retry?.cancel()
   await stopStream(hub.stream)
 }
 
 function spawnHub($: $, peer: PeerRef, subscribers: Map<string, WatchSubscriber>, after: number | null): void {
   const isBounded = [...subscribers.values()].every(one => one.isBounded)
   const stream = $.process.spawn({ argv: watchArgv(peer.arg, { after, isBounded }) })
-  const hub: WatchHub = { peer, subscribers, stream, isBounded, isLive: false, lastId: after }
+  const hub: WatchHub = { peer, subscribers, stream, isBounded, isLive: false, lastId: after, attempt: 0, retry: null }
   hubs.set(peer.id, hub)
-  pumpHub(hub).catch(async (error: unknown) => {
-    if (hubs.get(peer.id) !== hub) return
-    hubs.delete(peer.id)
-    await endHub(hub, `tg watch did not run: ${reasonOf(error)}`)
+  runHub($, hub)
+}
+
+function runHub($: $, hub: WatchHub): void {
+  pumpHub($, hub).catch(async (error: unknown) => {
+    if (hubs.get(hub.peer.id) !== hub) return
+    hubs.delete(hub.peer.id)
+    await endHub(hub, `tg watch did not run: ${reasonOf(error)}`, 'failed')
   })
+}
+
+/** The same hub, a new child after the last one died: it replays from the newest id seen. */
+function respawnHub($: $, hub: WatchHub): void {
+  hub.retry = null
+  if (hubs.get(hub.peer.id) !== hub) return
+  hub.isLive = false
+  hub.stream = $.process.spawn({ argv: watchArgv(hub.peer.arg, { after: hub.lastId ?? oldestAfter(hub.subscribers), isBounded: hub.isBounded }) })
+  runHub($, hub)
 }
 
 /** A new child for the same subscribers, replaying from the newest id seen. */
 function restartHub($: $, hub: WatchHub): void {
   const after = hub.lastId ?? oldestAfter(hub.subscribers)
+  hub.retry?.cancel()
   spawnHub($, hub.peer, hub.subscribers, after)
   stopStream(hub.stream).catch(() => {
     // The old child is gone already; the new one carries on.
@@ -692,7 +1215,7 @@ async function stopStream(stream: WatchHub['stream']): Promise<void> {
   await stream.return({ code: null, signal: 'SIGTERM' })
 }
 
-async function pumpHub(hub: WatchHub): Promise<void> {
+async function pumpHub($: $, hub: WatchHub): Promise<void> {
   let rest = ''
   let stderr = ''
   for await (const chunk of hub.stream) {
@@ -709,20 +1232,31 @@ async function pumpHub(hub: WatchHub): Promise<void> {
   }
   if (hubs.get(hub.peer.id) !== hub) return
   const ended = await hub.stream.result
+  const reason = watchEnded(ended, stderr)
+  const plan = restartPlan(ended.code, ended.signal, stderr, hub.attempt)
+  if (plan.kind === 'restart') {
+    hub.attempt += 1
+    await Promise.allSettled([...hub.subscribers.values()].map(one => one.onRestart?.(reason, plan.delayMs)))
+    hub.retry = $.clock.after(plan.delayMs, () => respawnHub($, hub))
+    return
+  }
   hubs.delete(hub.peer.id)
-  await endHub(hub, watchEnded(ended, stderr))
+  await endHub(hub, reason, plan.how)
 }
 
 async function dispatch(hub: WatchHub, event: WatchEvent): Promise<void> {
-  if (event.event === 'ready') hub.isLive = true
+  if (event.event === 'ready') {
+    hub.isLive = true
+    hub.attempt = 0
+  }
   if (event.event === 'message' || event.event === 'edit') hub.lastId = Math.max(hub.lastId ?? 0, event.message.id)
   const isReplay = !hub.isLive
   // One listener failing must not starve the others.
   await Promise.allSettled([...hub.subscribers.values()].map(one => one.onEvent(event, isReplay)))
 }
 
-async function endHub(hub: WatchHub, reason: string): Promise<void> {
-  await Promise.allSettled([...hub.subscribers.values()].map(one => one.onEnd(reason)))
+async function endHub(hub: WatchHub, reason: string, how: 'quiet' | 'failed'): Promise<void> {
+  await Promise.allSettled([...hub.subscribers.values()].map(one => one.onEnd(reason, how)))
 }
 
 /** Why a watch stopped, in a listener's words: tg's own error line when it gave one. */
@@ -1139,14 +1673,16 @@ async function sendSelection($: $): Promise<void> {
 async function bandToMain($: $): Promise<void> {
   const event = await read($, band)
   const dialog = (loaded(await read($, dialogs)) ?? []).find(one => one.id === event?.dialogId)
-  if (event === null || dialog === undefined || dialog.last_id === null) {
+  // A watched reply names its own message (triage); otherwise the dialog's newest.
+  const messageId = event === null ? null : ((await watchedReplyId($, event.dialogId)) ?? dialog?.last_id ?? null)
+  if (event === null || dialog === undefined || messageId === null) {
     $.ui.toast('tg: that message is no longer in the dialog list; open it with o.')
     return
   }
   const peer: PeerRef = { id: dialog.id, arg: peerArg(dialog), label: dialogLabel(dialog), kind: dialog.kind }
-  const found = await runTg($, tg.msg(peer.arg, [dialog.last_id]))
+  const found = await runTg($, tg.msg(peer.arg, [messageId]))
   if (!found.ok || found.value.length === 0) {
-    $.ui.toast(`tg: could not fetch #${dialog.last_id} (${found.ok ? 'not found' : found.failure.kind}).`)
+    $.ui.toast(`tg: could not fetch #${messageId} (${found.ok ? 'not found' : found.failure.kind}).`)
     return
   }
   const sent = await sendPacket($, {

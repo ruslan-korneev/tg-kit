@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { REPLY } from '../packet/fixtures'
-import { watchArgv, watchEvent, watchLines } from './watch'
+import { MAX_ATTEMPTS, restartPlan, watchArgv, watchEvent, watchLines } from './watch'
 
 test('argv: every event kind; --after to replay; --idle-exit only when every listener allows it', () => {
   expect(watchArgv('@example_bot', { after: null, isBounded: true })).toEqual([
@@ -42,4 +42,18 @@ test('typing and delete are read for listeners that want them; the rest is noise
   expect(watchEvent('{"event": "typing"}')).toBeNull()
   expect(watchEvent('{"event": "reaction"}')).toBeNull()
   expect(watchEvent('not json')).toBeNull()
+})
+
+test('restartPlan: exit 1 or a signal restarts, doubling to a cap; the attempt limit ends it', () => {
+  expect(restartPlan(1, null, 'error: lost the connection to Telegram', 0)).toEqual({ kind: 'restart', delayMs: 2000 })
+  expect(restartPlan(null, 'SIGKILL', '', 2)).toEqual({ kind: 'restart', delayMs: 8000 })
+  expect(restartPlan(1, null, '', 5)).toEqual({ kind: 'restart', delayMs: 60_000 })
+  expect(restartPlan(1, null, '', MAX_ATTEMPTS)).toEqual({ kind: 'end', how: 'failed' })
+})
+
+test('restartPlan: a flood wait restarts when it is over; 0 ends quietly; auth and not-found fail', () => {
+  expect(restartPlan(5, null, 'error: FLOOD_WAIT 23s', 0)).toEqual({ kind: 'restart', delayMs: 23_000 })
+  expect(restartPlan(0, null, '', 0)).toEqual({ kind: 'end', how: 'quiet' })
+  expect(restartPlan(3, null, 'error: not logged in', 0)).toEqual({ kind: 'end', how: 'failed' })
+  expect(restartPlan(4, null, 'error: no such peer', 0)).toEqual({ kind: 'end', how: 'failed' })
 })

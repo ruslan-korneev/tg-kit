@@ -4,6 +4,7 @@
 // typed events. register.tsx owns the child and the subscribers.
 import type { MessageView, Sender } from '../../types'
 import { parseMessageView, parseSender, TgJsonError } from '../packet/types'
+import { failureOf } from '../tg/tg'
 
 /**
  * One event of the stream. `message` and `edit` carry the message as
@@ -18,6 +19,30 @@ export type WatchEvent =
 
 /** A watch nobody stops still ends after this long with nothing printed. */
 export const IDLE_EXIT = '15m'
+
+/** Restarts in a row that never reached `ready` before the hub gives up. */
+export const MAX_ATTEMPTS = 6
+const FIRST_DELAY_MS = 2_000
+const MAX_DELAY_MS = 60_000
+
+/**
+ * What the hub does once a child ended by itself (a stop the hub asked for
+ * never gets here). Exit 1 (a lost connection) or a signal from outside
+ * restarts with a doubling delay, capped; a flood wait restarts when it is
+ * over. Exit 0 (`--idle-exit`, Ctrl-C) ends quietly; not logged in, a peer
+ * not found, bad usage, or the attempt limit end as a failure.
+ */
+export type Ending = { kind: 'restart'; delayMs: number } | { kind: 'end'; how: 'quiet' | 'failed' }
+
+export function restartPlan(code: number | null, signal: string | null, stderr: string, attempt: number): Ending {
+  if (code === 0) return { kind: 'end', how: 'quiet' }
+  if (attempt >= MAX_ATTEMPTS) return { kind: 'end', how: 'failed' }
+  if (code === 1 || (code === null && signal !== null)) {
+    return { kind: 'restart', delayMs: Math.min(FIRST_DELAY_MS * 2 ** attempt, MAX_DELAY_MS) }
+  }
+  const failure = failureOf(code ?? 1, stderr)
+  return failure.kind === 'flood' ? { kind: 'restart', delayMs: failure.seconds * 1000 } : { kind: 'end', how: 'failed' }
+}
 
 /**
  * The child for what its subscribers need: every event kind; `--after` to

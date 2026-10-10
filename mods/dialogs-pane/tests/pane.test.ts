@@ -219,7 +219,8 @@ describe('hidden mode', () => {
     await clock.settle()
     expect(status.at(-1)).toBe('tg ● 7 unread')
     unread = 6
-    await clock.advance(60_000)
+    // The slow poll: watched dialogs are live through tg watch, the rest every 5 min.
+    await clock.advance(300_000)
     expect(status.at(-1)).toBe('tg ● 8 unread · Dev Team wrote')
     const band = await $.ui.mount({
       plugin: PLUGIN,

@@ -141,6 +141,67 @@ export type Selection = { ids: number[]; anchor: number | null }
 /** What the Hidden band reports: a dialog whose unread count grew. */
 export type BandEvent = { dialogId: number; label: string; kind: TgPeerKind; text: string }
 
+// ── triage ──
+// Live updates, watched dialogs, saved lenses, summaries and needs-you ranking
+// (design §5 ideas 11–14). Pure rules in hooks/triage/.
+
+/** How one `tg watch` child is doing: starting, past `ready`, waiting to restart, or given up. */
+export type WatchHealth = 'connecting' | 'live' | 'retrying' | 'failed'
+
+/** A saved lens: an extra LensBar tab. Every filter that is set must match. */
+export type SavedLens = {
+  id: string
+  name: string
+  /** Peer kinds shown; empty shows every kind. */
+  kinds: TgPeerKind[]
+  isUnreadOnly: boolean
+  /** Title or username contains it; '' matches all. */
+  query: string
+  /** Dialog ids picked by hand; empty matches any dialog. */
+  dialogs: number[]
+}
+
+/** The lens editor while it is open: a new lens, or a saved one being changed. */
+export type LensDraft = { lens: SavedLens; isNew: boolean }
+
+/** Needs-you ranking: who asks you something, what is just news, what is noise. */
+export type Verdict = 'needs-you' | 'fyi' | 'noise'
+
+/** The summary of one thread, drawn above its messages. */
+export type Summary = { peerId: number } & (
+  | { status: 'loading' }
+  | { status: 'ok'; text: string; count: number }
+  | { status: 'error'; message: string }
+)
+
+/** The last live reply in a watched dialog, for Hidden's status line and band. */
+export type WatchedReply = {
+  dialogId: number
+  messageId: number
+  label: string
+  kind: TgPeerKind
+  /** From your message it answers to the reply; null when there is none. */
+  latencyMs: number | null
+}
+
+export type Triage = {
+  /** Dialogs marked with `w`; kept in $.store. */
+  watched: PeerRef[]
+  /** Each running watch, by dialog id. */
+  health: Record<string, WatchHealth>
+  /** The active saved lens's id; null: the built-in lens in `nav.lens`. */
+  lens: string | null
+  lenses: SavedLens[]
+  editor: LensDraft | null
+  isRanked: boolean
+  /** Model verdicts, by `dialogId:last_id`, so a dialog is asked about once per new message. */
+  verdicts: Record<string, Verdict>
+  /** Dialog id → the id of a live message that replied to one of yours. */
+  repliedToYou: Record<string, number>
+  summary: Summary | null
+  reply: WatchedReply | null
+}
+
 // ── routing ──
 // Phase 2 (docs/design/dialogs-pane.md §4, §5 ideas 1–5 and 16–20): where a
 // packet goes, what went to whom, live pins and drafted replies.
@@ -302,6 +363,7 @@ declare module 'claude-code' {
       selection: Selection
       band: BandEvent | null
       now: number
+      triage: Triage
       // ── routing ──
       route: Route
       intent: RouteIntent
