@@ -42,8 +42,10 @@ function Field(els: Els, props: { id: string; label: string; value: string; plac
 }
 
 /**
- * The card's delegate rows: web (w), commands (c), repos, duration, and the
- * hard stops; a skip waits for the dialog's name to be typed.
+ * The card's delegate rows: web, commands, repos, duration, and the hard
+ * stops; a skip waits for the dialog's name to be typed. w and c mean watch
+ * and nothing in the pane (../ui/keys), so web and commands are pressed by
+ * the ring until T3 turns them into Selects.
  */
 export function DelegateRows(
   els: Els,
@@ -60,14 +62,14 @@ export function DelegateRows(
       </Box>
       <Box flexDirection="row">
         {Label(els, 'web:')}
-        <Button key="dg:web" plain hotkey="w" onPress={props.onWeb}>
+        <Button key="dg:web" plain onPress={props.onWeb}>
           {`${WEB_LABEL[grant.web]}`}
         </Button>
         <Text dimColor>{'  (off → read-only → full)'}</Text>
       </Box>
       <Box flexDirection="row">
         {Label(els, 'commands:')}
-        <Button key="dg:commands" plain hotkey="c" onPress={props.onCommands}>
+        <Button key="dg:commands" plain onPress={props.onCommands}>
           {COMMANDS_LABEL[grant.commands]}
         </Button>
       </Box>

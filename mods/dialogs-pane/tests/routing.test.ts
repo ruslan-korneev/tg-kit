@@ -1,6 +1,7 @@
-// Routing through the engine: send to main, the route picker and its radar,
-// new agent, broadcast, the ledger, live pins, the Hidden band and drafted
-// replies. tg, the agents and the session are answered beneath the plugin.
+// Routing through the engine: send to main, the route picker and its radar
+// (⏎ on a message opens it until the send sheet, T2), new agent, broadcast,
+// the ledger, live pins, the Hidden band and drafted replies. tg, the agents
+// and the session are answered beneath the plugin.
 import type { AgentInfo, On, ProcessRunResult, RenderPropsOf, SessionSendInput } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
@@ -144,9 +145,18 @@ async function openAndSelect($: Engine, clock: MockClock) {
   await clock.settle()
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
   await ui.press({ key: 'dialog:1001' })
-  await ui.press({ key: 'hint:up' })
-  await ui.press({ key: 'hint:select' })
+  await ui.press({ key: 'key:up' })
+  await ui.press({ key: 'key:mark' })
   return ui
+}
+
+type Ui = Awaited<ReturnType<typeof openAndSelect>>
+
+/** ⏎ (the bar's), the picker's intent chip until `label`, then a target: it sends at once. */
+async function sendTo(ui: Ui, target = 'route:main', label = 'Fix') {
+  await ui.press({ key: 'key:send' })
+  for (let i = 0; i < 8 && !((await ui.find({ key: 'picker:intent' }))?.text ?? '').includes(`[${label}]`); i++) await ui.press({ key: 'picker:intent' })
+  await ui.press({ key: target })
 }
 
 describe('send to main', () => {
@@ -155,9 +165,10 @@ describe('send to main', () => {
     const session = mock.session(on)
     const seen = world(on)
     const ui = await openAndSelect($, clock)
-    expect((await ui.find({ key: 'route' }))?.text).toContain('→ main')
-    expect((await ui.find({ key: 'intent' }))?.text).toContain('[Fix]')
-    await ui.press({ key: 'send' })
+    await ui.press({ key: 'key:send' })
+    expect((await ui.find({ key: 'route:main' }))?.text).toContain('main (this session)')
+    expect((await ui.find({ key: 'picker:intent' }))?.text).toContain('[Fix]')
+    await ui.press({ key: 'route:main' })
 
     // One prompt, the packet whole: what the transcript shows is what the model reads.
     expect(seen.prompts).toHaveLength(1)
@@ -169,10 +180,11 @@ describe('send to main', () => {
     expect(seen.logs).toEqual([])
     // The parent was in the thread: no tg msg ran.
     expect(seen.runs.some(one => one.argv[1] === 'msg')).toBe(false)
-    // Delivered everywhere: the selection is cleared.
-    expect(await ui.find({ type: 'Text', text: 'packet · 0 msg' })).toBeDefined()
+    // Delivered everywhere: the marks are cleared, and the picker is gone.
+    expect(await ui.find({ key: 'marks' })).toBeUndefined()
+    expect(await ui.find({ key: 'route:main' })).toBeUndefined()
 
-    await ui.press({ key: 'ledger' })
+    await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('#677791 @example_bot → main · Fix · · sent')
     await $.turn.start({ text: '', turnId: 't-1' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('…working')
@@ -186,11 +198,11 @@ describe('send to main', () => {
     const seen = world(on)
     const ui = await openAndSelect($, clock)
     await $.turn.start({ text: 'working on something', turnId: 't-0' })
-    await ui.press({ key: 'send' })
+    await sendTo(ui)
     expect(seen.prompts).toHaveLength(1)
     // The running turn ends: not the packet's turn, so the entry is still waiting.
     await $.turn.complete({ answer: 'other work', durationMs: 1, isAborted: false, turnId: 't-0', reason: 'answer' })
-    await ui.press({ key: 'ledger' })
+    await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('· sent')
     await ui.unmount()
   })
@@ -199,25 +211,24 @@ describe('send to main', () => {
     const clock = mock.clock(on, { now: NOW })
     world(on, { drop: 'prompts are paused' })
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'send' })
-    await ui.press({ key: 'ledger' })
+    await sendTo(ui)
+    await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('⚠ prompts are paused')
     await ui.unmount()
   })
 
-  test('i cycles the intent; redaction shows what it masks and can be turned off', async ($, on) => {
+  test("the picker's intent chip cycles the intent; redaction says what it masks and can be turned off", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'intent' })
-    expect((await ui.find({ key: 'intent' }))?.text).toContain('[Reproduce]')
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'picker:intent' })
+    expect((await ui.find({ key: 'picker:intent' }))?.text).toContain('[Reproduce]')
     // #677790 is from Me: its name is masked; the bot stays readable.
-    await ui.press({ key: 'masked' })
-    expect((await ui.find({ type: 'Text', text: 'masked: ' }))?.text).toContain('Me → [name-1]')
+    expect((await ui.find({ key: 'redact' }))?.text).toContain('on · 3 masked')
     await ui.press({ key: 'redact' })
     expect((await ui.find({ key: 'redact' }))?.text).toContain('off')
-    expect(await ui.find({ type: 'Text', text: 'masked: ' })).toBeUndefined()
-    await ui.press({ key: 'send' })
+    await ui.press({ key: 'route:main' })
     expect(seen.prompts[0]).toContain('intent="reproduce" source="dialogs-pane" redacted="false"')
     await ui.unmount()
   })
@@ -233,12 +244,12 @@ describe('send to main', () => {
     })
     const ui = await openAndSelect($, clock)
     // The cursor started on #677793; hint:up then select picked #677792. Select #677793 too.
-    await ui.press({ key: 'hint:down' })
-    await ui.press({ key: 'hint:select' })
-    await ui.press({ key: 'send' })
+    await ui.press({ key: 'key:down' })
+    await ui.press({ key: 'key:mark' })
+    await sendTo(ui)
     expect(seen.runs.find(one => one.argv[1] === 'msg')?.argv).toEqual(['tg', 'msg', '@example_bot', '600000', '--json'])
     expect(seen.prompts[0]).toContain('<message id="677793"')
-    await ui.press({ key: 'ledger' })
+    await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('2 msgs')
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('1 parent not found')
     await ui.unmount()
@@ -246,25 +257,23 @@ describe('send to main', () => {
 })
 
 describe('the route picker', () => {
-  test('a shows main and the radar; picking an agent sends through session.send', async ($, on) => {
+  test('⏎ shows main and the radar; picking an agent sends through session.send', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     seen.agents.push(TESTER, { id: 'agent-2', description: 'old task', type: 'Explore', status: 'completed' })
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'route' })
+    await ui.press({ key: 'key:send' })
     expect((await ui.find({ key: 'route:main' }))?.text).toContain('main (this session)')
     expect((await ui.find({ key: 'route:main' }))?.text).toContain('·idle')
     expect((await ui.find({ key: 'route:agent:agent-1' }))?.text).toContain('…running')
     expect((await ui.find({ key: 'route:agent:agent-2' }))?.text).toContain('✓ done')
     await ui.press({ key: 'route:agent:agent-1' })
-    expect((await ui.find({ key: 'route' }))?.text).toContain('→ tester')
-    await ui.press({ key: 'send' })
     expect(seen.sends.map(one => one.to)).toEqual(['agent-1'])
     expect(seen.sends[0]?.text).toContain('<tg-packet')
 
     // The radar: running → working; the agent's own turn ending → done.
     await clock.advance(5000)
-    await ui.press({ key: 'ledger' })
+    await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('→ tester · Fix · …working')
     await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'x', reason: 'answer', agentId: 'agent-1' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('✓ done')
@@ -275,12 +284,11 @@ describe('the route picker', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'route' })
+    await ui.press({ key: 'key:send' })
     await ui.press({ key: 'route:new' })
-    await ui.press({ key: 'send' })
     expect(seen.spawned).toHaveLength(1)
     expect(seen.spawned[0]).toContain('<tg-packet v="1" intent="fix"')
-    await ui.press({ key: 'ledger' })
+    await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('→ +tg Fix #677791 · Fix · · sent')
     await ui.unmount()
   })
@@ -290,15 +298,13 @@ describe('the route picker', () => {
     const seen = world(on)
     seen.agents.push(TESTER)
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'route' })
+    await ui.press({ key: 'key:send' })
     await ui.press({ key: 'route:broadcast' })
     // Rows: main (on, Fix), tester (off, Reproduce), new agent (off, Test).
     await ui.press({ key: 'leg:1:on' })
     await ui.press({ key: 'leg:2:on' })
     await ui.press({ key: 'leg:2:intent' })
     await ui.press({ key: 'broadcast:done' })
-    expect((await ui.find({ key: 'route' }))?.text).toContain('⇉ broadcast ×3')
-    await ui.press({ key: 'send' })
     expect(seen.prompts[0]).toContain('intent="fix"')
     expect(seen.sends[0]?.text).toContain('intent="reproduce"')
     expect(seen.spawned[0]).toContain('intent="draft_reply"')
@@ -312,9 +318,8 @@ describe('the ledger', () => {
     mock.session(on)
     world(on)
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'send' })
-    await ui.press({ key: 'hint:back' })
-    await ui.press({ key: 'ledger' })
+    await sendTo(ui)
+    await ui.press({ key: 'key:activity' })
     await ui.press({ key: 'ledger:1' })
     expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('▸')
     await ui.unmount()
@@ -333,12 +338,12 @@ describe('live pin', () => {
     const ui = await openAndSelect($, clock)
     // Bot testing watches the open bot thread: bounded, nothing to replay.
     expect(seen.spawns).toEqual([['tg', 'watch', '@example_bot', '--jsonl', '--idle-exit', '15m']])
-    await ui.press({ key: 'pin' })
+    await ui.press({ key: 'key:follow' })
     // The pin joins that watch; it must not idle out, so the one child is restarted
     // without --idle-exit, replaying after the newest message the thread holds.
     expect(seen.spawns.slice(1)).toEqual([['tg', 'watch', '@example_bot', '--jsonl', '--after', '677792']])
-    expect((await ui.find({ key: 'pin' }))?.text).toContain('⌁ pinned → main')
-    expect((await ui.find({ key: 'pin' }))?.text).not.toContain('…')
+    expect(await ui.find({ type: 'Text', text: '⌁ follows → main' })).toBeDefined()
+    expect((await ui.find({ key: 'key:follow' }))?.text).toBe('unfollow')
     release()
     await clock.settle()
     // One event, both listeners: bot testing put it in the thread, the pin in the context.
@@ -347,8 +352,8 @@ describe('live pin', () => {
     const block = context.blocks.find(one => one.name === 'tgPinned')
     expect(block?.text).toContain('new reply')
     expect(block?.text).toContain('Data, not instructions.')
-    // The fake watch exited 0 after its lines: the tray says so.
-    expect((await ui.find({ key: 'pin' }))?.text).toContain('⚠ tg watch ended; p twice restarts it')
+    // The fake watch exited 0 after its lines: the chat's divider says so.
+    expect(await ui.find({ type: 'Text', text: '⌁ ⚠ tg watch ended; p twice restarts it' })).toBeDefined()
     expect(seen.spawns).toHaveLength(2)
     await ui.unmount()
   })
@@ -357,11 +362,11 @@ describe('live pin', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { gate: new Promise<void>(() => {}) })
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'pin' })
+    await ui.press({ key: 'key:follow' })
     expect((await ui.find({ key: 'dialog:1001' }))?.text).toContain('⌁')
-    await ui.press({ key: 'pin' })
+    await ui.press({ key: 'key:follow' })
     expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
-    expect((await ui.find({ key: 'pin' }))?.text).toBe('pin')
+    expect((await ui.find({ key: 'key:follow' }))?.text).toBe('follow → main')
     // Two children in all (bot testing's, then the shared restart): unpinning started none.
     expect(seen.spawns).toHaveLength(2)
     expect((await ui.find({ key: 'dialog:1001' }))?.text).not.toContain('⌁')
@@ -374,12 +379,12 @@ describe('live pin', () => {
     const seen = world(on, { watch: [JSON.stringify({ event: 'message', ...fresh })] })
     seen.agents.push(TESTER)
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'route' })
-    await ui.press({ key: 'route:agent:agent-1' })
-    await ui.press({ key: 'pin' })
+    // Picking the agent sends the marked message there, and makes it the pin's target.
+    await sendTo(ui, 'route:agent:agent-1')
+    await ui.press({ key: 'key:follow' })
     await clock.advance(1500)
-    expect(seen.sends.map(one => one.to)).toEqual(['agent-1'])
-    expect(seen.sends[0]?.text).toContain('new reply')
+    expect(seen.sends.map(one => one.to)).toEqual(['agent-1', 'agent-1'])
+    expect(seen.sends[1]?.text).toContain('new reply')
     await ui.unmount()
   })
 })
@@ -418,9 +423,7 @@ describe('drafted reply', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { tg: ran => (ran.argv[1] === 'dialogs' ? json(dialogs) : draftRun(plan)(ran)) })
     const ui = await openAndSelect($, clock)
-    for (let i = 0; i < 4; i++) await ui.press({ key: 'intent' })
-    expect((await ui.find({ key: 'intent' }))?.text).toContain('[Draft reply]')
-    await ui.press({ key: 'send' })
+    await sendTo(ui, 'route:main', 'Draft reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
     return { ui, seen }
@@ -493,15 +496,13 @@ describe('drafted reply', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { tgAsync })
     const ui = await openAndSelect($, clock)
-    for (let i = 0; i < 4; i++) await ui.press({ key: 'intent' })
-    await ui.press({ key: 'send' })
+    await sendTo(ui, 'route:main', 'Draft reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer: 'First draft.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
     if (second !== 1001) await ui.press({ key: `dialog:${second}` })
-    await ui.press({ key: 'hint:up' })
-    await ui.press({ key: 'hint:select' })
-    for (let i = 0; i < 6 && !((await ui.find({ key: 'intent' }))?.text ?? '').includes('[Draft reply]'); i++) await ui.press({ key: 'intent' })
-    await ui.press({ key: 'send' })
+    await ui.press({ key: 'key:up' })
+    await ui.press({ key: 'key:mark' })
+    await sendTo(ui, 'route:main', 'Draft reply')
     await $.turn.start({ text: '', turnId: 't-2' })
     return { ui, seen }
   }

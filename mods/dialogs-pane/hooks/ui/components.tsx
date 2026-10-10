@@ -6,8 +6,6 @@ import type { ElementTable, RenderElement } from 'claude-code'
 import type { Lens, Load, TgDialog, TgMessage } from '../../types'
 import {
   GLYPH,
-  LENSES,
-  LENS_LABEL,
   TOKEN,
   dialogGlyph,
   dialogLabel,
@@ -20,7 +18,6 @@ import {
   oneLine,
   senderLabel,
   shortTime,
-  type Hint,
 } from './model'
 
 export type Els = ElementTable
@@ -33,63 +30,6 @@ export function windowAround<T>(list: readonly T[], cursor: number, rows: number
   const room = Math.max(1, rows)
   const start = Math.min(Math.max(0, cursor - Math.floor(room / 2)), Math.max(0, list.length - room))
   return { start, items: list.slice(start, start + room) }
-}
-
-export function Header(
-  { Box, Text, Button }: Els,
-  props: { title: string; mode: string; onMode: () => void },
-): RenderElement {
-  return (
-    <Box flexDirection="row" justifyContent="space-between">
-      <Text color={TOKEN.accent} bold wrap="truncate-end">
-        {props.title}
-      </Text>
-      <Button key="mode" plain hotkey="m" dimColor onPress={props.onMode}>
-        {props.mode}
-      </Button>
-    </Box>
-  )
-}
-
-export function LensBar(
-  els: Els,
-  props: {
-    lens: Lens
-    query: string
-    onLens: (lens: Lens) => void
-    onSearch: (query: string) => void
-    /** Drawn after the built-in tabs: saved lenses and the needs-you toggle. */
-    extra?: RenderElement
-    /** A saved lens is active, so no built-in tab is drawn as the current one. */
-    isSavedLens?: boolean
-  },
-): RenderElement {
-  const { Box, Text, Button } = els
-  const Input = 'Input' in els ? els.Input : undefined
-  return (
-    <Box flexDirection="row" justifyContent="space-between">
-      {Input === undefined ? (
-        <Text dimColor>{props.query === '' ? '' : `/ ${props.query}`}</Text>
-      ) : (
-        <Input key="search" label="/" placeholder="search" value={props.query} submitLabel="filter" onSubmit={value => props.onSearch(value)} />
-      )}
-      <Box flexDirection="row" gap={1}>
-        <Text dimColor>lens:</Text>
-        {LENSES.map((lens, index) =>
-          lens === props.lens && props.isSavedLens !== true ? (
-            <Button key={`lens:${lens}`} plain hotkey={String(index + 1)} onPress={() => props.onLens(lens)}>
-              <Text color={TOKEN.accent} bold>{`[${LENS_LABEL[lens]}]`}</Text>
-            </Button>
-          ) : (
-            <Button key={`lens:${lens}`} plain hotkey={String(index + 1)} dimColor onPress={() => props.onLens(lens)}>
-              {LENS_LABEL[lens]}
-            </Button>
-          ),
-        )}
-        {props.extra ?? null}
-      </Box>
-    </Box>
-  )
 }
 
 export function DialogRow(
@@ -118,8 +58,9 @@ export function DialogRow(
   const pilot = props.autopilot
   const nameWidth = Math.max(8, props.width - 21 - (pilot === undefined ? 0 : pilot.tail.length + 3 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)))
   return (
-    <Button key={`dialog:${dialog.id}`} plain onPress={props.onOpen}>
-      <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : '  '}</Text>
+    // The cursor row takes the ring whenever the pane takes the keys: ⏎ acts on it at once.
+    <Button key={`dialog:${dialog.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onOpen}>
+      <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : props.isOpen ? `${GLYPH.open} ` : '  '}</Text>
       {pilot === undefined ? null : <Text color={TOKEN.accent}>{pilot.glyph} </Text>}
       <Text color={color}>{glyph} </Text>
       <Text bold={isUnread || props.isOpen} underline={props.isOpen}>
@@ -172,7 +113,7 @@ export function MessageCard(
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
   return (
     <Box key={`card:${message.id}`} flexDirection="column">
-      <Button key={`msg:${message.id}`} plain onPress={props.onPress}>
+      <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onPress}>
         <Text color={TOKEN.accent}>{props.isCursor ? GLYPH.cursor : props.isAnchor ? 'v' : ' '}</Text>
         <Text dimColor> {shortTime(message.date, props.now).padEnd(9)} </Text>
         <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{pad(sender, 6)}</Text>
@@ -183,18 +124,6 @@ export function MessageCard(
         <Text dimColor> {id}</Text>
       </Button>
       {props.buttonRow !== undefined ? props.buttonRow : message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
-    </Box>
-  )
-}
-
-export function HintsRow({ Box, Button }: Els, props: { hints: readonly Hint[]; onHint: (key: string) => void }): RenderElement {
-  return (
-    <Box key="hints" flexDirection="row" gap={2}>
-      {props.hints.map(hint => (
-        <Button key={`hint:${hint.key}`} plain hotkey={hint.hotkey} dimColor onPress={() => props.onHint(hint.key)}>
-          {hint.label}
-        </Button>
-      ))}
     </Box>
   )
 }

@@ -1,10 +1,10 @@
 // Pure rules of the pane: tokens and glyphs (design §4), lenses, labels,
-// selection, hints. No `$` here, so tests call these directly.
+// selection, the state summary. No `$` here, so tests call these directly.
+// The keys are in ./keys.
 import type {
   BandEvent,
   Lens,
   Load,
-  Mode,
   Nav,
   Selection,
   TgDialog,
@@ -13,18 +13,7 @@ import type {
   TgPeerKind,
 } from '../../types'
 
-export const MODES = ['wide', 'compact', 'hidden'] as const satisfies readonly Mode[]
 export const LENSES = ['all', 'bots', 'unread'] as const satisfies readonly Lens[]
-
-export function isMode(v: unknown): v is Mode {
-  return MODES.some(mode => mode === v)
-}
-
-/** `Tab` order: wide → compact → hidden → wide. */
-export function nextMode(mode: Mode): Mode {
-  const next: Record<Mode, Mode> = { wide: 'compact', compact: 'hidden', hidden: 'wide' }
-  return next[mode]
-}
 
 /** Terminal palette names, so the pane follows the person's theme. */
 export const TOKEN = {
@@ -42,6 +31,9 @@ export const GLYPH = {
   person: '•',
   unread: '●',
   cursor: '▸',
+  /** The open chat's row while the cursor is elsewhere (dock). */
+  open: '›',
+  marked: '▪',
   pinned: '⌁',
   latency: '⏱',
   done: '✓',
@@ -203,37 +195,27 @@ export function loaded<T>(load: Load<T>): T | undefined {
   return load.status === 'ok' ? load.value : undefined
 }
 
-// --- hints: the keys valid right now, never more than five ---
+// --- the state summary (design §4.5), unread growth, the status line ---
 
-export type Hint = { key: string; hotkey: string; label: string }
+/** The header's summary in three parts, zeros left out; `forYou` is drawn in the warn token. */
+export type SummaryParts = { levels: string; watched: string; forYou: string }
 
-export const MAX_HINTS = 5
-
-export function hintsFor(view: Nav['view'], selection: Selection): Hint[] {
-  const all: Hint[] =
-    view === 'dialogs'
-      ? [
-          { key: 'down', hotkey: 'j', label: 'down' },
-          { key: 'up', hotkey: 'k', label: 'up' },
-          { key: 'open', hotkey: 'o', label: 'open' },
-          { key: 'search', hotkey: 's', label: 'search' },
-          { key: 'mode', hotkey: 'm', label: 'mode' },
-        ]
-      : [
-          { key: 'down', hotkey: 'j', label: 'down' },
-          { key: 'up', hotkey: 'k', label: 'up' },
-          { key: 'select', hotkey: 'x', label: 'select' },
-          { key: 'range', hotkey: 'v', label: selection.anchor === null ? 'range' : 'range end' },
-          { key: 'back', hotkey: 'h', label: selection.ids.length > 0 ? 'clear' : 'back' },
-        ]
-  return all.slice(0, MAX_HINTS)
-}
-
-// --- mode defaults, unread growth, the status line ---
-
-/** The mode a fresh open takes: wide where a pane docks beside the transcript. */
-export function defaultMode(presentation: { isFullscreen: boolean; columns: number } | undefined): Mode {
-  return presentation !== undefined && presentation.isFullscreen && presentation.columns >= 110 ? 'wide' : 'compact'
+export function stateSummary(counts: {
+  /** Agents on, by ladder level, in ladder order. */
+  levels: readonly { glyph: string; count: number }[]
+  /** New messages in watched chats. */
+  watched: number
+  /** Drafts and hard stops waiting for the owner. */
+  forYou: number
+}): SummaryParts {
+  return {
+    levels: counts.levels
+      .filter(level => level.count > 0)
+      .map(level => `${level.glyph}${level.count}`)
+      .join(' '),
+    watched: counts.watched > 0 ? `◎ ${counts.watched} new` : '',
+    forYou: counts.forYou > 0 ? `${counts.forYou} for you` : '',
+  }
 }
 
 /** The first dialog whose unread count grew between two loads. */

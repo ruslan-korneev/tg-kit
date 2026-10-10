@@ -1,11 +1,11 @@
 // Bot-testing components (design §4 ButtonRow, §5 ideas 6–10), drawn like the pane's
 // own: plain functions over the surface's element table, handlers as closures.
+// Their keys (b n r f) are in ../ui/keys; the frame draws them.
 import type { RenderElement } from 'claude-code'
 
-import type { Notice, Recording, Timing } from '../../types'
 import type { Button, MessageView } from '../packet/types'
 import type { Els } from '../ui/components'
-import { GLYPH, TOKEN, oneLine } from '../ui/model'
+import { TOKEN, oneLine } from '../ui/model'
 import { keyboardLines, type ReplyDiff } from './diff'
 import { chipLabel } from './keyboard'
 
@@ -40,54 +40,6 @@ export function ChipRow(
   )
 }
 
-/** The bot-testing keys for an open thread, and what is running. */
-export function BotBar(
-  { Box, Button, Text }: Els,
-  props: {
-    recording: Recording | null
-    busy: string | null
-    watch: Timing['watch']
-    onButtons: () => void
-    onCompose: () => void
-    onRecord: () => void
-    onDiff: () => void
-  },
-): RenderElement {
-  const status = props.busy !== null ? `${GLYPH.working} ${props.busy}` : props.watch === 'live' ? `${GLYPH.latency} live` : ''
-  return (
-    <Box key="bt:bar" flexDirection="row" gap={2}>
-      <Button key="bt:buttons" plain hotkey="b" dimColor onPress={props.onButtons}>
-        buttons
-      </Button>
-      <Button key="bt:compose" plain hotkey="n" dimColor onPress={props.onCompose}>
-        send
-      </Button>
-      <Button key="bt:record" plain hotkey="r" dimColor onPress={props.onRecord}>
-        {props.recording === null ? 'rec' : 'stop'}
-      </Button>
-      <Button key="bt:diff" plain hotkey="f" dimColor onPress={props.onDiff}>
-        diff
-      </Button>
-      {props.recording === null ? null : <Text color={TOKEN.danger}>{`${GLYPH.unread} rec ${props.recording.steps.length}`}</Text>}
-      <Text dimColor wrap="truncate-end">
-        {status}
-      </Text>
-    </Box>
-  )
-}
-
-const NOTICE_COLOR: Record<Notice['tone'], string | undefined> = { info: undefined, warn: TOKEN.warn, danger: TOKEN.danger }
-
-export function NoticeRow({ Box, Text }: Els, props: { notice: Notice }): RenderElement {
-  return (
-    <Box key="bt:notice">
-      <Text color={NOTICE_COLOR[props.notice.tone]} wrap="wrap">
-        {props.notice.text}
-      </Text>
-    </Box>
-  )
-}
-
 /** The one-line send box; null on a surface without an Input. */
 export function SendBox(els: Els, props: { peer: string; onSend: (text: string) => void }): RenderElement | null {
   if (!('Input' in els)) return null
@@ -107,7 +59,7 @@ export function DiffView({ Box, Text }: Els, props: { diff: ReplyDiff; width: nu
   const shown = lines.length > room ? [...lines.slice(0, room - 1), { op: 'same' as const, text: `… ${lines.length - room + 1} more lines` }] : lines
   return (
     <Box key="bt:diff-view" flexDirection="column">
-      <Text color={TOKEN.accent} bold>{`diff #${diff.before} → #${diff.after} · f closes`}</Text>
+      <Text color={TOKEN.accent} bold>{`diff #${diff.before} → #${diff.after} · f or h closes`}</Text>
       {...shown.map((line, index) => (
         <Text key={`diff:${index}`} color={OP_COLOR[line.op]} wrap="truncate-end">
           {oneLine(line.text, Math.max(10, props.width - 1))}

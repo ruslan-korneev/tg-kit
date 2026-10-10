@@ -2,14 +2,12 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { failureOf, settle, tg } from '../hooks/tg/tg'
 import {
-  MAX_HINTS,
   NO_SELECTION,
   emptyLensText,
   grownDialog,
-  hintsFor,
-  nextMode,
   peerArg,
   rangeSelect,
+  stateSummary,
   statusText,
   toggleSelected,
   visibleDialogs,
@@ -98,16 +96,15 @@ describe('selection', () => {
   })
 })
 
-describe('modes, hints, status', () => {
-  test('Tab cycles wide → compact → hidden → wide', () => {
-    expect([nextMode('wide'), nextMode('compact'), nextMode('hidden')]).toEqual(['compact', 'hidden', 'wide'])
-  })
-
-  test('never more than five hints', () => {
-    for (const view of ['dialogs', 'thread'] as const) {
-      expect(hintsFor(view, NO_SELECTION).length).toBeLessThanOrEqual(MAX_HINTS)
-    }
-    expect(hintsFor('thread', { ids: [1], anchor: null }).find(h => h.key === 'back')?.label).toBe('clear')
+describe('summary, status', () => {
+  test('the state summary leaves zeros out (design §4.5)', () => {
+    const levels = [
+      { glyph: '⌁', count: 1 },
+      { glyph: '◉', count: 0 },
+      { glyph: '⟳', count: 2 },
+    ]
+    expect(stateSummary({ levels, watched: 3, forYou: 2 })).toEqual({ levels: '⌁1 ⟳2', watched: '◎ 3 new', forYou: '2 for you' })
+    expect(stateSummary({ levels: [{ glyph: '⌁', count: 0 }], watched: 0, forYou: 0 })).toEqual({ levels: '', watched: '', forYou: '' })
   })
 
   test('status line: unread total, news, not logged in', () => {
