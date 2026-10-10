@@ -141,6 +141,93 @@ export type Selection = { ids: number[]; anchor: number | null }
 /** What the Hidden band reports: a dialog whose unread count grew. */
 export type BandEvent = { dialogId: number; label: string; kind: TgPeerKind; text: string }
 
+// ── routing ──
+// Phase 2 (docs/design/dialogs-pane.md §4, §5 ideas 1–5 and 16–20): where a
+// packet goes, what went to whom, live pins and drafted replies.
+
+/** The packet module's intent ids (hooks/packet/intents.ts `INTENT_IDS`). */
+export type RouteIntent = 'fix' | 'reproduce' | 'explain' | 'test' | 'draft_reply' | 'raw'
+
+/** One live agent of this session, as `$.agent.list()` names it. */
+export type AgentRef = { agentId: string; label: string }
+
+/** A recipient: this session's main loop, a live agent, or one spawned for the packet. */
+export type Recipient = { kind: 'main' } | ({ kind: 'agent' } & AgentRef) | { kind: 'new' }
+
+/** One recipient of a broadcast, with an intent of its own. */
+export type Leg = { to: Recipient; intent: RouteIntent }
+
+/** Where the tray's send goes: one recipient under the tray's intent, or a broadcast. */
+export type Route = { kind: 'one'; to: Recipient } | { kind: 'broadcast'; legs: Leg[] }
+
+/** `$.agent.list()` statuses folded into the radar's three. */
+export type AgentState = 'idle' | 'running' | 'done'
+export type RadarEntry = AgentRef & { type: string; state: AgentState }
+
+/** A broadcast being put together in the picker: each leg on or off. */
+export type BroadcastRow = Leg & { isOn: boolean }
+
+/** What the pane draws over the dialogs and thread. */
+export type Overlay =
+  | { kind: 'none' }
+  | { kind: 'picker' }
+  | { kind: 'broadcast'; rows: BroadcastRow[] }
+  | { kind: 'ledger'; cursor: number }
+
+/** Who a ledger entry went to; a spawned agent is known once it started. */
+export type Delivered = { kind: 'main' } | ({ kind: 'agent'; isNew: boolean } & AgentRef)
+
+export type LedgerState =
+  | { kind: 'sent' }
+  | { kind: 'working' }
+  | { kind: 'done'; at: number }
+  | { kind: 'failed'; reason: string }
+
+/** One packet that left the pane. */
+export type LedgerEntry = {
+  seq: number
+  at: number
+  peer: PeerRef
+  messageIds: number[]
+  to: Delivered
+  intent: RouteIntent
+  state: LedgerState
+  /** Reply-chain parents carried as context, and parents tg could not find. */
+  parents: number
+  missing: number[]
+  masked: number
+}
+
+/** Where a pinned dialog's new messages go. */
+export type PinTarget = { kind: 'main' } | ({ kind: 'agent' } & AgentRef)
+
+export type PinWatch = { status: 'starting' } | { status: 'live' } | { status: 'failed'; reason: string }
+
+/** A dialog pinned to an agent: `tg watch` feeds `messages`, newest last. */
+export type Pin = {
+  peer: PeerRef
+  to: PinTarget
+  /** The newest message id seen, so a restarted watch replays from it (`--after`). */
+  lastId: number | null
+  messages: TgMessage[]
+  /** Agent pins: ids not delivered yet. */
+  unsent: number[]
+  watch: PinWatch
+}
+
+export type DraftStep =
+  | { kind: 'draft' }
+  | { kind: 'checking' }
+  | { kind: 'planned'; isAllowed: boolean; reason: string }
+  | { kind: 'sending' }
+  | { kind: 'sent'; ids: number[] }
+  | { kind: 'failed'; reason: string }
+
+/** An agent's result drafted as a reply to the message it was about (idea 20). */
+export type ReplyDraft = { peer: PeerRef; replyTo: number; text: string; from: string; step: DraftStep }
+
+// ── /routing ──
+
 declare module 'claude-code' {
   interface PluginState {
     'dialogs-pane': {
@@ -151,6 +238,20 @@ declare module 'claude-code' {
       selection: Selection
       band: BandEvent | null
       now: number
+      // ── routing ──
+      route: Route
+      intent: RouteIntent
+      isRedacted: boolean
+      /** The tray lists what redaction masked. */
+      isMaskShown: boolean
+      overlay: Overlay
+      radar: RadarEntry[]
+      /** Whether the main loop is in a turn: a packet sent to an idle main wakes it. */
+      isMainBusy: boolean
+      ledger: LedgerEntry[]
+      pins: Pin[]
+      draft: ReplyDraft | null
+      // ── /routing ──
     }
   }
 }

@@ -3,7 +3,7 @@
 // how `h` treats function components. Handlers come in as closures.
 import type { ElementTable, RenderElement } from 'claude-code'
 
-import type { Lens, Load, Selection, TgDialog, TgMessage } from '../../types'
+import type { Lens, Load, TgDialog, TgMessage } from '../../types'
 import {
   GLYPH,
   LENSES,
@@ -84,14 +84,22 @@ export function LensBar(
 
 export function DialogRow(
   { Button, Text }: Els,
-  props: { dialog: TgDialog; isCursor: boolean; isOpen: boolean; width: number; now: number; onOpen: () => void },
+  props: {
+    dialog: TgDialog
+    isCursor: boolean
+    isOpen: boolean
+    isPinned: boolean
+    width: number
+    now: number
+    onOpen: () => void
+  },
 ): RenderElement {
   const { dialog } = props
   const { glyph, color } = dialogGlyph(dialog.kind)
   const isUnread = dialog.unread > 0
   const badge = isUnread ? String(dialog.unread) : ''
   const time = shortTime(dialog.last_date, props.now)
-  const marks = isReadOnlyPeer(dialog) ? 'ro' : ''
+  const marks = isReadOnlyPeer(dialog) ? 'ro' : props.isPinned ? GLYPH.pinned : ''
   // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left.
   const nameWidth = Math.max(8, props.width - 21)
   return (
@@ -103,7 +111,7 @@ export function DialogRow(
       </Text>
       <Text bold>{badge.padStart(3)} </Text>
       <Text dimColor>{time.padStart(9)} </Text>
-      <Text color={TOKEN.warn}>{marks}</Text>
+      <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>
     </Button>
   )
 }
@@ -151,61 +159,6 @@ export function MessageCard(
         <Text dimColor> {id}</Text>
       </Button>
       {message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
-    </Box>
-  )
-}
-
-/** What is selected; Send is a stub until the routing phase fills it. */
-export function PacketTray(
-  { Box, Text, Button }: Els,
-  props: {
-    size: 'full' | 'line'
-    selection: Selection
-    messages: readonly TgMessage[]
-    onSend: () => void
-    onWhole: () => void
-    onClear: () => void
-  },
-): RenderElement {
-  const chosen = props.messages.filter(message => props.selection.ids.includes(message.id))
-  const count = props.selection.ids.length
-  const summary =
-    chosen.length === 0
-      ? 'nothing selected: x selects, v a range, d the whole thread'
-      : chosen
-          .slice(0, 4)
-          .map(message => `#${message.id}`)
-          .join(' ') + (chosen.length > 4 ? ` +${chosen.length - 4}` : '')
-  const buttons = chosen.reduce((sum, message) => sum + message.buttons.flat().length, 0)
-  const media = chosen.filter(message => message.media !== null).length
-  const actions = (
-    <Box flexDirection="row" gap={2}>
-      <Button key="send" variant="primary" onPress={props.onSend}>
-        send
-      </Button>
-      <Button key="whole" plain hotkey="d" dimColor onPress={props.onWhole}>
-        all
-      </Button>
-      <Button key="clear" plain hotkey="c" dimColor onPress={props.onClear}>
-        clear
-      </Button>
-    </Box>
-  )
-  if (props.size === 'line') {
-    return (
-      <Box flexDirection="row" gap={2}>
-        <Text color={TOKEN.accent}>{`${count} selected`}</Text>
-        {actions}
-      </Box>
-    )
-  }
-  return (
-    <Box flexDirection="column">
-      <Text color={TOKEN.accent}>{`packet · ${count} msg`}</Text>
-      <Text dimColor wrap="truncate-end">
-        {count === 0 ? summary : `${summary} · ${buttons} buttons · ${media === 0 ? 'no media' : `${media} media`}`}
-      </Text>
-      {actions}
     </Box>
   )
 }
