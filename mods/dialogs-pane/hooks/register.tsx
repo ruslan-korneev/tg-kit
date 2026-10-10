@@ -127,8 +127,11 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'tg',
-      description: 'Open or focus the Telegram dialogs pane',
-      argumentHint: '[wide|compact|hidden|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
+      description: 'Open or focus the Telegram dialogs pane · /tg stop stops every agent',
+      argumentHint: '[wide|compact|hidden|stop|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
+      // The kill switch must not wait for main's turn to end, so every /tg runs
+      // at once: opening the pane touches no turn state either.
+      immediate: true,
     })
     // $.store is shared by every session, so it only seeds a fresh one: after a
     // hot reload $.state still holds this session's mode, and the stored one
@@ -158,8 +161,9 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'tg' }, async ($, e) => {
     const asked = e.args.trim()
     if (asked === 'autopilot' || asked.startsWith('autopilot ')) return autopilotCommand($, asked.slice('autopilot'.length).trim()) // ── autopilot ──
+    if (asked === 'stop') return autopilotCommand($, 'off') // ── autopilot ── the kill switch
     const named = MODE_ARGS.find(one => one === asked)
-    if (asked !== '' && named === undefined) return { text: 'Usage: /tg [wide|compact|hidden]' }
+    if (asked !== '' && named === undefined) return { text: 'Usage: /tg [wide|compact|hidden|stop]' }
     // Never chosen, or Hidden: open as the terminal suits; else as last left.
     const kept = await $.store.get(STORE_MODE)
     const target = named ?? (isMode(kept) && kept !== 'hidden' ? kept : defaultMode(e.presentation))
@@ -2257,7 +2261,7 @@ async function drawBottest($: $, els: Els): Promise<RenderElement[]> {
 // allow.toml decide, and nothing here passes --yes except `u`'s delete, which
 // the person's key press asks for. Pure rules are in ./autopilot; every `$`
 // call is here. Keys: q the card (pane), u undo (pane and band); a draft's
-// ⏎ e x o in the band. The kill switch: `/tg autopilot off`, "stop all".
+// ⏎ e x o in the band. The kill switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
 import type { PluginOptions } from 'claude-code'
 
 import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
@@ -2936,7 +2940,7 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
   await apEdit($, id, one => one)
   await update($, autopilot, value => ({ ...value, running: [...value.running, id], view: { kind: 'none' } }))
   await apListen($, dialog.peer)
-  $.ui.toast(`tg: ${LEVEL_GLYPH[dialog.level]} autopilot ${dialog.level} on for ${dialog.peer.label}. /tg autopilot off stops every dialog.`)
+  $.ui.toast(`tg: ${LEVEL_GLYPH[dialog.level]} autopilot ${dialog.level} on for ${dialog.peer.label}. /tg stop stops every dialog.`)
   await refreshStatus($)
 }
 

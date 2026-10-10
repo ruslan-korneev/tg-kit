@@ -381,8 +381,9 @@ show the warning in the card once.
   gets more tools, and only the ones granted.
 - **Brief per dialog.** Tone, what the agent may and may not promise, and facts about you it may
   use. It is stored in `$.store` and shown in the setup card.
-- **Kill switch.** `/tg autopilot off`, or "stop all" in the pane, stops every dialog and every
-  Worker at once (TaskStop). Stopping a dialog, the task card's "stop" and the grant's deadline
+- **Kill switch.** `/tg stop` (or `/tg autopilot off`), or "stop all" in the pane (`0`), stops
+  every dialog and every Worker at once (TaskStop). `/tg` is registered `immediate`, so it runs
+  while main is mid-turn. Stopping a dialog, the task card's "stop" and the grant's deadline
   stop its Worker. Closing the session stops them too.
 - **The guard is a mod of its own** (`mods/dialogs-pane-guard`). The engine runs no hook of a
   plugin inside a loop that plugin spawned. In a live run, the pane's own `tool.call` hook never
@@ -414,7 +415,7 @@ A new `tg watch PEER… --jsonl` command streams new and edited messages in the 
 - Hard stops hold the Worker's tool call with the engine's own dialog (`$.ui.ask`). A `tool.call`
   hook has a 10 s budget, so it cannot wait for a press in the card. The card, the band and the
   status line mirror the open stop. If nobody answers, the answer is no.
-- The kill switch is `/tg autopilot off` and the "stop all" button, because the engine owns Esc.
+- The kill switch is `/tg stop` and the "stop all" button (`0`), because the engine owns Esc.
 - The Worker's guard moved into a second mod (see Safety model). The rules both mods use
   (`hooks/delegate/{shell,paths,stops,grant,skip,task}.ts`) are byte-identical copies, because the
   engine loads no file from outside a plugin's folder, symlinks included.

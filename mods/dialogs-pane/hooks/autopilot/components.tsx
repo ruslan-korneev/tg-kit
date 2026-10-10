@@ -222,7 +222,7 @@ export function AutopilotLedger(
   )
 }
 
-/** The pane's autopilot row: q opens the card; what runs; undo; stop all. */
+/** The pane's autopilot row: q opens the card; what runs; undo; stop all (0). */
 export function AutopilotRow(
   { Box, Text, Button }: Els,
   props: { running: number; drafts: number; undo: ApUndoWindow | null; now: number; onCard: () => void; onUndo: () => void; onStopAll: () => void },
@@ -241,7 +241,8 @@ export function AutopilotRow(
         </Button>
       )}
       {props.running === 0 ? null : (
-        <Button key="ap:stop-all" plain onPress={props.onStopAll}>
+        // 0 is free in the pane: only the broadcast overlay draws it, and that replaces the pane.
+        <Button key="ap:stop-all" plain hotkey="0" onPress={props.onStopAll}>
           <Text color={TOKEN.danger}>stop all</Text>
         </Button>
       )}
