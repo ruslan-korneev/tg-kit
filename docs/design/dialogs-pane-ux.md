@@ -405,7 +405,8 @@ Why:
   "exclude read" does the job for whoever wants one, and shows here like any other folder.
 - Bots stays, as a pane view: bot testing is what tg-kit is for, 29 bots hide among the latest 200
   chats, and a Bots folder in Telegram would clutter the owner's phone for the pane's sake. It
-  lists the bots among the latest 200 chats (`tg dialogs --limit 200`, by kind).
+  lists the bots among the pass's rows: the latest chats of the chat list and the Archive, and
+  every chat a folder lists.
 - For you is new: what waits for the owner, across every folder (§5.3). It replaces the `y`
   ranking toggle, whose state (`you↑ on`) the list did not show.
 
@@ -429,25 +430,42 @@ How it looks and moves:
   the folder.
 - **An account without folders** gets `1: All chats  2: For you  3: Bots`: today's lenses without
   Unread.
-- **A folder changed in Telegram** shows on the next open or `g`; the last list paints first.
+- **A folder changed in Telegram** shows with the next pass (within a minute while the pane is
+  open, at once on `g`); the last pass paints first.
 
-Where the data comes from (tg, task T8):
+Where the data comes from (tg, tasks T8 and T8b):
 
 - `tg folders --json`: `[{id, title, kind: "all" | "folder" | "shared"}]` in Telegram's order,
   from `messages.getDialogFilters` (0.66 s on the owner's account). `--counts` adds `unread` per
-  folder: one scan of the latest chats plus the folders' listed chats.
-- `tg dialogs --folder ID|TITLE`: the folder's chats, its pinned ones first, then by last message.
-  Rows gain `pinned`, `muted` and `mentions` (Telegram's unread-mention count), which the badges
-  and For you need.
-- Membership follows Telegram's rule (tdlib's `DialogFilter::need_dialog`; check the details
-  against tdlib before building): pinned or included → in; excluded → out; otherwise the folder's
-  chat types (contacts, non-contacts, groups, channels, bots), minus muted, read or archived chats
-  when the folder says so, except that an unread mention keeps a chat in. A shared folder is its
-  pinned and included chats only. Listed chats are fetched by id (`messages.getPeerDialogs`), so an
-  old one still shows; type-built folders look at the latest 500 chats.
-- Cost on the owner's account: `tg dialogs --limit 50` 1.0 s, `--limit 200` 2.0 s. The pane keeps
-  each folder's last list in memory and refreshes it in the background on a switch, so a switch
-  paints at once.
+  folder. The pane paints the strip from it before the first pass lands.
+- `tg folders --chats --json` (T8b), **the pass**: every folder's chats in its order, its pinned
+  chats and its count, and every chat's row once (§8 T8b has the document). The pane builds every
+  folder, Bots, For you's people and the counts from it, so switching folders runs no tg call.
+- `tg dialogs --folder ID|TITLE`: one folder's chats, its pinned ones first, then by last message.
+  It is for agents and the command line; the pane does not call it.
+- Rows gain `pinned`, `muted` and `mentions` (Telegram's count of unread mentions). `muted` is the
+  chat's own mute or, when it has none, the account's default for its kind (private chats, groups,
+  channels; `account.getNotifySettings`), as tdlib does. Without the default, channels muted by
+  default would count as unmuted and inflate every badge.
+- Membership follows tdlib's `DialogFilter::need_dialog`. Pinned or included → in; excluded →
+  out; a shared folder stops there, being its pinned and included chats only. Then, unless the
+  chat has an unread mention, a muted chat is out when the folder excludes muted, and a read one
+  when it excludes read. An archived chat is out when the folder excludes archived, mention or
+  not. Last come the folder's chat types: contacts (with Saved Messages), non-contacts, groups,
+  channels, bots. Listed chats are fetched by id (`messages.getPeerDialogs`), so an old one still
+  shows; All chats and type-built folders look at the latest 500 chats of the chat list and the
+  latest 500 of the Archive. Those are two scans: `getDialogs` without a folder id answers with
+  the chat list only, and its Archive answer also carries the chat list's pins, so only dialogs
+  marked `folder_id` 1 count as archived.
+- Cost, measured on the owner's account by T8: `getPeerDialogs` is limited by chats, about 180 in
+  30 s, and past that Telegram asks for a wait of about 30 s, which tg sleeps out (its default
+  `flood_sleep_threshold` is 30 s). The folders list 212 distinct chats, 121 of them outside the
+  latest 500. Measured by T8b, one pass takes 4.2 s and returns 621 chats in a document of
+  467 KB, about 121 of them fetched by id, and two passes back to back flood. Fetching a folder on
+  every switch would spend the budget in one look through 14 folders, so the pane runs one pass a
+  minute at most. It keeps the rows in its module and only the view on screen in `$.state`,
+  since a `$.state` value crosses to the host as JSON on every write and on every read while
+  drawing (§8 T9). `tg dialogs --limit 50` takes 1.0 s, `--limit 200` 2.0 s.
 
 ## 5. Core flows
 
@@ -993,9 +1011,13 @@ Flow 4 · Compact · the card in 12 rows
 ```
 
 ```text
-Flow 4 · Hidden · a draft, then an auto reply's undo window
-✎ Contact A: "Can we call tomorrow at 10?" → "Tomorrow is packed, can I write after 18?"         1/2
-  dates · conf 0.62   ctrl+x tab ›  ⏎ send   e: edit   d: drop   o: open   j: next
+Flow 4 · Hidden · a draft on a row of its own, so one ⏎ sends it; then an auto reply's undo window
+✎ Contact A: "Can we call tomorrow at 10?" · dates · conf 0.62                 1/2  ctrl+x tab: keys
+  → Tomorrow is packed, can I write after 18?
+
+the same item once the band holds the keys (ctrl+x tab):
+✎ Contact A: "Can we call tomo…" · dates · 0.62      1/2  ⏎ send  e: edit  d: drop  o: open  j: next
+  → Tomorrow is packed, can I write after 18?
 
 ⟳ Dev Team replied "Merged, thanks" · conf 0.93
   ctrl+x tab ›  u: undo 28s   d: ok
@@ -1291,24 +1313,23 @@ T0a fake tg          ─┐
 T0b kill switch now  ─┤  independent and small: any time, before T1 is fine
 T0c allowlist fix    ─┤
 T0d owner's writes   ─┘
-T8 tg folders (CLI)  ─── independent (Python); T9 needs it
+T8 tg folders ─▶ T8b one pass (CLI, Python): independent of T1; T9 needs both
 T1 frame, keys, menu, focus ──┬─▶ T2 send sheet ──┬─▶ T6 bot testing ──┐
                               ├─▶ T3 agent card    │                   │
                               ├─▶ T4 running, stop │                   ├─▶ T7 onboarding, states, docs
                               ├─▶ T5 footer, band, transcript ─────────┤
-                              └─▶ T9 folders, For you (needs T8) ──────┘
+                              └─▶ T9 folders, For you (needs T8b) ─────┘
 ```
 
-With one builder at a time: T0b, T0c, T0d, T1, T4, T2, T8, T9, T5, T3, T6, T7. Safety first, then
-the flow the owner uses most (send), then the owner's folders, then what runs at a glance, then
-the agent card.
+With one builder at a time: T0b, T0c, T0d, T1, T4, T2, T8, T8b, T9, T5, T3, T6, T7. Safety first,
+then the flow the owner uses most (send), then the owner's folders, then what runs at a glance,
+then the agent card.
 
 **T0a — a fake tg for live runs** (½ h, optional). `mods/dialogs-pane/dev/fake-tg` answering
 `dialogs`, `read`, `msg`, `whoami`, `allow list`, `send` (with `--dry-run`), `press`, `delete` and
-`watch` (live events from a spool file), and after T8 `folders` and `dialogs --folder`, with
-placeholder chats and folders only. Its guard honours `--yes` as tg's does. Appendix A lists the
-calls.
-Every builder before this one wrote their own.
+`watch` (live events from a spool file), and after T8 and T8b `folders` (with `--counts` and
+`--chats`) and `dialogs --folder`, with placeholder chats and folders only. Its guard honours
+`--yes` as tg's does. Appendix A lists the calls. Every builder before this one wrote their own.
 
 **T0b — the kill switch, on today's pane** (1–2 h; before the redesign). Register `/tg` with
 `immediate: true`; add `/tg stop` beside `/tg autopilot off`; give today's "stop all" Button the
@@ -1321,15 +1342,21 @@ allowlist that grows between two presses lets the second through.
 
 **T0d — the owner's own writes pass `--yes`** (½–1 h; decision 9; on today's pane). The argv
 builders in `bottest/calls.ts` take `byOwner`, false by default; the composer's send (`n`), a press
-of a bot's button and ⏎ on a draft set it and add `--yes`. Autopilot's auto replies, delegate's
-replies and the recorder's script never do: an agent sends or replays those. The owner's writes
-skip the "not in the allowlist" refusal of `readOnlyReason` (`bottest/keyboard.ts`) and keep the
-BotFather one; the card's check for auto and delegate (`apAllowView`, `register.tsx:2381`) stays as
-it is. In the band, ⏎ on a draft sends only when the band shows the whole draft; otherwise it opens
-it, as `o` does. Tests: `n` and a press in a chat outside allow.toml run `tg send` and `tg press`
-with `--yes`; an auto reply and the recorded script carry no `--yes`; auto on a chat outside
-allow.toml is still refused; a draft cut short in the band opens instead of sending; BotFather
-runs nothing.
+of a bot's button and ⏎ on a draft set it and add `--yes`. A draft is autopilot's in the band, or
+routing's Draft reply, whose check (the dry run) and `send reply` both pass it. Autopilot's auto
+replies, delegate's replies and the recorder's script never do: an agent sends or replays those.
+The owner's writes skip the "not in the allowlist" refusal of `readOnlyReason`
+(`bottest/keyboard.ts`) and keep the BotFather one; the card's check for auto and delegate
+(`apAllowView`, `register.tsx:2381`) stays as it is. ⏎ sends a draft only when its whole text is
+on screen. In the band, a draft cut short reads `⏎ open`: it opens the chat, as `o` does, and
+unfolds the whole draft in the band (`ApDraftState` `unfolded`), and the next ⏎ sends; today's pane
+has no draft row to open it on, and T3 and T5 replace this. Routing's Draft reply draws its whole
+text, wrapped, before `send reply`. Width is counted in cells, erring wide: from U+2000 up a
+character counts two. Tests: `n` and a press in a chat outside allow.toml run `tg send` and
+`tg press` with `--yes`; so do routing's check and `send reply`; an auto reply and the recorded
+script carry no `--yes`; auto on a chat outside allow.toml is still refused; a draft cut short in
+the band unfolds instead of sending, and the next ⏎ sends it; a wide emoji (✅) counts two cells;
+BotFather runs nothing.
 
 **T1 — frame, key table, menu, focus** (1–1.5 days; first, one agent).
 - `hooks/ui/keys.ts` (pure): one table of every key: letter or digit, label, the views it serves,
@@ -1379,12 +1406,18 @@ runs nothing.
   each `!` prompt and on every card open (fixes the stale cache).
 - Drafts (autopilot's and routing's "Draft reply") as rows of their chat: ⏎ send, `e`, `d`, with
   the guard's verdict shown first; ⏎ sends with `--yes` (T0d), so `draft` never asks for
-  allow.toml, while `auto` and `delegate` do (decision 9).
+  allow.toml, while `auto` and `delegate` do (decision 9). A draft row always shows its whole
+  text, wrapped.
+- With the rows in place, ⏎ on a draft the band cuts short opens the pane on that draft's row, and
+  ⏎ there sends it, as §9 has it. T0d's `unfolded` state and the band's unfolded text go, so a draft
+  has one place where it is read and sent, and the band keeps its two rows.
 - Levels by kind follow decision 8: `5` delegate only in person chats.
 - Tests: `a ⏎` starts draft; `a 4` on a chat not allowed fills the prompt and starts nothing; after
   the allow, ⏎ starts; `a 5 ⏎ ⏎` starts with the guard stand-in; a person lists five levels, a
   group four, a channel and a bot two; skip stops only from options with the typed name; draft row
-  keys; `a 3 ⏎` on a chat outside allow.toml starts draft, and its draft sends.
+  keys; `a 3 ⏎` on a chat outside allow.toml starts draft, and its draft sends; a draft the band
+  cuts short opens the pane on its row, ⏎ there sends it with `--yes`, and no `unfolded` state is
+  left.
 
 **T4 — running, activity, the kill switch** (1 day; after T1).
 - `0` stops every follow, autopilot and Worker, drawn red only while something runs.
@@ -1402,12 +1435,17 @@ runs nothing.
   chats that are not muted once T8 gives `muted`; every unread chat until then.
 - The band as a queue: one item (two rows), `1/3 j: next`, priority hold > draft > undo > watched
   reply > summary > task news, keys ⏎ `e d o u j k`, one `ctrl+x tab ›`; skip what the pane shows.
-  ⏎ on a draft the band cuts short opens it in the pane instead of sending (decision 9).
+- A draft's item: the incoming message on the first row, the draft alone on the second, the full
+  width, so a draft that fits its row sends with one ⏎. Today's line gives the draft half a row
+  (`room` in `draftLine`), so at 64–100 columns most drafts need two ⏎. A draft longer than its
+  row is never sent cut short (decision 9): until T3's rows land, ⏎ unfolds it in the band as T0d
+  does and the next ⏎ sends; after that, ⏎ opens its row (T3).
 - `UserMessage`: this plugin's packets as one row while not expanded (as the probe did).
 - `/tg help` (the key table from `keys.ts`) and `/tg status` (the summary, what runs) as
   `CommandOutput` cards; the command's description and `argumentHint` list the subcommands.
 - Tests: label text per state; the status line clears without an alarm; queue order and `j`; only
-  this plugin's packets are compacted; `/tg help` matches the table.
+  this plugin's packets are compacted; `/tg help` matches the table; at 64 columns a draft that
+  fits its row sends with one ⏎, and a longer one does not send on the first ⏎.
 
 **T6 — bot testing** (1 day; after T2).
 - Only in bot chats (§4.6): `r`, and `f` in the bar only on a reply with a pair; `n` only where
@@ -1446,20 +1484,111 @@ runs nothing.
   a title with an emoji; `--folder` by id and by title; an unknown folder exits 4 with
   `fix: tg folders`. Live: `tg folders` only reads.
 
-**T9 — folders and For you in the pane** (1 day; after T1 and T8).
+**T8b — one pass for every folder** (½ day; Python; after T8 and its four review fixes; T9 needs
+it).
+- `tg folders --chats [--json]`. `--chats` implies `--counts` and makes no Telegram call that
+  `--counts` does not: two scans of the latest 500 chats, the chat list and the Archive (only
+  dialogs marked `folder_id` 1), and `messages.getPeerDialogs` for the listed chats the scans
+  missed, minus the chats remembered as refused.
+- With `--json` it prints one document; `tg folders --json` without `--chats` keeps its list:
+
+```json
+{
+  "at": "2026-10-11T09:30:00+00:00",
+  "scan": 500,
+  "folders": [
+    {"id": 2, "title": "Work", "kind": "folder", "unread": 1,
+     "pinned": [-1000000000205], "chats": [-1000000000205, 123456]},
+    {"id": 0, "title": "All chats", "kind": "all", "unread": 1,
+     "pinned": [123456], "chats": [123456, -1000000000205, 202]},
+    {"id": 11, "title": "Team", "kind": "shared", "unread": 0, "pinned": [], "chats": [202]}
+  ],
+  "dialogs": [
+    {"id": 123456, "kind": "bot", "title": "Example", "username": "example_bot", "unread": 2,
+     "mentions": 0, "pinned": true, "muted": false, "last_id": 677791,
+     "last_date": "2026-10-11T09:02:00+00:00", "last_text": "Choose an option"},
+    {"id": -1000000000205, "kind": "supergroup", "title": "Dev Team", "username": null,
+     "unread": 0, "mentions": 0, "pinned": false, "muted": false, "last_id": 500,
+     "last_date": "2026-10-11T08:59:00+00:00", "last_text": "deploy is green"},
+    {"id": 202, "kind": "user", "title": "Contact A", "username": null, "unread": 0,
+     "mentions": 0, "pinned": false, "muted": false, "last_id": 92,
+     "last_date": "2026-10-10T20:49:00+00:00", "last_text": "Can we call tomorrow at 10?"}
+  ]
+}
+```
+
+- `folders`: every entry `tg folders` lists, in Telegram's order, All chats in its place.
+  `pinned`: the folder's pinned chats in its order (for All chats, the main list's pinned chats).
+  `chats`: every member in the folder's order, pinned first, then newest last message first; ids
+  only.
+- `dialogs`: every chat that is in at least one `chats` list, once, as a `tg dialogs --json` row,
+  and no other chat. A row's `pinned` is Telegram's own pin for the chat (in All chats, or in the
+  Archive for an archived chat); a folder's pins are that folder's `pinned`.
+- `scan`: how many of the latest chats were looked at, in the chat list and again in the
+  Archive. All chats and type-built folders see only those; listed chats are always fetched.
+  `at`: when the pass ran, in UTC.
+- Without `--json`: the `--counts` lines, each ending in ` · N chats`.
+- Exit codes as `tg folders`. A FLOOD_WAIT longer than `flood_sleep_threshold` exits 5 with the
+  seconds to wait.
+- A contract change: README "Dialogs and folders", the skill's line and `render.py`.
+- Tests: the keys of the document and of each folder; every id in a `chats` list has exactly one
+  row, and every row is in some list; `chats` follows `folder_order`; All chats in its server
+  position; a refused chat in no list and no row; the same Telegram calls as `--counts` (counted
+  by a fake client); `scan` and `at`; the text line.
+
+**T9 — folders and For you in the pane** (1 day; after T1, T8 and T8b).
 - The strip replaces `LensBar`: Telegram's order, the current folder, `+N`, digits while the
   cursor is in Chats; `s` searches every chat.
 - The Folders list (`h` from Chats): counts, `shared`, Archive, the pane views; two columns inline.
-- The first open lands on Telegram's first folder, later ones on the last used (`$.store`); the
-  folder list and each folder's chats are cached and refreshed in the background.
+- The first open lands on Telegram's first folder, later ones on the last used (`$.store`).
+- Data, one pass for everything (§4.7): the strip paints from `tg folders --json` and from what
+  the session already holds; then `tg folders --chats --json` runs in the background. Every
+  folder's list, Bots, For you's people and the counts come from the pass, so switching folders
+  or views runs no tg call. The pane never calls `tg dialogs --folder`.
+- When a pass runs: on opening the pane, on `g`, and every 60 s while the pane is open; every
+  5 min while it is hidden, once it has been opened in this session (the footer's count reads it).
+  One at a time, and never within 60 s of the last one's start: two passes back to back flood
+  (T8b's measurement). `g` inside those 60 s queues one pass for when they are up and says
+  `refreshing in N s`; another `g` adds no second pass. The last start's time is kept in
+  `$.state`, so a hot reload keeps the 60 s too.
+- Between passes, watch events (the open chat, watched chats) patch the rows they touch (`unread`,
+  `mentions`, the last message) in the module's map and in the view on screen, and move the chat
+  to the top of the unpinned part of each folder that has it. Nothing else changes until the next
+  pass.
+- Kept where. On the owner's account a pass is 467 KB and 621 chats, and a `$.state` value
+  crosses to the host as JSON on every write and on every read while drawing, so the pass is
+  never kept there whole:
+  - (a) the module keeps the last pass's rows in a map by id, and each folder's chat ids. Nothing
+    draws from them directly; a hot reload drops them, and the next pass fills them again.
+  - (b) `$.state` holds only what is drawn: the folder list with its counts, and the rows of the
+    view on screen (the current folder, For you or Bots), each `last_text` cut to 120 characters.
+    A pass or a watch event that changes those rows writes them again.
+  - (c) A folder switch copies that folder's rows from the module's map into `$.state`: a write of
+    one view. After a hot reload, until the next pass, a folder other than the one on screen shows
+    `…` rows and `refreshing in N s`.
+  - (d) `$.store` keeps the folder list with its counts, the current folder's id and that folder's
+    rows, so the next session paints them before its first pass.
+- Floods and errors: exit 5 keeps the pass, shows §7.4's flood state with the seconds and holds
+  the next pass until they are over; a pass tg slept through just lands late. Any other failure
+  keeps the pass and shows one red line with `g: retry`; the 60 s cadence goes on.
+- A first open with no pass held: the strip after `tg folders` (0.66 s on the owner's account),
+  the chats after the pass (about 4 s), with `…` rows until then.
+- Search (`tg dialogs --query`) and the Archive (`tg dialogs --archived`) run when asked and are
+  not cached.
 - For you (`y`): the agents' items first (drafts and undo windows, read from the autopilot state
-  until T5's queue lands, then from it), then people, ranked with why by today's ranking call when
-  the view opens. Bots as a pane view. An account without folders gets All chats, For you, Bots.
+  until T5's queue lands, then from it), then people from the pass: rows with `mentions` above 0,
+  and person chats with unread messages that are not muted, ranked with why by today's ranking
+  call when the view opens. Bots as a pane view, from the pass's rows. An account without folders
+  gets All chats, For you, Bots.
 - Removed: the built-in lenses, saved lenses and their editor (`z`, `triage.lenses`), the rank
   toggle (`triage.ranked`). The owner's store has neither key, so nothing migrates.
 - Tests: the strip's order with All chats where Telegram has it; digits; `+N`; `h` up and ⏎ down;
   the remembered folder; an account without folders; search across folders; For you's order, and
-  no ranking outside it; muted counts dim.
+  no ranking outside it; muted counts dim; switching folders runs no tg; a second pass within 60 s
+  does not run; `g` inside the 60 s queues one that runs when they are up, and a second `g` adds
+  none; a hot reload keeps the 60 s; `$.state` holds no row of a view off screen, and no
+  `last_text` over 120 characters; exit 5 keeps the pass and holds the next one; a watch event
+  moves its chat up in every folder that has it.
 
 Conflict points between parallel tasks: `keys.ts` (each task adds its rows), the Pane render's
 slots (T1 makes them), `types/index.d.ts` (marked blocks, as today).
@@ -1546,6 +1675,7 @@ Decided by the owner after the second pass (2026-10-10):
   `send PEER - --plain [--wait …] [--reply-to ID] --json [--dry-run]` (stdin text; exit 7 outside
   the allowlist) · `press PEER ID --row R --col C --wait 5s --json` · `delete PEER ID… --yes --json`
   · `watch PEER --jsonl [--after ID] [--idle-exit …]` (prints `ready`, then lines appended to a
-  spool file). Placeholder chats only. After T8 it also answers `folders [--counts] --json` and
-  `dialogs --folder ID --limit N --json`, with placeholder folders.
+  spool file). Placeholder chats only. After T8 and T8b it also answers
+  `folders [--counts | --chats] --json` and `dialogs --folder ID --limit N --json`, with
+  placeholder folders.
 - Driving it: `tmux send-keys`, `tmux capture-pane -p` (`-e` shows the ring as inverse).

@@ -9,6 +9,7 @@ from tg_kit.buttons import ButtonGrid
 
 __all__ = [
     "DeleteEvent",
+    "DialogView",
     "Forward",
     "Media",
     "MessageEvent",
@@ -83,6 +84,29 @@ class MessageView:
 
 def with_edits(view: MessageView, edits: int) -> MessageView:
     return replace(view, edits=edits)
+
+
+@dataclass(frozen=True)
+class DialogView:
+    """One chat in `tg dialogs`, and the facts folder membership needs."""
+
+    id: int
+    kind: str  # self | user | bot | group | supergroup | channel | unknown
+    title: str
+    username: str | None
+    unread: int = 0
+    mentions: int = 0  # unread mentions of me
+    pinned: bool = False  # in the list shown: the main list, the archive, or the folder
+    muted: bool = False
+    last_id: int | None = None
+    last_date: datetime | None = None
+    last_text: str = ""
+    contact: bool = False  # a user in my contacts
+    marked_unread: bool = False  # "mark as unread": unread with no unread count
+    archived: bool = False
+
+    def with_pinned(self, *, pinned: bool) -> DialogView:
+        return replace(self, pinned=pinned)
 
 
 # --- `tg watch` events ------------------------------------------------------

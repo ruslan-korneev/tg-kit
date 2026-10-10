@@ -81,7 +81,10 @@ tg read @example_bot --after 677791          # 3. anything that arrived later, o
 ## Reading
 
 ```bash
-tg dialogs -n 20 [--unread] [--query name]
+tg dialogs -n 20 [--unread] [--query name]   # rows: unread, mentions, 📌 pinned, 🔕 muted
+tg folders [--counts]                         # Telegram folders: id, title, all|folder|shared
+tg folders --chats --json                     # one pass: every folder's chat ids + their rows
+tg dialogs --folder ID|TITLE                  # one folder's chats, its pinned first
 tg read PEER -n 20 [--since 2h] [--from PEER] [--full]
 tg msg PEER ID [ID…]                          # full text, links, buttons, media, reactions
 tg search PEER "text" [--filter photo|doc|link|voice|…]   |   tg search --global "text"

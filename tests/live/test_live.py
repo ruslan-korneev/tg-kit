@@ -2,8 +2,9 @@
 
 Pins what unit tests cannot: several `tg` processes sharing one account at the
 same time (the SQLite "database is locked" failure the session split exists to
-prevent), and `tg watch` receiving real updates. Touches Saved Messages only:
-the watch test sends one message there, edits it and deletes it.
+prevent), `tg watch` receiving real updates, and `tg folders` reading the real
+folder list. Touches Saved Messages only: the watch test sends one message
+there, edits it and deletes it; the folders test only reads.
 
 Run: TG_KIT_LIVE=1 uv run pytest tests/live -q
 """
@@ -53,6 +54,18 @@ def test_parallel_commands_all_succeed() -> None:
     assert not any("locked" in r.stderr for r in results)
     # Parallel, not serialised: well under the sum of sequential runs (~1 s each).
     assert elapsed < len(commands) * 0.8
+
+
+def test_folders_lists_all_chats_once_and_every_folder_opens() -> None:
+    listed = _run(["folders", "--json"])
+    assert listed.returncode == 0, listed.stderr
+    folders = json.loads(listed.stdout)
+    assert [f["kind"] for f in folders].count("all") == 1
+    assert {f["kind"] for f in folders} <= {"all", "folder", "shared"}
+    first = _run(["dialogs", "--folder", str(folders[0]["id"]), "-n", "3", "--json"])
+    assert first.returncode == 0, first.stderr
+    for row in json.loads(first.stdout):
+        assert {"pinned", "muted", "mentions"} <= row.keys()
 
 
 def test_watch_streams_a_message_its_edit_and_its_deletion_in_saved_messages() -> None:

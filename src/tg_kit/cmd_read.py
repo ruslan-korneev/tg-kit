@@ -1,14 +1,18 @@
-"""Read commands: dialogs, read, msg, search, resolve, info, download, drafts, transcribe."""
+"""Read commands: dialogs, folders, read, msg, search, resolve, info, download, drafts,
+transcribe."""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from telethon import utils
-from telethon.tl import functions, types
+from telethon import errors, utils
+from telethon.client.dialogs import _dialog_message_key
+from telethon.tl import custom, functions, types
 
 from tg_kit.app import (
     AccountOpt,
@@ -22,13 +26,29 @@ from tg_kit.app import (
     out,
     run,
 )
-from tg_kit.client import rpc_error_name, telegram_errors
+from tg_kit.client import Connected, rpc_error_name, telegram_errors
 from tg_kit.common import HARD_MAX, print_views, resolve_spec, self_id, view_of
+from tg_kit.convert import MUTE_SCOPES, convert_dialog, convert_folder, folder_input_peers
 from tg_kit.errors import NotFoundError, RefusedError, TgError, UsageError
+from tg_kit.folders import (
+    ALL_CHATS,
+    Folder,
+    FolderChats,
+    find_folder,
+    folder_order,
+    folder_pass,
+)
+from tg_kit.model import DialogView
 from tg_kit.parsing import parse_since
 from tg_kit.peers import message_id_in, parse_peer
-from tg_kit.render import LIST_TRUNCATE
-from tg_kit.session import entity_kind
+from tg_kit.render import (
+    LIST_TRUNCATE,
+    dialog_json,
+    dialog_line,
+    folder_json,
+    folder_line,
+    folders_pass_json,
+)
 
 __all__ = ["register"]
 
@@ -51,6 +71,17 @@ FILTERS: dict[str, Any] = {
     "pinned": types.InputMessagesFilterPinned,
     "mention": types.InputMessagesFilterMyMentions,
 }
+
+# How many of the latest chats a filtered listing, a type-built folder or
+# `folders --counts` looks at: the same 500 as the peer-cache fallback.
+SCAN = 500
+# Peers per messages.getPeerDialogs call; a folder lists at most 100 + pinned.
+PEER_DIALOGS_CHUNK = 100
+# How long a chat getPeerDialogs refused is skipped. Finding one again costs about
+# log2(100) * 2 calls and ~300 peers of a ~180-per-30-s budget. A chat left or
+# banned from rarely comes back; one that does is in the latest-chats scan anyway,
+# and a hand-picked folder shows it again within this time.
+REFUSED_FOR = timedelta(hours=6)
 
 # Default download dir and size guard (MB): big enough for voice/photos/short
 # videos, small enough that a stray 2 GB file is never pulled by accident.
@@ -81,58 +112,100 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
             str | None, typer.Option("--query", "-q", help="Title/@username contains.")
         ] = None,
         archived: Annotated[bool, typer.Option("--archived", help="The archive folder.")] = False,
+        folder: Annotated[
+            str | None,
+            typer.Option("--folder", "-f", help="A Telegram folder by id or title (tg folders)."),
+        ] = None,
         account: AccountOpt = None,
         json_out: JsonOpt = False,
         timeout: TimeoutOpt = None,
         verbose: VerboseOpt = False,
     ) -> None:
-        """List chats: id, kind, name, unread count, last message."""
+        """List chats: id, kind, name, unread count, mentions, pinned, muted, last message."""
         g = globals_from(ctx, account, json_out, timeout, verbose)
         n = _limit(limit)
+        if folder is not None and archived:
+            raise UsageError("--folder and --archived: pass one (the archive is not a folder)")
+
+        def wanted(r: DialogView) -> bool:
+            if unread and not r.unread:
+                return False
+            return not (
+                query and query.casefold() not in f"{r.title} {r.username or ''}".casefold()
+            )
 
         async def body(rt: Runtime) -> int:
             filtered = unread or query is not None
-            rows = []
             async with rt.connect() as conn:
                 with telegram_errors():
-                    # Filters apply client-side, so scan further than -n when filtering.
-                    async for d in conn.client.iter_dialogs(
-                        limit=500 if filtered else n, folder=1 if archived else 0
-                    ):
-                        entity = d.entity
-                        username = getattr(entity, "username", None)
-                        if unread and not d.unread_count:
-                            continue
-                        if (
-                            query
-                            and query.casefold() not in f"{d.name} {username or ''}".casefold()
-                        ):
-                            continue
-                        last = d.message.message if d.message is not None else ""
-                        rows.append(
-                            {
-                                "id": d.id,
-                                "kind": ("self" if d.id == self_id(conn) else entity_kind(entity))
-                                or "unknown",
-                                "title": d.name,
-                                "username": username,
-                                "unread": d.unread_count,
-                                "last_id": d.message.id if d.message is not None else None,
-                                "last_date": d.date.isoformat() if d.date else None,
-                                "last_text": last or "",
-                            }
+                    defaults = await _mute_defaults(conn.client)
+                    chosen, inputs = (
+                        _pick(await _folders(conn), folder) if folder is not None else (None, {})
+                    )
+                    if chosen is None or chosen.kind == "all":
+                        # Filters apply client-side, so scan further than -n when filtering.
+                        rows = await _latest(
+                            conn,
+                            defaults,
+                            rt.now,
+                            n=n,
+                            scan=SCAN if filtered else n,
+                            folder=1 if archived else 0,
+                            keep=wanted,
                         )
-                        if len(rows) >= n:
-                            break
+                    else:
+                        chats = await _folder_chats(conn, chosen, inputs, defaults, rt.now)
+                        rows = [r for r in chats if wanted(r)][:n]
             if rt.json:
-                emit_json(rows)
+                emit_json([dialog_json(r) for r in rows])
+            else:
+                for r in rows:
+                    out(dialog_line(r))
+            return 0
+
+        run(g, body)
+
+    @app.command()
+    def folders(
+        ctx: typer.Context,
+        counts: Annotated[
+            bool,
+            typer.Option("--counts", help="Add each folder's unread chats that are not muted."),
+        ] = False,
+        chats: Annotated[
+            bool,
+            typer.Option(
+                "--chats",
+                help="Every folder's chats and their rows in one pass (implies --counts).",
+            ),
+        ] = False,
+        account: AccountOpt = None,
+        json_out: JsonOpt = False,
+        timeout: TimeoutOpt = None,
+        verbose: VerboseOpt = False,
+    ) -> None:
+        """Telegram folders in Telegram's order: id, title, kind (all | folder | shared)."""
+        g = globals_from(ctx, account, json_out, timeout, verbose)
+
+        async def body(rt: Runtime) -> int:
+            async with rt.connect() as conn:
+                with telegram_errors():
+                    found, entries, rows = await _folders_pass(
+                        conn, rt.now, counted=counts or chats
+                    )
+            if chats:
+                if rt.json:
+                    emit_json(folders_pass_json(rt.now, SCAN, entries, rows))
+                else:
+                    for e in entries:
+                        out(folder_line(e.folder, e.unread, len(e.chats)))
                 return 0
-            for r in rows:
-                name = f"@{r['username']}" if r["username"] else r["title"]
-                unread_mark = f" [{r['unread']} unread]" if r["unread"] else ""
-                preview = str(r["last_text"]).replace("\n", " ⏎ ")
-                preview = preview[:80] + "…" if len(preview) > 80 else preview  # noqa: PLR2004 — self-explanatory literal
-                out(f"{r['id']} {r['kind']} {name}{unread_mark} — {preview}")
+            unread = {e.folder.id: e.unread for e in entries}
+            if rt.json:
+                emit_json([folder_json(f, unread.get(f.id)) for f in found])
+            else:
+                for f in found:
+                    out(folder_line(f, unread.get(f.id)))
             return 0
 
         run(g, body)
@@ -461,6 +534,226 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         run(g, body)
 
 
+# --- dialogs and folders -------------------------------------------------------
+
+FolderWithPeers = tuple[Folder, dict[int, Any]]
+
+_SCOPE_INPUTS: dict[str, Any] = {
+    "users": types.InputNotifyUsers,
+    "chats": types.InputNotifyChats,
+    "broadcasts": types.InputNotifyBroadcasts,
+}
+
+
+async def _folders(conn: Connected) -> list[FolderWithPeers]:
+    result = await conn.client(functions.messages.GetDialogFiltersRequest())
+    return _folders_of(result.filters, self_id=self_id(conn))
+
+
+def _folders_of(filters: list[Any], *, self_id: int | None) -> list[FolderWithPeers]:
+    """The server's order. No dialogFilterDefault in the list means All chats is first
+    (tdlib reads a missing one as position 0)."""
+    found = [
+        (convert_folder(f, self_id=self_id), folder_input_peers(f, self_id=self_id))
+        for f in filters
+    ]
+    if not any(f.kind == "all" for f, _ in found):
+        found.insert(0, (ALL_CHATS, {}))
+    return found
+
+
+def _pick(found: list[FolderWithPeers], spec: str) -> FolderWithPeers:
+    folder = find_folder([f for f, _ in found], spec)
+    return next(pair for pair in found if pair[0] is folder)
+
+
+async def _latest(
+    conn: Connected,
+    defaults: dict[str, datetime | None],
+    now: datetime,
+    *,
+    n: int,
+    scan: int,
+    folder: int,
+    keep: Callable[[DialogView], bool],
+) -> list[DialogView]:
+    """The first `n` of the latest `scan` chats that `keep` accepts, in Telegram's order."""
+    rows: list[DialogView] = []
+    async for r in _scan(conn, defaults, now, limit=scan, folder=folder):
+        if keep(r):
+            rows.append(r)
+        if len(rows) >= n:
+            break
+    return rows
+
+
+async def _folder_chats(
+    conn: Connected,
+    folder: Folder,
+    inputs: dict[int, Any],
+    defaults: dict[str, datetime | None],
+    now: datetime,
+) -> list[DialogView]:
+    """A folder's chats in its order: the listed ones by id, plus the latest chats by type."""
+    if folder.by_type:
+        scan_folder = 0 if folder.exclude_archived else None
+        scanned, listed = await _scan_then_listed(conn, inputs, defaults, now, folder=scan_folder)
+        chats = [*scanned, *listed]
+    else:
+        chats = await _peer_dialogs(conn, inputs, defaults, now)
+    return folder_order(folder, chats)
+
+
+async def _scan_then_listed(
+    conn: Connected,
+    inputs: dict[int, Any],
+    defaults: dict[str, datetime | None],
+    now: datetime,
+    *,
+    folder: int | None,
+) -> tuple[list[DialogView], list[DialogView]]:
+    """The latest chats, and the listed ones the scan did not reach.
+
+    getPeerDialogs is rate-limited by peers: on a real account ~180 peers in 30 s
+    went through, the next call got FLOOD_WAIT 29. So listed chats the scan already
+    has are not fetched again.
+    """
+    scanned = [r async for r in _scan(conn, defaults, now, limit=SCAN, folder=folder)]
+    seen = {r.id for r in scanned}
+    missing = {i: p for i, p in inputs.items() if i not in seen}
+    return scanned, await _peer_dialogs(conn, missing, defaults, now)
+
+
+async def _folders_pass(
+    conn: Connected, now: datetime, *, counted: bool
+) -> tuple[list[Folder], list[FolderChats], list[DialogView]]:
+    """`tg folders`: the list, and with `counted` one pass over the latest chats (main
+    list and archive) plus the chats folders list, from which every folder is built."""
+    found = await _folders(conn)
+    folders = [f for f, _ in found]
+    if not counted:
+        return folders, [], []
+    defaults = await _mute_defaults(conn.client)
+    inputs = {i: p for _, ps in found for i, p in ps.items()}
+    scanned, listed = await _scan_then_listed(conn, inputs, defaults, now, folder=None)
+    entries, rows = folder_pass(folders, scanned, listed)
+    return folders, entries, rows
+
+
+async def _mute_defaults(client: Any) -> dict[str, datetime | None]:
+    """The account's mute per kind of chat, for chats that follow the default.
+
+    A scope Telegram does not answer counts as not muted, with a note: `muted` is
+    enrichment, and a listing must not fail for it.
+    """
+    settings = await asyncio.gather(
+        *(
+            client(functions.account.GetNotifySettingsRequest(_SCOPE_INPUTS[scope]()))
+            for scope in MUTE_SCOPES
+        ),
+        return_exceptions=True,
+    )
+    defaults: dict[str, datetime | None] = {}
+    for scope, s in zip(MUTE_SCOPES, settings, strict=True):
+        if isinstance(s, errors.RPCError):
+            note(f"note: no default mute for {scope} ({rpc_error_name(s)}); counted as not muted")
+            defaults[scope] = None
+        elif isinstance(s, BaseException):
+            raise s
+        else:
+            defaults[scope] = getattr(s, "mute_until", None)
+    return defaults
+
+
+async def _scan(
+    conn: Connected,
+    defaults: dict[str, datetime | None],
+    now: datetime,
+    *,
+    limit: int,
+    folder: int | None,
+) -> AsyncIterator[DialogView]:
+    """The latest `limit` chats of the main list (`folder` 0), the archive (1), or each (None).
+
+    None is two scans, because getDialogs without a folder id returns the main list
+    only (measured: 500 chats, none archived). The archive scan keeps only dialogs
+    marked folder_id 1: with an empty archive, getDialogs(folder_id=1) returns the
+    main list's pinned chats (measured: 3 dialogs, folder_id unset, all pinned). So
+    it reads on, lazily, until it has `limit` archived chats or the archive ends.
+    """
+    me = self_id(conn)
+    for one in (0, 1) if folder is None else (folder,):
+        kept = 0
+        async for d in conn.client.iter_dialogs(limit=None if one == 1 else limit, folder=one):
+            if one == 1 and d.folder_id != 1:
+                continue
+            yield convert_dialog(d, self_id=me, mute_defaults=defaults, now=now)
+            kept += 1
+            if kept >= limit:
+                break
+
+
+async def _peer_dialogs(
+    conn: Connected,
+    peers: dict[int, Any],
+    defaults: dict[str, datetime | None],
+    now: datetime,
+) -> list[DialogView]:
+    """Chats by InputPeer, however old (messages.getPeerDialogs). Ones Telegram refuses
+    (left, banned, deleted) are skipped, as the apps skip them in a folder, and are
+    remembered for `REFUSED_FOR` so the next run does not pay to find them again."""
+    me = self_id(conn)
+    stamp = now.timestamp()
+    skip = conn.session.refused_peers(stamp)
+    wanted = [(i, p) for i, p in peers.items() if i not in skip]
+    rows: list[DialogView] = []
+    refused: list[int] = []
+    for start in range(0, len(wanted), PEER_DIALOGS_CHUNK):
+        chunk = wanted[start : start + PEER_DIALOGS_CHUNK]
+        found = await _fetch_peer_dialogs(conn.client, chunk, refused)
+        rows.extend(convert_dialog(d, self_id=me, mute_defaults=defaults, now=now) for d in found)
+    if refused:
+        conn.session.remember_refused(refused, now=stamp, until=stamp + REFUSED_FOR.total_seconds())
+    return rows
+
+
+async def _fetch_peer_dialogs(
+    client: Any, peers: list[tuple[int, Any]], refused: list[int]
+) -> list[Any]:
+    """`peers` as (id, InputPeer); the ids of chats Telegram refuses go to `refused`."""
+    if not peers:
+        return []
+    try:
+        r = await client(
+            functions.messages.GetPeerDialogsRequest([types.InputDialogPeer(p) for _, p in peers])
+        )
+    except (errors.BadRequestError, errors.ForbiddenError):
+        # One inaccessible chat fails the whole call: halve until it is alone, then drop it.
+        if len(peers) == 1:
+            refused.append(peers[0][0])
+            return []
+        mid = len(peers) // 2
+        return [
+            *await _fetch_peer_dialogs(client, peers[:mid], refused),
+            *await _fetch_peer_dialogs(client, peers[mid:], refused),
+        ]
+    # As Telethon's iter_dialogs builds its custom.Dialog objects.
+    entities = {
+        utils.get_peer_id(x): x
+        for x in [*r.users, *r.chats]
+        if not isinstance(x, types.UserEmpty | types.ChatEmpty)
+    }
+    messages = {}
+    for m in r.messages:
+        m._finish_init(client, entities, None)  # noqa: SLF001 — what iter_dialogs does
+        messages[_dialog_message_key(m.peer_id, m.id)] = m
+    return [
+        custom.Dialog(client, d, entities, messages.get(_dialog_message_key(d.peer, d.top_message)))
+        for d in r.dialogs
+        if utils.get_peer_id(d.peer) in entities
+    ]
+
+
 def _unique(path: Path) -> Path:
     if not path.exists():
         return path
@@ -472,8 +765,6 @@ def _unique(path: Path) -> Path:
 
 
 async def _transcribe(client: Any, input_peer: Any, msg_id: int) -> Any:
-    from telethon import errors
-
     loop = asyncio.get_running_loop()
     deadline = loop.time() + TRANSCRIBE_MAX
     while True:
