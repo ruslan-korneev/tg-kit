@@ -38,8 +38,13 @@ const PHASE_TEXT: Record<ApPhase, string> = {
   sending: `${GLYPH.working}sending`,
 }
 
-function Label({ Text }: Els, text: string): RenderElement {
-  return <Text dimColor>{text.padEnd(10)}</Text>
+/** The card's left column: fixed, so a long row wraps beside it instead of squeezing it. */
+function Label({ Box, Text }: Els, text: string): RenderElement {
+  return (
+    <Box width={10} flexShrink={0}>
+      <Text dimColor>{text}</Text>
+    </Box>
+  )
 }
 
 function Field(els: Els, props: { id: string; label: string; value: string; placeholder: string; onSubmit: (text: string) => void }): RenderElement {
@@ -77,13 +82,15 @@ export function AutopilotCard(
         <Text color={TOKEN.accent} bold wrap="truncate-end">{`autopilot · ${dialog.peer.label}`}</Text>
         <Text color={props.isRunning ? TOKEN.ok : undefined} dimColor={!props.isRunning}>{state}</Text>
       </Box>
-      <Box flexDirection="row" gap={2}>
+      <Box flexDirection="row">
         {Label(els, 'level:')}
-        {AP_LEVELS.map((level, index) => (
-          <Button key={`ap:level:${level}`} plain hotkey={String(index + 1)} dimColor={level !== dialog.level} onPress={() => props.onLevel(level)}>
-            {level === dialog.level ? <Text color={TOKEN.accent} bold>{`[${LEVEL_GLYPH[level]} ${level}]`}</Text> : `${LEVEL_GLYPH[level]} ${level}`}
-          </Button>
-        ))}
+        <Box flexDirection="row" columnGap={2}>
+          {AP_LEVELS.map((level, index) => (
+            <Button key={`ap:level:${level}`} plain hotkey={String(index + 1)} dimColor={level !== dialog.level} onPress={() => props.onLevel(level)}>
+              {level === dialog.level ? <Text color={TOKEN.accent} bold>{`[${LEVEL_GLYPH[level]} ${level}]`}</Text> : `${LEVEL_GLYPH[level]} ${level}`}
+            </Button>
+          ))}
+        </Box>
       </Box>
       <Box flexDirection="row">
         {Label(els, 'brief:')}
@@ -97,41 +104,47 @@ export function AutopilotCard(
         {Label(els, '')}
         {Field(els, { id: 'ap:facts', label: 'facts', value: dialog.brief.facts, placeholder: "I'm busy until 18:00", onSubmit: text => props.onBrief('facts', text) })}
       </Box>
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row">
         {Label(els, 'limits:')}
-        <Button key="ap:rate:-" plain dimColor onPress={() => props.onRate(-1)}>-</Button>
-        <Text>{rateText(dialog.perHour)}</Text>
-        <Button key="ap:rate:+" plain dimColor onPress={() => props.onRate(1)}>+</Button>
-        <Text dimColor>· 1 per burst, gap</Text>
-        <Button key="ap:gap:-" plain dimColor onPress={() => props.onGap(-1)}>-</Button>
-        <Text>{`${dialog.gapS}s`}</Text>
-        <Button key="ap:gap:+" plain dimColor onPress={() => props.onGap(1)}>+</Button>
-        <Text dimColor>· conf ≥</Text>
-        <Button key="ap:conf:-" plain dimColor onPress={() => props.onConf(-1)}>-</Button>
-        <Text>{dialog.threshold.toFixed(2)}</Text>
-        <Button key="ap:conf:+" plain dimColor onPress={() => props.onConf(1)}>+</Button>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          <Button key="ap:rate:-" plain dimColor onPress={() => props.onRate(-1)}>-</Button>
+          <Text>{rateText(dialog.perHour)}</Text>
+          <Button key="ap:rate:+" plain dimColor onPress={() => props.onRate(1)}>+</Button>
+          <Text dimColor>· 1 per burst, gap</Text>
+          <Button key="ap:gap:-" plain dimColor onPress={() => props.onGap(-1)}>-</Button>
+          <Text>{`${dialog.gapS}s`}</Text>
+          <Button key="ap:gap:+" plain dimColor onPress={() => props.onGap(1)}>+</Button>
+          <Text dimColor>· conf ≥</Text>
+          <Button key="ap:conf:-" plain dimColor onPress={() => props.onConf(-1)}>-</Button>
+          <Text>{dialog.threshold.toFixed(2)}</Text>
+          <Button key="ap:conf:+" plain dimColor onPress={() => props.onConf(1)}>+</Button>
+        </Box>
       </Box>
       <Box flexDirection="row">
         {Label(els, '')}
         {Field(els, { id: 'ap:rate', label: 'per hour', value: dialog.perHour === null ? '∞' : String(dialog.perHour), placeholder: '50, or ∞', onSubmit: props.onRateText })}
       </Box>
-      <Box flexDirection="row" gap={2}>
+      <Box flexDirection="row">
         {Label(els, 'quiet:')}
-        <Button key="ap:quiet" plain hotkey="t" onPress={props.onQuiet}>
-          {dialog.quiet === null ? 'off' : 'on'}
-        </Button>
-        {Field(els, { id: 'ap:quiet:range', label: 'hours', value: quietText(dialog.quiet), placeholder: '22:00-08:00', onSubmit: props.onQuietText })}
+        <Box flexDirection="row" columnGap={2}>
+          <Button key="ap:quiet" plain hotkey="t" onPress={props.onQuiet}>
+            {dialog.quiet === null ? 'off' : 'on'}
+          </Button>
+          {Field(els, { id: 'ap:quiet:range', label: 'hours', value: quietText(dialog.quiet), placeholder: '22:00-08:00', onSubmit: props.onQuietText })}
+        </Box>
       </Box>
-      <Box flexDirection="row" gap={2}>
+      <Box flexDirection="row">
         {Label(els, 'escalate:')}
-        {AP_TOPICS.map(topic => {
-          const isOn = dialog.topics.includes(topic)
-          return (
-            <Button key={`ap:topic:${topic}`} plain hotkey={TOPIC_KEY[topic]} dimColor={!isOn} onPress={() => props.onTopic(topic)}>
-              {isOn ? <Text color={TOKEN.accent}>{TOPIC_LABEL[topic]}</Text> : <Text strikethrough>{TOPIC_LABEL[topic]}</Text>}
-            </Button>
-          )
-        })}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {AP_TOPICS.map(topic => {
+            const isOn = dialog.topics.includes(topic)
+            return (
+              <Button key={`ap:topic:${topic}`} plain hotkey={TOPIC_KEY[topic]} dimColor={!isOn} onPress={() => props.onTopic(topic)}>
+                {isOn ? <Text color={TOKEN.accent}>{TOPIC_LABEL[topic]}</Text> : <Text strikethrough>{TOPIC_LABEL[topic]}</Text>}
+              </Button>
+            )
+          })}
+        </Box>
       </Box>
       <Box flexDirection="row">
         {Label(els, 'allow:')}
