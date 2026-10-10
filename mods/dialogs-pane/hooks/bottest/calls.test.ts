@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { REPLY, SENT } from '../packet/fixtures'
-import { calls, decodeAllow, mergeMessages, settleWrite, watchLines } from './calls'
+import { calls, decodeAllow, mergeMessages, settleWrite } from './calls'
 
 const ran = (exitCode: number, stdout: unknown, stderr = '') => ({ exitCode, stdout: JSON.stringify(stdout), stderr })
 
@@ -41,15 +41,6 @@ test('argv: press waits 5 s, send reads the text from stdin as typed', () => {
 test('decodeAllow reads ids and rejects other shapes', () => {
   expect(decodeAllow([{ id: 900000001, kind: 'bot', username: 'example_bot' }])).toEqual([900000001])
   expect(decodeAllow({ id: 1 })).toBeUndefined()
-})
-
-test('watchLines joins lines split across chunks and skips kinds it does not use', () => {
-  const line = JSON.stringify({ event: 'message', ...REPLY })
-  const first = watchLines('', `{"event":"ready","peers":[]}\n${line.slice(0, 20)}`)
-  expect(first.events).toEqual([{ event: 'ready' }])
-  const second = watchLines(first.rest, `${line.slice(20)}\n{"event":"typing"}\n`)
-  expect(second.events.map(one => (one.event === 'ready' ? 'ready' : one.message.id))).toEqual([677791])
-  expect(second.rest).toBe('')
 })
 
 test('mergeMessages replaces edits in place and adds new ones in id order', () => {

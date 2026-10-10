@@ -8,7 +8,41 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
 
 import type { Lens, Load, Mode, PeerRef, TgDialog, TgFailure } from '../types'
-import { TG_TIMEOUT_MS, settle, tg, type TgRequest, type TgResult } from './tg/tg'
+// ── routing ──
+import type { AgentInfo, HookStream, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
+import type { BroadcastRow, LedgerEntry, Leg, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, TgMessage } from '../types'
+import { buildPacket, type Packet } from './packet/build'
+import { expandReplyChain } from './packet/expand'
+import { BroadcastPicker, Ledger, RoutePicker, RoutedTray } from './routing/components'
+import {
+  addEntry,
+  addNewLeg,
+  broadcastRows,
+  dialogOfPeer,
+  draftArgv,
+  draftOf,
+  feedPin,
+  ledgerStatus,
+  legsOf,
+  nextIntent,
+  onMainTurnStart,
+  onRadar,
+  onTurnComplete,
+  parentsAtHand,
+  parsePlan,
+  parseSent,
+  peerOf,
+  pinnedContext,
+  previewPacket,
+  radarOf,
+  routeOfRows,
+  selectedMessages,
+  spawnDescription,
+  toIntent,
+} from './routing/route'
+import { watchArgv, watchLines, type WatchEvent } from './watch/watch'
+// ── /routing ──
+import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import {
   DialogRow,
   Divider,
@@ -18,7 +52,6 @@ import {
   LensBar,
   LoadState,
   MessageCard,
-  PacketTray,
   windowAround,
   type Els,
 } from './ui/components'
@@ -86,7 +119,9 @@ export const register: Register = on => {
         // The status line stays at `tg …` until the first poll lands.
       })
     }
-    return next(e)
+    const started = await next(e)
+    await startRouting($) // ── routing ──
+    return started
   })
 
   on('command.run', { command: 'tg' }, async ($, e) => {
@@ -127,6 +162,8 @@ export const register: Register = on => {
     const els = $.ui.resolve(e)
     const width = e.props.bodyColumns
     const rows = e.props.scroll.bodyRows
+    const over = await drawOverlay($, els, width, rows)
+    if (over !== null) return over
     return (await read($, mode)) === 'wide'
       ? await drawWide($, els, width, rows)
       : await drawCompact($, els, width, rows)
@@ -137,13 +174,16 @@ export const register: Register = on => {
     if (e.props.hasSurvey || event === null || (await read($, mode)) !== 'hidden') return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const isBot = event.kind === 'bot'
-    const room = Math.max(10, e.props.bodyColumns - event.label.length - 24)
+    const room = Math.max(10, e.props.bodyColumns - event.label.length - 40)
     return (
       <Box flexDirection="row" gap={2}>
         <Text wrap="truncate-end">
           <Text color={isBot ? TOKEN.bot : TOKEN.accent}>{isBot ? GLYPH.bot : GLYPH.unread} </Text>
           {`${event.label}: "${oneLine(event.text, room)}"`}
         </Text>
+        <Button key="band:main" plain autoFocus onPress={() => bandToMain($)}>
+          ⏎ send to main
+        </Button>
         <Button key="band:open" plain hotkey="o" onPress={() => openFromBand($)}>
           open
         </Button>
@@ -153,6 +193,40 @@ export const register: Register = on => {
       </Box>
     )
   })
+
+  // ── routing ──
+  on('turn.start', async ($, e, next) => {
+    const started = await next(e)
+    await update($, isMainBusy, () => true)
+    await update($, ledger, onMainTurnStart)
+    return started
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId === undefined) await update($, isMainBusy, () => false)
+    const at = await $.clock.now()
+    let closed: LedgerEntry[] = []
+    await update($, ledger, value => {
+      const settled = onTurnComplete(value, e.agentId, at)
+      closed = settled.closed
+      return settled.ledger
+    })
+    // Only a real answer becomes a draft: an error or an interrupt says nothing to send.
+    const answer = e.reason === 'answer' ? e.answer : ''
+    const drafted = closed.map(entry => draftOf(entry, answer)).findLast(one => one !== null)
+    if (drafted !== undefined && drafted !== null) await update($, draft, () => drafted)
+    return done
+  })
+
+  // The dialogs pinned to main reach it every turn as one context block.
+  on('prompt.context', async ($, e, next) => {
+    const done = await next(e)
+    const peers = loaded(await read($, dialogs)) ?? []
+    const text = pinnedContext(await read($, pins), peers, await read($, isRedacted))
+    return text === null ? done : { ...done, blocks: [...done.blocks, { name: 'tgPinned', text }] }
+  })
+  // ── /routing ──
 }
 
 // --- tg through $.process.run ---
@@ -194,7 +268,7 @@ async function refreshStatus($: $): Promise<void> {
     $.ui.status(undefined)
     return
   }
-  $.ui.status(statusText(await read($, dialogs), await read($, band)))
+  $.ui.status(statusText(await read($, dialogs), await read($, band)) + ledgerStatus(await read($, ledger)))
 }
 
 async function poll($: $): Promise<void> {
@@ -401,12 +475,6 @@ async function dismissBand($: $): Promise<void> {
   await refreshStatus($)
 }
 
-function sendStub($: $): void {
-  // tg-mod-routing (phase 2) builds the packet and routes it; until then the
-  // selection stays in the tray.
-  $.ui.toast('tg: sending arrives with the routing phase; the selection is kept.')
-}
-
 // --- layouts ---
 
 async function drawDialogList($: $, els: Els, width: number, rows: number): Promise<RenderElement[]> {
@@ -420,11 +488,13 @@ async function drawDialogList($: $, els: Els, width: number, rows: number): Prom
   if (list.length === 0) return [EmptyLens(els, where)]
   const cursor = clamp(where.dialogCursor, list.length)
   const shown = windowAround(list, cursor, rows)
+  const pinned = new Set((await read($, pins)).map(pin => pin.peer.id))
   return shown.items.map((dialog, index) =>
     DialogRow(els, {
       dialog,
       isCursor: where.view === 'dialogs' && shown.start + index === cursor,
       isOpen: open?.peer.id === dialog.id,
+      isPinned: pinned.has(dialog.id),
       width,
       now: at,
       onOpen: () => openThread($, dialog),
@@ -467,11 +537,7 @@ async function drawThread($: $, els: Els, width: number, rows: number): Promise<
 }
 
 async function tray($: $, els: Els, size: 'full' | 'line'): Promise<RenderElement> {
-  return PacketTray(els, {
-    size,
-    selection: await read($, selection),
-    messages: await threadMessages($),
-    onSend: () => sendStub($),
+  return routedTray($, els, size, {
     onWhole: async () => {
       const order = (await threadMessages($)).map(one => one.id)
       await update($, selection, () => selectWhole(order))
@@ -535,6 +601,719 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
   )
 }
 
+// ── watch hub ──
+// One `tg watch PEER --jsonl` child per peer, shared by everyone who listens:
+// bot testing (the open bot thread: live replies, local timing), routing
+// (pinned dialogs) and, next, triage. A listener subscribes by name; the last
+// one out stops the child. The argv and the line parser are ./watch/watch.
+//
+//   await subscribeWatch($, peer, { name: 'triage', isBounded: true, after: null,
+//     onEvent: async (event, isReplay) => { … }, onEnd: async reason => { … } })
+//   await unsubscribeWatch($, peer.id, 'triage')
+
+type WatchSubscriber = {
+  /** One subscription per name and peer; subscribing again replaces it. */
+  name: string
+  /** True when a quiet watch may end on its own (`--idle-exit`); a pin is not. */
+  isBounded: boolean
+  /** Replay the messages after this id when a child starts (a pin after a reload). */
+  after: number | null
+  /** Every event in order. `isReplay`: printed before `ready`, so missed while no child ran. */
+  onEvent: (event: WatchEvent, isReplay: boolean) => Promise<void>
+  /** The child ended by itself or never started; an unsubscribe does not call it. */
+  onEnd: (reason: string) => Promise<void>
+}
+
+type WatchHub = {
+  peer: PeerRef
+  subscribers: Map<string, WatchSubscriber>
+  stream: HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+  isBounded: boolean
+  isLive: boolean
+  /** The newest message id seen, so a restart replays only what it missed. */
+  lastId: number | null
+}
+
+const hubs = new Map<number, WatchHub>()
+
+async function subscribeWatch($: $, peer: PeerRef, subscriber: WatchSubscriber): Promise<void> {
+  const hub = hubs.get(peer.id)
+  if (hub === undefined) {
+    spawnHub($, peer, new Map([[subscriber.name, subscriber]]), subscriber.after)
+    return
+  }
+  hub.subscribers.set(subscriber.name, subscriber)
+  // An unbounded listener joined a bounded child: start one without --idle-exit.
+  if (!subscriber.isBounded && hub.isBounded) {
+    restartHub($, hub)
+    return
+  }
+  // Joined a child that is already live: its replay is over.
+  if (hub.isLive) await subscriber.onEvent({ event: 'ready' }, false)
+}
+
+async function unsubscribeWatch($: $, peerId: number, name: string): Promise<void> {
+  const hub = hubs.get(peerId)
+  if (hub === undefined || !hub.subscribers.delete(name)) return
+  // Still wanted: the child goes on (an unbounded one stays so until the last leaves).
+  if (hub.subscribers.size > 0) return
+  hubs.delete(peerId)
+  await stopStream(hub.stream)
+}
+
+function spawnHub($: $, peer: PeerRef, subscribers: Map<string, WatchSubscriber>, after: number | null): void {
+  const isBounded = [...subscribers.values()].every(one => one.isBounded)
+  const stream = $.process.spawn({ argv: watchArgv(peer.arg, { after, isBounded }) })
+  const hub: WatchHub = { peer, subscribers, stream, isBounded, isLive: false, lastId: after }
+  hubs.set(peer.id, hub)
+  pumpHub(hub).catch(async (error: unknown) => {
+    if (hubs.get(peer.id) !== hub) return
+    hubs.delete(peer.id)
+    await endHub(hub, `tg watch did not run: ${reasonOf(error)}`)
+  })
+}
+
+/** A new child for the same subscribers, replaying from the newest id seen. */
+function restartHub($: $, hub: WatchHub): void {
+  const after = hub.lastId ?? oldestAfter(hub.subscribers)
+  spawnHub($, hub.peer, hub.subscribers, after)
+  stopStream(hub.stream).catch(() => {
+    // The old child is gone already; the new one carries on.
+  })
+}
+
+function oldestAfter(subscribers: Map<string, WatchSubscriber>): number | null {
+  const afters = [...subscribers.values()].flatMap(one => (one.after === null ? [] : [one.after]))
+  return afters.length === 0 ? null : Math.min(...afters)
+}
+
+async function stopStream(stream: WatchHub['stream']): Promise<void> {
+  // Leaving the stream kills the child; the value is only the generator's own return.
+  await stream.return({ code: null, signal: 'SIGTERM' })
+}
+
+async function pumpHub(hub: WatchHub): Promise<void> {
+  let rest = ''
+  let stderr = ''
+  for await (const chunk of hub.stream) {
+    // Stopped or replaced: this child's lines are no one's any more.
+    if (hubs.get(hub.peer.id) !== hub) return
+    if (chunk.stream === 'stderr') {
+      stderr = (stderr + chunk.text).slice(-2000)
+      continue
+    }
+    const parsed = watchLines(rest, chunk.text)
+    rest = parsed.rest
+    // In order: an edit must reach every listener after the message it edits.
+    for (const event of parsed.events) await dispatch(hub, event)
+  }
+  if (hubs.get(hub.peer.id) !== hub) return
+  const ended = await hub.stream.result
+  hubs.delete(hub.peer.id)
+  await endHub(hub, watchEnded(ended, stderr))
+}
+
+async function dispatch(hub: WatchHub, event: WatchEvent): Promise<void> {
+  if (event.event === 'ready') hub.isLive = true
+  if (event.event === 'message' || event.event === 'edit') hub.lastId = Math.max(hub.lastId ?? 0, event.message.id)
+  const isReplay = !hub.isLive
+  // One listener failing must not starve the others.
+  await Promise.allSettled([...hub.subscribers.values()].map(one => one.onEvent(event, isReplay)))
+}
+
+async function endHub(hub: WatchHub, reason: string): Promise<void> {
+  await Promise.allSettled([...hub.subscribers.values()].map(one => one.onEnd(reason)))
+}
+
+/** Why a watch stopped, in a listener's words: tg's own error line when it gave one. */
+function watchEnded(ended: ProcessSpawnResult, stderr: string): string {
+  if (ended.code === 0) return 'tg watch ended'
+  if (ended.code === null) return `tg watch was stopped (${ended.signal ?? 'signal'})`
+  const failure = failureOf(ended.code, stderr)
+  switch (failure.kind) {
+    case 'auth':
+      return 'not logged in: ! tg login'
+    case 'flood':
+      return `Telegram asks to wait ${failure.seconds} s`
+    case 'missing':
+      return 'tg is not on PATH'
+    case 'not-found':
+    case 'error':
+      return `tg watch: ${failure.message}`
+  }
+}
+// ── /watch hub ──
+
+// ── routing ──
+// Phase 2: the tray's send, the route picker and its agent radar, broadcast,
+// the packet ledger, live pins and drafted replies. Pure rules and drawing are
+// in ./routing; every `$` call is here.
+//
+// The ledger lives in $.state, not $.store: its states (… / ✓) and its agents
+// belong to this session, and a restarted session has none of those agents.
+
+const RADAR_MS = 5_000
+/** An agent pin's new messages go out together once this long passes quietly. */
+const PIN_FLUSH_MS = 1_500
+
+const route = atom({ plugin: 'dialogs-pane', key: 'route' } as const, { kind: 'one', to: { kind: 'main' } })
+const intent = atom({ plugin: 'dialogs-pane', key: 'intent' } as const, 'fix')
+const isRedacted = atom({ plugin: 'dialogs-pane', key: 'isRedacted' } as const, true)
+const isMaskShown = atom({ plugin: 'dialogs-pane', key: 'isMaskShown' } as const, false)
+const overlay = atom({ plugin: 'dialogs-pane', key: 'overlay' } as const, { kind: 'none' })
+const radar = atom({ plugin: 'dialogs-pane', key: 'radar' } as const, [])
+const isMainBusy = atom({ plugin: 'dialogs-pane', key: 'isMainBusy' } as const, false)
+const ledger = atom({ plugin: 'dialogs-pane', key: 'ledger' } as const, [])
+const pins = atom({ plugin: 'dialogs-pane', key: 'pins' } as const, [])
+const draft = atom({ plugin: 'dialogs-pane', key: 'draft' } as const, null)
+
+/**
+ * At session start (and after a reload): pins outlive a reload in $.state,
+ * their `tg watch` children do not, so each is started again from its lastId.
+ */
+async function startRouting($: $): Promise<void> {
+  const kept = await update($, pins, value => value.map(pin => ({ ...pin, watch: { status: 'starting' } })))
+  await Promise.all(kept.map((pin: Pin) => startPinWatch($, pin)))
+  $.clock.every(RADAR_MS, () => {
+    routingTick($).catch(() => {
+      // A missed tick leaves the radar and ages one tick old; the next one catches up.
+    })
+  })
+}
+
+// --- the radar ---
+
+async function refreshRadar($: $): Promise<void> {
+  let list: AgentInfo[]
+  try {
+    list = await $.agent.list()
+  } catch {
+    // No list (the session is not bound yet): the picker keeps the last radar.
+    return
+  }
+  const entries = radarOf(list)
+  const at = await $.clock.now()
+  await update($, radar, () => entries)
+  await update($, ledger, value => onRadar(value, entries, at))
+}
+
+/** Keeps the radar fresh while the picker is up or a packet is with an agent, and the ages moving. */
+async function routingTick($: $): Promise<void> {
+  const shown = (await read($, overlay)).kind
+  const isWaiting = (await read($, ledger)).some(
+    entry => entry.to.kind === 'agent' && (entry.state.kind === 'sent' || entry.state.kind === 'working'),
+  )
+  if (shown === 'none' && !isWaiting) return
+  await refreshRadar($)
+  if (shown === 'ledger') {
+    const at = await $.clock.now()
+    await update($, now, () => at)
+  }
+  await refreshStatus($)
+}
+
+// --- the overlay: route picker, broadcast, ledger ---
+
+async function closeOverlay($: $, ring?: string): Promise<void> {
+  await update($, overlay, () => ({ kind: 'none' }))
+  if (ring !== undefined) await moveRing($, ring)
+}
+
+async function openPicker($: $): Promise<void> {
+  await update($, overlay, () => ({ kind: 'picker' }))
+  await refreshRadar($)
+  await moveRing($, 'route:main')
+}
+
+/** A target is picked: the tray shows it and the ring waits on send, so Enter sends. */
+async function chooseRoute($: $, to: Recipient): Promise<void> {
+  await update($, route, () => ({ kind: 'one', to }))
+  await closeOverlay($, 'send')
+}
+
+async function openBroadcast($: $): Promise<void> {
+  const rows = broadcastRows(await read($, radar), await read($, intent))
+  await update($, overlay, () => ({ kind: 'broadcast', rows }))
+  await moveRing($, 'leg:0:on')
+}
+
+async function editLegs($: $, edit: (rows: BroadcastRow[]) => BroadcastRow[]): Promise<void> {
+  await update($, overlay, value => (value.kind === 'broadcast' ? { kind: 'broadcast', rows: edit(value.rows) } : value))
+}
+
+async function finishBroadcast($: $): Promise<void> {
+  const shown = await read($, overlay)
+  if (shown.kind !== 'broadcast') return
+  const chosen = routeOfRows(shown.rows)
+  if (chosen === null) {
+    $.ui.toast('tg: turn on at least one leg (its digit) first.')
+    return
+  }
+  await update($, route, () => chosen)
+  await closeOverlay($, 'send')
+}
+
+async function openLedger($: $): Promise<void> {
+  const at = await $.clock.now()
+  await update($, now, () => at)
+  await update($, overlay, () => ({ kind: 'ledger', cursor: 0 }))
+  await refreshRadar($)
+  const newest = (await read($, ledger)).at(-1)
+  if (newest !== undefined) await moveRing($, `ledger:${newest.seq}`)
+}
+
+/** Enter on a ledger row: open its dialog with the cursor on the message. */
+async function jumpTo($: $, entry: LedgerEntry): Promise<void> {
+  await closeOverlay($)
+  const list = loaded(await read($, dialogs)) ?? []
+  await openThread($, list.find(one => one.id === entry.peer.id) ?? dialogOfPeer(entry.peer))
+  const target = entry.messageIds.at(-1)
+  const index = (await threadMessages($)).findIndex(message => message.id === target)
+  if (target === undefined || index < 0) {
+    $.ui.toast(`tg: #${target ?? '?'} is older than the ${THREAD_LIMIT} messages loaded.`)
+    return
+  }
+  await update($, nav, value => ({ ...value, view: 'thread', messageCursor: index }))
+  await moveRing($, `msg:${target}`)
+}
+
+async function drawOverlay($: $, els: Els, width: number, rows: number): Promise<RenderElement | null> {
+  const shown = await read($, overlay)
+  const count = (await read($, selection)).ids.length
+  switch (shown.kind) {
+    case 'none':
+      return null
+    case 'picker':
+      return RoutePicker(els, {
+        count,
+        radar: await read($, radar),
+        isMainBusy: await read($, isMainBusy),
+        intent: await read($, intent),
+        width,
+        onMain: () => chooseRoute($, { kind: 'main' }),
+        onAgent: (agent: RadarEntry) => chooseRoute($, { kind: 'agent', agentId: agent.agentId, label: agent.label }),
+        onNew: () => chooseRoute($, { kind: 'new' }),
+        onBroadcast: () => openBroadcast($),
+        onIntent: () => update($, intent, nextIntent),
+        onClose: () => closeOverlay($, 'send'),
+      })
+    case 'broadcast':
+      return BroadcastPicker(els, {
+        count,
+        rows: shown.rows,
+        width,
+        onToggle: index => editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, isOn: !leg.isOn } : leg))),
+        onIntent: index =>
+          editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, intent: nextIntent(leg.intent) } : leg))),
+        onAdd: () => editLegs($, addNewLeg),
+        onDone: () => finishBroadcast($),
+        onBack: () => openPicker($),
+      })
+    case 'ledger':
+      return Ledger(els, {
+        ledger: await read($, ledger),
+        now: await read($, now),
+        rows,
+        width,
+        onJump: entry => jumpTo($, entry),
+        onClose: () => closeOverlay($, 'send'),
+      })
+  }
+}
+
+// --- the tray ---
+
+async function routedTray(
+  $: $,
+  els: Els,
+  size: 'full' | 'line',
+  handlers: { onWhole: () => Promise<void>; onClear: () => Promise<unknown> },
+): Promise<RenderElement> {
+  const open = await read($, thread)
+  const messages = await threadMessages($)
+  const chosen = await read($, selection)
+  const selected = selectedMessages(messages, chosen.ids)
+  const { known, toFetch } = parentsAtHand(selected, messages)
+  const redact = await read($, isRedacted)
+  const shownIntent = await read($, intent)
+  const redactions =
+    open === null || selected.length === 0 || !redact
+      ? []
+      : previewPacket({
+          selected,
+          context: known,
+          peer: peerOf(open.peer, loaded(await read($, dialogs)) ?? []),
+          intent: shownIntent,
+          isRedacted: true,
+        }).redactions
+  const pin = open === null ? null : ((await read($, pins)).find(one => one.peer.id === open.peer.id) ?? null)
+  return RoutedTray(els, {
+    size,
+    selection: chosen,
+    preview: { selected, parents: known.length, toFetch: toFetch.length, redactions },
+    route: await read($, route),
+    intent: shownIntent,
+    isRedacted: redact,
+    isMaskShown: await read($, isMaskShown),
+    pin,
+    draft: await read($, draft),
+    width: 200,
+    onSend: () => sendSelection($),
+    onWhole: handlers.onWhole,
+    onClear: handlers.onClear,
+    onRoute: () => openPicker($),
+    onIntent: async () => {
+      await update($, intent, nextIntent)
+      await moveRing($, 'send')
+    },
+    onRedact: async () => {
+      await update($, isRedacted, value => !value)
+    },
+    onMask: async () => {
+      await update($, isMaskShown, value => !value)
+    },
+    onPin: () => togglePin($),
+    onLedger: () => openLedger($),
+    onDraft: {
+      onCheck: () => checkDraft($),
+      onSend: () => sendDraft($),
+      onDrop: () => update($, draft, () => null),
+      onEdit: text => update($, draft, value => (value === null ? null : { ...value, text, step: { kind: 'draft' } })),
+    },
+  })
+}
+
+// --- sending a packet ---
+
+type Base = Pick<LedgerEntry, 'peer' | 'messageIds' | 'intent' | 'parents' | 'missing' | 'masked'>
+
+async function addToLedger($: $, entry: Omit<LedgerEntry, 'seq'>): Promise<number> {
+  const next = await update($, ledger, value => addEntry(value, entry))
+  await refreshStatus($)
+  return next.at(-1)?.seq ?? 0
+}
+
+async function markEntry($: $, seq: number, state: LedgerEntry['state']): Promise<void> {
+  await update($, ledger, value => value.map(entry => (entry.seq === seq ? { ...entry, state } : entry)))
+  await refreshStatus($)
+}
+
+const reasonOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+/**
+ * Main gets the packet as a prompt of its own (the human's decision): the
+ * transcript shows exactly what the model reads, the packet and its intent
+ * line, under this plugin's name. A busy main runs it once idle.
+ */
+async function deliverMain($: $, base: Base, packet: Packet): Promise<void> {
+  const at = await $.clock.now()
+  const seq = await addToLedger($, { ...base, at, to: { kind: 'main' }, state: { kind: 'sent' } })
+  // $.prompt.submit resolves only when the packet's turn starts: a busy main
+  // would hold the press for its whole turn, so the send does not wait on it.
+  submitToMain($, seq, packet.text).catch(async (error: unknown) => {
+    await markEntry($, seq, { kind: 'failed', reason: reasonOf(error) })
+  })
+}
+
+async function submitToMain($: $, seq: number, text: string): Promise<void> {
+  const submitted = await $.prompt.submit({ text })
+  if (submitted.drop !== undefined) await markEntry($, seq, { kind: 'failed', reason: submitted.drop })
+}
+
+async function deliverAgent($: $, base: Base, packet: Packet, agent: { agentId: string; label: string }): Promise<void> {
+  const at = await $.clock.now()
+  const to = { kind: 'agent', isNew: false, ...agent } as const
+  let sent: Awaited<ReturnType<typeof $.session.send>>
+  try {
+    sent = await $.session.send({ to: { agentId: agent.agentId }, text: packet.text })
+  } catch (error) {
+    await addToLedger($, { ...base, at, to, state: { kind: 'failed', reason: reasonOf(error) } })
+    return
+  }
+  await addToLedger($, { ...base, at, to, state: sent.isDelivered ? { kind: 'sent' } : { kind: 'failed', reason: sent.reason } })
+}
+
+/** "+ new agent": the packet and its intent line are the brief. */
+async function deliverNew($: $, base: Base, packet: Packet): Promise<void> {
+  const at = await $.clock.now()
+  const description = spawnDescription(base.intent, base.messageIds)
+  const failed = (reason: string) =>
+    addToLedger($, { ...base, at, to: { kind: 'agent', isNew: true, agentId: '', label: description }, state: { kind: 'failed', reason } })
+  let spawned: Awaited<ReturnType<typeof $.agent.spawn>>
+  try {
+    spawned = await $.agent.spawn({ prompt: packet.text, description })
+  } catch (error) {
+    await failed(reasonOf(error))
+    return
+  }
+  if (spawned.deny !== undefined) {
+    await failed(spawned.deny)
+    return
+  }
+  // Started with no local loop (a remote agent): delivered, but nothing here can follow it.
+  const agentId = spawned.agentId ?? ''
+  await addToLedger($, {
+    ...base,
+    at,
+    to: { kind: 'agent', isNew: true, agentId, label: description },
+    state: { kind: agentId === '' ? 'sent' : 'working' },
+  })
+  await refreshRadar($)
+}
+
+/**
+ * Expands the reply chain once (tg msg for parents the thread lacks), then
+ * builds one packet per leg and delivers each. Answers how many legs failed.
+ */
+async function sendPacket(
+  $: $,
+  input: { peer: PeerRef; selected: TgMessage[]; known: readonly TgMessage[]; legs: readonly Leg[] },
+): Promise<{ failed: number; fetchFailure: TgFailure | null }> {
+  let fetchFailure: TgFailure | null = null
+  const expanded = await expandReplyChain(
+    input.selected,
+    async ids => {
+      const result = await runTg($, tg.msg(input.peer.arg, ids))
+      if (result.ok) return result.value
+      // The parents count as missing in the packet; the toast says why.
+      fetchFailure = result.failure
+      return []
+    },
+    { known: input.known },
+  )
+  const peer = peerOf(input.peer, loaded(await read($, dialogs)) ?? [])
+  const redact = await read($, isRedacted)
+  const before = (await read($, ledger)).length
+  await Promise.all(
+    input.legs.map(async leg => {
+      const packet = buildPacket({
+        messages: expanded.messages,
+        context: expanded.context,
+        peer,
+        intent: toIntent(leg.intent),
+        redact,
+      })
+      const base: Base = {
+        peer: input.peer,
+        messageIds: expanded.messages.map(message => message.id),
+        intent: leg.intent,
+        parents: expanded.context.length,
+        missing: expanded.missing,
+        masked: packet.redactions.length,
+      }
+      switch (leg.to.kind) {
+        case 'main':
+          return deliverMain($, base, packet)
+        case 'agent':
+          return deliverAgent($, base, packet, leg.to)
+        case 'new':
+          return deliverNew($, base, packet)
+      }
+    }),
+  )
+  const added = (await read($, ledger)).slice(before)
+  return { failed: added.filter(entry => entry.state.kind === 'failed').length, fetchFailure }
+}
+
+/** The tray's send: the selection, along the route, under the intent. */
+async function sendSelection($: $): Promise<void> {
+  const open = await read($, thread)
+  const messages = await threadMessages($)
+  const selected = selectedMessages(messages, (await read($, selection)).ids)
+  if (open === null || selected.length === 0) {
+    $.ui.toast('tg: select messages first (x, v, or d for the whole thread).')
+    return
+  }
+  const legs = legsOf(await read($, route), await read($, intent))
+  const sent = await sendPacket($, { peer: open.peer, selected, known: messages, legs })
+  const why = sent.fetchFailure === null ? '' : ` Reply-chain parents missing: ${sent.fetchFailure.kind}.`
+  if (sent.failed === 0) {
+    await update($, selection, () => NO_SELECTION)
+    $.ui.toast(`tg: packet sent to ${legs.length === 1 ? 'one target' : `${legs.length} targets`}; l shows the ledger.${why}`)
+  } else {
+    $.ui.toast(`tg: ${sent.failed} of ${legs.length} deliveries failed; l shows why. The selection is kept.${why}`)
+  }
+}
+
+/** The Hidden band's ⏎: the dialog's newest message to main, under the tray's intent. */
+async function bandToMain($: $): Promise<void> {
+  const event = await read($, band)
+  const dialog = (loaded(await read($, dialogs)) ?? []).find(one => one.id === event?.dialogId)
+  if (event === null || dialog === undefined || dialog.last_id === null) {
+    $.ui.toast('tg: that message is no longer in the dialog list; open it with o.')
+    return
+  }
+  const peer: PeerRef = { id: dialog.id, arg: peerArg(dialog), label: dialogLabel(dialog), kind: dialog.kind }
+  const found = await runTg($, tg.msg(peer.arg, [dialog.last_id]))
+  if (!found.ok || found.value.length === 0) {
+    $.ui.toast(`tg: could not fetch #${dialog.last_id} (${found.ok ? 'not found' : found.failure.kind}).`)
+    return
+  }
+  const sent = await sendPacket($, {
+    peer,
+    selected: found.value,
+    known: [],
+    legs: [{ to: { kind: 'main' }, intent: await read($, intent) }],
+  })
+  if (sent.failed === 0) await update($, band, () => null)
+  await refreshStatus($)
+}
+
+// --- live pins: tg watch → $.state → prompt.context (main) or session.send (an agent) ---
+
+let pinFlush: Timer | null = null
+
+async function setWatch($: $, peerId: number, watch: PinWatch): Promise<void> {
+  await update($, pins, value => value.map(pin => (pin.peer.id === peerId ? { ...pin, watch } : pin)))
+}
+
+/** `p`: pin the open dialog to the route's agent (main unless one agent is picked); again unpins. */
+async function togglePin($: $): Promise<void> {
+  const open = await read($, thread)
+  if (open === null) {
+    $.ui.toast('tg: open a dialog to pin it.')
+    return
+  }
+  if ((await read($, pins)).some(pin => pin.peer.id === open.peer.id)) {
+    await unpin($, open.peer.id)
+    $.ui.toast(`tg: ${open.peer.label} unpinned.`)
+    return
+  }
+  const chosen = await read($, route)
+  const to: Pin['to'] =
+    chosen.kind === 'one' && chosen.to.kind === 'agent'
+      ? { kind: 'agent', agentId: chosen.to.agentId, label: chosen.to.label }
+      : { kind: 'main' }
+  const newest = (await threadMessages($)).reduce((top, message) => Math.max(top, message.id), 0)
+  const pin: Pin = {
+    peer: open.peer,
+    to,
+    lastId: newest === 0 ? null : newest,
+    messages: [],
+    unsent: [],
+    watch: { status: 'starting' },
+  }
+  await update($, pins, value => [...value, pin])
+  await startPinWatch($, pin)
+  const where = to.kind === 'main' ? 'main, every turn' : to.label
+  const note = chosen.kind === 'one' && chosen.to.kind !== 'new' ? '' : ' (pins go to main or one named agent)'
+  $.ui.toast(`tg: ${GLYPH.pinned} ${open.peer.label} pinned → ${where}${note}. p again unpins.`)
+}
+
+async function unpin($: $, peerId: number): Promise<void> {
+  await update($, pins, value => value.filter(pin => pin.peer.id !== peerId))
+  $.ui.invalidate('prompt.context')
+  await unsubscribeWatch($, peerId, 'pin')
+}
+
+/** The pin listens on the peer's shared watch, replaying from its lastId; it keeps the watch from idling out. */
+async function startPinWatch($: $, pin: Pin): Promise<void> {
+  await subscribeWatch($, pin.peer, {
+    name: 'pin',
+    isBounded: false,
+    after: pin.lastId,
+    onEvent: event => onPinEvent($, pin.peer.id, event),
+    onEnd: reason => setWatch($, pin.peer.id, { status: 'failed', reason: `${reason}; p twice restarts it` }),
+  })
+}
+
+async function onPinEvent($: $, peerId: number, event: WatchEvent): Promise<void> {
+  if (event.event === 'ready') {
+    await setWatch($, peerId, { status: 'live' })
+    return
+  }
+  if (event.event !== 'message' && event.event !== 'edit') return
+  const fed = await update($, pins, value => value.map(pin => (pin.peer.id === peerId ? feedPin(pin, event.message) : pin)))
+  const pin = fed.find(one => one.peer.id === peerId)
+  if (pin?.to.kind === 'main') $.ui.invalidate('prompt.context')
+  else if (pin?.to.kind === 'agent' && pinFlush === null) {
+    pinFlush = $.clock.after(PIN_FLUSH_MS, () => {
+      pinFlush = null
+      flushAgentPins($).catch(() => {
+        // Undelivered ids stay in `unsent`; the next message retries them.
+      })
+    })
+  }
+}
+
+/** Agent pins: the messages not delivered yet go out as one packet per dialog. */
+async function flushAgentPins($: $): Promise<void> {
+  const redact = await read($, isRedacted)
+  const peers = loaded(await read($, dialogs)) ?? []
+  const waiting = (await read($, pins)).filter(pin => pin.to.kind === 'agent' && pin.unsent.length > 0)
+  await Promise.all(
+    waiting.map(async pin => {
+      if (pin.to.kind !== 'agent') return
+      const fresh = pin.messages.filter(message => pin.unsent.includes(message.id))
+      const packet = buildPacket({
+        messages: fresh,
+        peer: peerOf(pin.peer, peers),
+        intent: { id: 'raw', text: 'New messages in a Telegram dialog pinned to you (live, from the dialogs pane).' },
+        redact,
+        replay: false,
+      })
+      const sent = await $.session.send({ to: { agentId: pin.to.agentId }, text: packet.text })
+      if (sent.isDelivered) {
+        await update($, pins, value =>
+          value.map(one => (one.peer.id === pin.peer.id ? { ...one, unsent: one.unsent.filter(id => !pin.unsent.includes(id)) } : one)),
+        )
+      } else {
+        await setWatch($, pin.peer.id, { status: 'failed', reason: `${pin.to.label}: ${sent.reason}` })
+      }
+    }),
+  )
+}
+
+// --- drafted replies: dry run first, then the same tg send ---
+
+async function setDraftStep($: $, step: ReplyDraft['step']): Promise<void> {
+  await update($, draft, value => (value === null ? null : { ...value, step }))
+}
+
+async function runDraft($: $, current: ReplyDraft, isDryRun: boolean) {
+  try {
+    return await $.process.run(draftArgv(current, isDryRun), { stdin: current.text, timeoutMs: TG_TIMEOUT_MS })
+  } catch (error) {
+    await setDraftStep($, { kind: 'failed', reason: `tg did not run: ${reasonOf(error)}` })
+    return null
+  }
+}
+
+/** check: `tg send … --dry-run` prints the WritePlan and the guard's verdict; nothing is sent. */
+async function checkDraft($: $): Promise<void> {
+  const current = await read($, draft)
+  if (current === null) return
+  await setDraftStep($, { kind: 'checking' })
+  const ran = await runDraft($, current, true)
+  if (ran === null) return
+  const plan = ran.exitCode === 0 ? parsePlan(ran.stdout) : null
+  if (plan === null) {
+    const failure = failureOf(ran.exitCode, ran.stderr)
+    await setDraftStep($, { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failure.kind })
+    return
+  }
+  await setDraftStep($, { kind: 'planned', ...plan })
+}
+
+/** send reply: only after a check the guard allowed, and the same argv minus --dry-run. */
+async function sendDraft($: $): Promise<void> {
+  const current = await read($, draft)
+  if (current === null || current.step.kind !== 'planned' || !current.step.isAllowed) return
+  await setDraftStep($, { kind: 'sending' })
+  const ran = await runDraft($, current, false)
+  if (ran === null) return
+  const ids = ran.exitCode === 0 ? parseSent(ran.stdout) : null
+  if (ids === null) {
+    const failure = failureOf(ran.exitCode, ran.stderr)
+    await setDraftStep($, { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failure.kind })
+    return
+  }
+  await setDraftStep($, { kind: 'sent', ids })
+  const open = await read($, thread)
+  if (open?.peer.id === current.peer.id) await loadThread($, open.peer)
+}
+// ── /routing ──
+
 // ── bottest ──
 // Bot testing in the pane (docs/design/dialogs-pane.md §5 ideas 6–10): pressable
 // buttons (b, then Enter), a one-line send box (n), the recorder (r), the reply
@@ -546,7 +1325,7 @@ import type { On } from 'claude-code'
 
 import type { BotTest, Notice } from '../types'
 import { failureText } from './ui/model'
-import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, watchLines, type WatchEvent, type WriteResult } from './bottest/calls'
+import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, type WriteResult } from './bottest/calls'
 import { diffPair, replyDiff } from './bottest/diff'
 import { chipAction, readOnlyReason, readOnlyText, type ReadOnly } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, stampFor } from './bottest/latency'
@@ -581,63 +1360,45 @@ async function say($: $, tone: Notice['tone'], text: string): Promise<void> {
 
 // --- the thread's watch: live replies and local timing ---
 
-let watchRun: { peerId: number; stop: () => void } | null = null
+/** The bot thread whose shared watch bot testing listens on. */
+let watchedPeer: number | null = null
 
 async function stopWatch($: $): Promise<void> {
-  const run = watchRun
-  if (run === null) return
-  watchRun = null
-  run.stop()
+  const peerId = watchedPeer
+  if (peerId === null) return
+  watchedPeer = null
+  await unsubscribeWatch($, peerId, 'bottest')
   await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
 }
 
-/** Runs `tg watch` on a bot thread; its loop is the child's life (see $.process.spawn). */
+/** Listens on the bot thread's shared `tg watch` (the watch hub); bounded, as nobody may stop it. */
 async function startWatch($: $, peer: PeerRef): Promise<void> {
   await stopWatch($)
   await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'starting' } }))
-  const stream = $.process.spawn({ argv: calls.watch(peer.arg) })
-  let isStopped = false
-  const run = {
-    peerId: peer.id,
-    stop: () => {
-      isStopped = true
-      stream.return({ code: null, signal: null }).catch(() => {
-        // The child is already gone; nothing is left to stop.
-      })
+  watchedPeer = peer.id
+  await subscribeWatch($, peer, {
+    name: 'bottest',
+    isBounded: true,
+    after: null,
+    onEvent: (event, isReplay) => onWatchEvent($, peer, event, isReplay),
+    onEnd: async () => {
+      // tg is missing or the watch ended: stamps fall back to message dates.
+      if (watchedPeer !== peer.id) return
+      watchedPeer = null
+      await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
     },
-  }
-  watchRun = run
-  async function pump(): Promise<void> {
-    let rest = ''
-    try {
-      for await (const chunk of stream) {
-        if (isStopped) break
-        if (chunk.stream !== 'stdout') continue
-        const parsed = watchLines(rest, chunk.text)
-        rest = parsed.rest
-        for (const event of parsed.events) await onWatchEvent($, peer, event)
-      }
-    } catch {
-      // tg is missing or the watch could not start: stamps fall back to message dates.
-    } finally {
-      if (watchRun === run) {
-        watchRun = null
-        await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
-      }
-    }
-  }
-  pump().catch(() => {
-    // pump records its own end in state; a failed state write leaves the last stamps.
   })
 }
 
-async function onWatchEvent($: $, peer: PeerRef, event: WatchEvent): Promise<void> {
+async function onWatchEvent($: $, peer: PeerRef, event: WatchEvent, isReplay: boolean): Promise<void> {
   const at = await $.clock.now()
   if (event.event === 'ready') {
     await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'live' } }))
     return
   }
-  await update($, bottest, value => ({ ...value, timing: observe(value.timing, event.event, event.message, at) }))
+  if (event.event !== 'message' && event.event !== 'edit') return
+  // A replayed message arrived while nobody watched: its local time says nothing.
+  if (!isReplay) await update($, bottest, value => ({ ...value, timing: observe(value.timing, event.event, event.message, at) }))
   await mergeIntoThread($, peer, [event.message])
 }
 

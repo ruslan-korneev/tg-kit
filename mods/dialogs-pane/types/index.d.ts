@@ -1,29 +1,45 @@
 // The dialogs-pane contract: tg's JSON shapes as the mod reads them, and the
-// values the mod keeps in $.state. Self-contained: no imports.
+// values the mod keeps in $.state. Self-contained: no imports
+// (`claude plugin validate` refuses them), so the JSON shapes are defined
+// here once and hooks/packet/types.ts re-exports them beside its parsers.
+
+// What `tg … --json` prints, mirrored by hand. The source of truth is tg itself:
+// `src/tg_kit/render.py` (`message_json`), `src/tg_kit/buttons.py` (`Button.to_json`),
+// `src/tg_kit/cmd_read.py` (`dialogs`, `resolve`) and README → "JSON (--json)".
+// A change there is a contract change and lands here in the same commit.
 
 /** `sender.kind` and `tg dialogs` `kind`, as README "JSON (--json)" lists them. */
-export type TgPeerKind = 'self' | 'user' | 'bot' | 'group' | 'channel' | 'supergroup' | 'unknown'
+export type SenderKind = 'self' | 'user' | 'bot' | 'group' | 'channel' | 'supergroup' | 'unknown'
 
-/** One row of `tg dialogs --json`. */
-export type TgDialog = {
-  id: number
-  kind: TgPeerKind
-  title: string
-  username: string | null
-  unread: number
-  last_id: number | null
-  last_date: string | null
-  last_text: string
-}
-
-export type TgSender = {
+export type Sender = {
   id: number | null
-  kind: TgPeerKind
+  kind: SenderKind
   username: string | null
   name: string
 }
 
-export type TgButton = {
+export type Forward = {
+  from_id: number | null
+  from_name: string | null
+  date: string | null
+}
+
+/** `media` keeps only the keys tg set, so every field but `type` may be missing. */
+export type Media = {
+  type: string
+  size?: number
+  name?: string
+  mime?: string
+  duration?: number
+  width?: number
+  height?: number
+  emoji?: string
+  title?: string
+  url?: string
+}
+
+/** A button's `type` stays an open string: tg prints new TL kinds by name. */
+export type Button = {
   row: number
   col: number
   type: string
@@ -37,41 +53,55 @@ export type TgButton = {
   requires_password?: boolean
 }
 
-export type TgMedia = {
-  type: string
-  size?: number
-  name?: string
-  mime?: string
-  duration?: number
-  width?: number
-  height?: number
-  emoji?: string
-  title?: string
-  url?: string
-}
+export type Reaction = { emoji: string; count: number }
+export type Link = { text: string; url: string }
 
-/** One message of `tg read --json` / `tg msg --json`. */
-export type TgMessage = {
+/** One message of `tg read|msg|search --json`. */
+export type MessageView = {
   id: number
   chat_id: number
+  /** ISO 8601, UTC, second resolution (`2026-10-10T14:01:07Z`). */
   date: string
-  sender: TgSender
+  sender: Sender
   out: boolean
   text: string
   reply_to: number | null
-  forward: { from_id: number | null; from_name: string | null; date: string | null } | null
+  forward: Forward | null
+  /** The last edit time, or null. */
   edited: string | null
+  /** Edits seen during a `--wait`; 0 otherwise. */
   edits: number
   pinned: boolean
   service: string | null
   via_bot: string | null
-  media: TgMedia | null
+  media: Media | null
   keyboard: 'inline' | 'reply' | null
-  buttons: TgButton[][]
-  reactions: { emoji: string; count: number }[]
-  links: { text: string; url: string }[]
+  buttons: Button[][]
+  reactions: Reaction[]
+  links: Link[]
+  /** Only in global search results. */
   chat_title?: string
 }
+
+/** One row of `tg dialogs --json`. */
+export type Dialog = {
+  id: number
+  kind: SenderKind
+  title: string
+  username: string | null
+  unread: number
+  last_id: number | null
+  last_date: string | null
+  last_text: string
+}
+
+// The pane's names for the same shapes.
+export type TgPeerKind = SenderKind
+export type TgDialog = Dialog
+export type TgSender = Sender
+export type TgButton = Button
+export type TgMedia = Media
+export type TgMessage = MessageView
 
 /** Why a tg call gave no data: its exit code (errors.py), or tg missing. */
 export type TgFailure =
@@ -110,6 +140,93 @@ export type Selection = { ids: number[]; anchor: number | null }
 
 /** What the Hidden band reports: a dialog whose unread count grew. */
 export type BandEvent = { dialogId: number; label: string; kind: TgPeerKind; text: string }
+
+// ── routing ──
+// Phase 2 (docs/design/dialogs-pane.md §4, §5 ideas 1–5 and 16–20): where a
+// packet goes, what went to whom, live pins and drafted replies.
+
+/** The packet module's intent ids (hooks/packet/intents.ts `INTENT_IDS`). */
+export type RouteIntent = 'fix' | 'reproduce' | 'explain' | 'test' | 'draft_reply' | 'raw'
+
+/** One live agent of this session, as `$.agent.list()` names it. */
+export type AgentRef = { agentId: string; label: string }
+
+/** A recipient: this session's main loop, a live agent, or one spawned for the packet. */
+export type Recipient = { kind: 'main' } | ({ kind: 'agent' } & AgentRef) | { kind: 'new' }
+
+/** One recipient of a broadcast, with an intent of its own. */
+export type Leg = { to: Recipient; intent: RouteIntent }
+
+/** Where the tray's send goes: one recipient under the tray's intent, or a broadcast. */
+export type Route = { kind: 'one'; to: Recipient } | { kind: 'broadcast'; legs: Leg[] }
+
+/** `$.agent.list()` statuses folded into the radar's three. */
+export type AgentState = 'idle' | 'running' | 'done'
+export type RadarEntry = AgentRef & { type: string; state: AgentState }
+
+/** A broadcast being put together in the picker: each leg on or off. */
+export type BroadcastRow = Leg & { isOn: boolean }
+
+/** What the pane draws over the dialogs and thread. */
+export type Overlay =
+  | { kind: 'none' }
+  | { kind: 'picker' }
+  | { kind: 'broadcast'; rows: BroadcastRow[] }
+  | { kind: 'ledger'; cursor: number }
+
+/** Who a ledger entry went to; a spawned agent is known once it started. */
+export type Delivered = { kind: 'main' } | ({ kind: 'agent'; isNew: boolean } & AgentRef)
+
+export type LedgerState =
+  | { kind: 'sent' }
+  | { kind: 'working' }
+  | { kind: 'done'; at: number }
+  | { kind: 'failed'; reason: string }
+
+/** One packet that left the pane. */
+export type LedgerEntry = {
+  seq: number
+  at: number
+  peer: PeerRef
+  messageIds: number[]
+  to: Delivered
+  intent: RouteIntent
+  state: LedgerState
+  /** Reply-chain parents carried as context, and parents tg could not find. */
+  parents: number
+  missing: number[]
+  masked: number
+}
+
+/** Where a pinned dialog's new messages go. */
+export type PinTarget = { kind: 'main' } | ({ kind: 'agent' } & AgentRef)
+
+export type PinWatch = { status: 'starting' } | { status: 'live' } | { status: 'failed'; reason: string }
+
+/** A dialog pinned to an agent: `tg watch` feeds `messages`, newest last. */
+export type Pin = {
+  peer: PeerRef
+  to: PinTarget
+  /** The newest message id seen, so a restarted watch replays from it (`--after`). */
+  lastId: number | null
+  messages: TgMessage[]
+  /** Agent pins: ids not delivered yet. */
+  unsent: number[]
+  watch: PinWatch
+}
+
+export type DraftStep =
+  | { kind: 'draft' }
+  | { kind: 'checking' }
+  | { kind: 'planned'; isAllowed: boolean; reason: string }
+  | { kind: 'sending' }
+  | { kind: 'sent'; ids: number[] }
+  | { kind: 'failed'; reason: string }
+
+/** An agent's result drafted as a reply to the message it was about (idea 20). */
+export type ReplyDraft = { peer: PeerRef; replyTo: number; text: string; from: string; step: DraftStep }
+
+// ── /routing ──
 
 // ── bottest ──
 
@@ -185,6 +302,20 @@ declare module 'claude-code' {
       selection: Selection
       band: BandEvent | null
       now: number
+      // ── routing ──
+      route: Route
+      intent: RouteIntent
+      isRedacted: boolean
+      /** The tray lists what redaction masked. */
+      isMaskShown: boolean
+      overlay: Overlay
+      radar: RadarEntry[]
+      /** Whether the main loop is in a turn: main's AgentChip in the route picker. */
+      isMainBusy: boolean
+      ledger: LedgerEntry[]
+      pins: Pin[]
+      draft: ReplyDraft | null
+      // ── /routing ──
       bottest: BotTest
     }
   }

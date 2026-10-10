@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { parseMessageViews, parsePeer, TgJsonError } from './types'
+import { parseDialogs, parseMessageViews, parsePeer, TgJsonError } from './types'
 
 // README → "JSON (--json)", with placeholder values.
 const README_MESSAGE = {
@@ -43,4 +43,19 @@ describe('parseMessageViews', () => {
 test('parsePeer reads a tg resolve / tg dialogs row', () => {
   const row = { id: 900000001, kind: 'bot', title: 'Example Bot', username: 'example_bot', unread: 2 }
   expect(parsePeer(row)).toEqual({ id: 900000001, kind: 'bot', title: 'Example Bot', username: 'example_bot' })
+})
+
+test('parseDialogs reads tg dialogs rows and names a bad field', () => {
+  const row = {
+    id: 900000001,
+    kind: 'bot',
+    title: 'Example Bot',
+    username: 'example_bot',
+    unread: 2,
+    last_id: 677792,
+    last_date: '2026-10-10T11:02:00Z',
+    last_text: 'Main menu',
+  }
+  expect(parseDialogs([row])).toEqual([row])
+  expect(() => parseDialogs([{ ...row, unread: null }])).toThrow('dialogs[0].unread')
 })
