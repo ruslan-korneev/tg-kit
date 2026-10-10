@@ -1,10 +1,10 @@
 // The tg calls bot testing makes: argv, and how each run's output is narrowed.
-// Pure: register.tsx runs the argv through $.process.run / $.process.spawn.
-// Shapes: README "JSON (--json)" (send, press) and "tg watch (--jsonl)".
+// Pure: register.tsx runs the argv through $.process.run (the watch is ../watch).
+// Shapes: README "JSON (--json)" (send, press).
 import type { ProcessRunResult } from 'claude-code'
 
 import type { TgFailure } from '../../types'
-import { TgJsonError, parseMessageView, parseMessageViews, type MessageView } from '../packet/types'
+import { TgJsonError, parseMessageViews, type MessageView } from '../packet/types'
 import { failureOf } from '../tg/tg'
 
 /** `press` waits 5 s (tg's own default); a send waits longer for a cold bot. */
@@ -28,8 +28,6 @@ export const calls = {
   /** The text goes on stdin (`-`), so a leading dash or newline needs no escaping. `--plain`: sent as typed. */
   send: (peer: string): string[] => ['tg', 'send', peer, '-', '--plain', '--wait', `${SEND_WAIT_S}s`, '--json'],
   allowList: (): string[] => ['tg', 'allow', 'list', '--json'],
-  /** Live only (no replay); `--idle-exit` bounds a watch nobody stops. */
-  watch: (peer: string): string[] => ['tg', 'watch', peer, '--jsonl', '--events', 'message,edit', '--idle-exit', '15m'],
 }
 
 /** A finished `tg send|press --json`; exit 6 (no reply) still printed what was sent. */
@@ -82,46 +80,6 @@ export function decodeAllow(data: unknown): number[] | undefined {
     ids.push(id)
   }
   return ids
-}
-
-export type WatchEvent =
-  | { event: 'ready' }
-  | { event: 'message' | 'edit'; message: MessageView }
-
-/**
- * Splits streamed watch output into whole lines: a chunk may end mid-line.
- * Returns the parsed events and the unfinished tail to prepend to the next chunk.
- */
-export function watchLines(buffered: string, chunk: string): { events: WatchEvent[]; rest: string } {
-  const lines = (buffered + chunk).split('\n')
-  const rest = lines.pop() ?? ''
-  const events = lines.flatMap(line => {
-    const one = watchEvent(line)
-    return one === null ? [] : [one]
-  })
-  return { events, rest }
-}
-
-/** One `--jsonl` line; null for a kind this pane does not use or a line it cannot read. */
-export function watchEvent(line: string): WatchEvent | null {
-  if (line.trim() === '') return null
-  let data: unknown
-  try {
-    data = JSON.parse(line)
-  } catch {
-    return null
-  }
-  if (typeof data !== 'object' || data === null) return null
-  const kind = (data as Record<string, unknown>).event // a non-null object, checked above
-  if (kind === 'ready') return { event: 'ready' }
-  if (kind !== 'message' && kind !== 'edit') return null
-  try {
-    return { event: kind, message: parseMessageView(data) }
-  } catch (error) {
-    // A line whose message shape is off is skipped; the next thread reload shows it.
-    if (error instanceof TgJsonError) return null
-    throw error
-  }
 }
 
 /** The thread with `incoming` folded in: an edit replaces its message, a new one joins in id order. */

@@ -33,7 +33,6 @@ import {
   parentsAtHand,
   parsePlan,
   parseSent,
-  parseWatchLine,
   peerOf,
   pinnedContext,
   previewPacket,
@@ -41,10 +40,9 @@ import {
   routeOfRows,
   selectedMessages,
   spawnDescription,
-  splitLines,
   toIntent,
-  watchArgv,
 } from './routing/route'
+import { watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import {
@@ -605,6 +603,149 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
   )
 }
 
+// ── watch hub ──
+// One `tg watch PEER --jsonl` child per peer, shared by everyone who listens:
+// bot testing (the open bot thread: live replies, local timing), routing
+// (pinned dialogs) and, next, triage. A listener subscribes by name; the last
+// one out stops the child. The argv and the line parser are ./watch/watch.
+//
+//   await subscribeWatch($, peer, { name: 'triage', isBounded: true, after: null,
+//     onEvent: async (event, isReplay) => { … }, onEnd: async reason => { … } })
+//   await unsubscribeWatch($, peer.id, 'triage')
+
+type WatchSubscriber = {
+  /** One subscription per name and peer; subscribing again replaces it. */
+  name: string
+  /** True when a quiet watch may end on its own (`--idle-exit`); a pin is not. */
+  isBounded: boolean
+  /** Replay the messages after this id when a child starts (a pin after a reload). */
+  after: number | null
+  /** Every event in order. `isReplay`: printed before `ready`, so missed while no child ran. */
+  onEvent: (event: WatchEvent, isReplay: boolean) => Promise<void>
+  /** The child ended by itself or never started; an unsubscribe does not call it. */
+  onEnd: (reason: string) => Promise<void>
+}
+
+type WatchHub = {
+  peer: PeerRef
+  subscribers: Map<string, WatchSubscriber>
+  stream: HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+  isBounded: boolean
+  isLive: boolean
+  /** The newest message id seen, so a restart replays only what it missed. */
+  lastId: number | null
+}
+
+const hubs = new Map<number, WatchHub>()
+
+async function subscribeWatch($: $, peer: PeerRef, subscriber: WatchSubscriber): Promise<void> {
+  const hub = hubs.get(peer.id)
+  if (hub === undefined) {
+    spawnHub($, peer, new Map([[subscriber.name, subscriber]]), subscriber.after)
+    return
+  }
+  hub.subscribers.set(subscriber.name, subscriber)
+  // An unbounded listener joined a bounded child: start one without --idle-exit.
+  if (!subscriber.isBounded && hub.isBounded) {
+    restartHub($, hub)
+    return
+  }
+  // Joined a child that is already live: its replay is over.
+  if (hub.isLive) await subscriber.onEvent({ event: 'ready' }, false)
+}
+
+async function unsubscribeWatch($: $, peerId: number, name: string): Promise<void> {
+  const hub = hubs.get(peerId)
+  if (hub === undefined || !hub.subscribers.delete(name)) return
+  // Still wanted: the child goes on (an unbounded one stays so until the last leaves).
+  if (hub.subscribers.size > 0) return
+  hubs.delete(peerId)
+  await stopStream(hub.stream)
+}
+
+function spawnHub($: $, peer: PeerRef, subscribers: Map<string, WatchSubscriber>, after: number | null): void {
+  const isBounded = [...subscribers.values()].every(one => one.isBounded)
+  const stream = $.process.spawn({ argv: watchArgv(peer.arg, { after, isBounded }) })
+  const hub: WatchHub = { peer, subscribers, stream, isBounded, isLive: false, lastId: after }
+  hubs.set(peer.id, hub)
+  pumpHub(hub).catch(async (error: unknown) => {
+    if (hubs.get(peer.id) !== hub) return
+    hubs.delete(peer.id)
+    await endHub(hub, `tg watch did not run: ${reasonOf(error)}`)
+  })
+}
+
+/** A new child for the same subscribers, replaying from the newest id seen. */
+function restartHub($: $, hub: WatchHub): void {
+  const after = hub.lastId ?? oldestAfter(hub.subscribers)
+  spawnHub($, hub.peer, hub.subscribers, after)
+  stopStream(hub.stream).catch(() => {
+    // The old child is gone already; the new one carries on.
+  })
+}
+
+function oldestAfter(subscribers: Map<string, WatchSubscriber>): number | null {
+  const afters = [...subscribers.values()].flatMap(one => (one.after === null ? [] : [one.after]))
+  return afters.length === 0 ? null : Math.min(...afters)
+}
+
+async function stopStream(stream: WatchHub['stream']): Promise<void> {
+  // Leaving the stream kills the child; the value is only the generator's own return.
+  await stream.return({ code: null, signal: 'SIGTERM' })
+}
+
+async function pumpHub(hub: WatchHub): Promise<void> {
+  let rest = ''
+  let stderr = ''
+  for await (const chunk of hub.stream) {
+    // Stopped or replaced: this child's lines are no one's any more.
+    if (hubs.get(hub.peer.id) !== hub) return
+    if (chunk.stream === 'stderr') {
+      stderr = (stderr + chunk.text).slice(-2000)
+      continue
+    }
+    const parsed = watchLines(rest, chunk.text)
+    rest = parsed.rest
+    // In order: an edit must reach every listener after the message it edits.
+    for (const event of parsed.events) await dispatch(hub, event)
+  }
+  if (hubs.get(hub.peer.id) !== hub) return
+  const ended = await hub.stream.result
+  hubs.delete(hub.peer.id)
+  await endHub(hub, watchEnded(ended, stderr))
+}
+
+async function dispatch(hub: WatchHub, event: WatchEvent): Promise<void> {
+  if (event.event === 'ready') hub.isLive = true
+  if (event.event === 'message' || event.event === 'edit') hub.lastId = Math.max(hub.lastId ?? 0, event.message.id)
+  const isReplay = !hub.isLive
+  // One listener failing must not starve the others.
+  await Promise.allSettled([...hub.subscribers.values()].map(one => one.onEvent(event, isReplay)))
+}
+
+async function endHub(hub: WatchHub, reason: string): Promise<void> {
+  await Promise.allSettled([...hub.subscribers.values()].map(one => one.onEnd(reason)))
+}
+
+/** Why a watch stopped, in a listener's words: tg's own error line when it gave one. */
+function watchEnded(ended: ProcessSpawnResult, stderr: string): string {
+  if (ended.code === 0) return 'tg watch ended'
+  if (ended.code === null) return `tg watch was stopped (${ended.signal ?? 'signal'})`
+  const failure = failureOf(ended.code, stderr)
+  switch (failure.kind) {
+    case 'auth':
+      return 'not logged in: ! tg login'
+    case 'flood':
+      return `Telegram asks to wait ${failure.seconds} s`
+    case 'missing':
+      return 'tg is not on PATH'
+    case 'not-found':
+    case 'error':
+      return `tg watch: ${failure.message}`
+  }
+}
+// ── /watch hub ──
+
 // ── routing ──
 // Phase 2: the tray's send, the route picker and its agent radar, broadcast,
 // the packet ledger, live pins and drafted replies. Pure rules and drawing are
@@ -634,7 +775,7 @@ const draft = atom({ plugin: 'dialogs-pane', key: 'draft' } as const, null)
  */
 async function startRouting($: $): Promise<void> {
   const kept = await update($, pins, value => value.map(pin => ({ ...pin, watch: { status: 'starting' } })))
-  for (const pin of kept) startPinWatch($, pin)
+  await Promise.all(kept.map((pin: Pin) => startPinWatch($, pin)))
   $.clock.every(RADAR_MS, () => {
     routingTick($).catch(() => {
       // A missed tick leaves the radar and ages one tick old; the next one catches up.
@@ -1028,7 +1169,6 @@ async function bandToMain($: $): Promise<void> {
 
 // --- live pins: tg watch → $.state → prompt.context (main) or session.send (an agent) ---
 
-const watchers = new Map<number, HookStream<ProcessSpawnChunk, ProcessSpawnResult>>()
 let pinFlush: Timer | null = null
 
 async function setWatch($: $, peerId: number, watch: PinWatch): Promise<void> {
@@ -1062,77 +1202,35 @@ async function togglePin($: $): Promise<void> {
     watch: { status: 'starting' },
   }
   await update($, pins, value => [...value, pin])
-  startPinWatch($, pin)
+  await startPinWatch($, pin)
   const where = to.kind === 'main' ? 'main, every turn' : to.label
   const note = chosen.kind === 'one' && chosen.to.kind !== 'new' ? '' : ' (pins go to main or one named agent)'
   $.ui.toast(`tg: ${GLYPH.pinned} ${open.peer.label} pinned → ${where}${note}. p again unpins.`)
 }
 
 async function unpin($: $, peerId: number): Promise<void> {
-  const stream = watchers.get(peerId)
-  watchers.delete(peerId)
   await update($, pins, value => value.filter(pin => pin.peer.id !== peerId))
   $.ui.invalidate('prompt.context')
-  // Leaving the stream kills the child; the value is only the generator's own return.
-  if (stream !== undefined) await stream.return({ code: null, signal: 'SIGTERM' })
+  await unsubscribeWatch($, peerId, 'pin')
 }
 
-/** Starts the pin's `tg watch`; the loop runs on after the caller returns, until unpin or the child ends. */
-function startPinWatch($: $, pin: Pin): void {
-  const stream = $.process.spawn({ argv: watchArgv(pin) })
-  watchers.set(pin.peer.id, stream)
-  pump($, pin.peer.id, stream).catch(async (error: unknown) => {
-    if (watchers.get(pin.peer.id) !== stream) return
-    watchers.delete(pin.peer.id)
-    await setWatch($, pin.peer.id, { status: 'failed', reason: reasonOf(error) })
+/** The pin listens on the peer's shared watch, replaying from its lastId; it keeps the watch from idling out. */
+async function startPinWatch($: $, pin: Pin): Promise<void> {
+  await subscribeWatch($, pin.peer, {
+    name: 'pin',
+    isBounded: false,
+    after: pin.lastId,
+    onEvent: event => onPinEvent($, pin.peer.id, event),
+    onEnd: reason => setWatch($, pin.peer.id, { status: 'failed', reason: `${reason}; p twice restarts it` }),
   })
 }
 
-async function pump($: $, peerId: number, stream: HookStream<ProcessSpawnChunk, ProcessSpawnResult>): Promise<void> {
-  let rest = ''
-  let stderr = ''
-  for await (const chunk of stream) {
-    if (chunk.stream === 'stderr') {
-      stderr = (stderr + chunk.text).slice(-2000)
-      continue
-    }
-    const split = splitLines(rest, chunk.text)
-    rest = split.rest
-    // In order: an edit must land after the message it edits.
-    for (const line of split.lines) await onWatchLine($, peerId, line)
-  }
-  const ended = await stream.result
-  // Unpinned (the loop was told to stop) or restarted: nothing to report.
-  if (watchers.get(peerId) !== stream) return
-  watchers.delete(peerId)
-  await setWatch($, peerId, { status: 'failed', reason: watchEnded(ended, stderr) })
-}
-
-/** Why a watch stopped, in the tray's words: tg's own error line when it gave one. */
-function watchEnded(ended: ProcessSpawnResult, stderr: string): string {
-  if (ended.code === 0) return 'tg watch ended; p twice restarts it'
-  if (ended.code === null) return `tg watch was stopped (${ended.signal ?? 'signal'})`
-  const failure = failureOf(ended.code, stderr)
-  switch (failure.kind) {
-    case 'auth':
-      return 'not logged in: ! tg login'
-    case 'flood':
-      return `Telegram asks to wait ${failure.seconds} s`
-    case 'missing':
-      return 'tg is not on PATH'
-    case 'not-found':
-    case 'error':
-      return `tg watch: ${failure.message}`
-  }
-}
-
-async function onWatchLine($: $, peerId: number, line: string): Promise<void> {
-  const event = parseWatchLine(line)
-  if (event === null) return
-  if (event.kind === 'ready') {
+async function onPinEvent($: $, peerId: number, event: WatchEvent): Promise<void> {
+  if (event.event === 'ready') {
     await setWatch($, peerId, { status: 'live' })
     return
   }
+  if (event.event !== 'message' && event.event !== 'edit') return
   const fed = await update($, pins, value => value.map(pin => (pin.peer.id === peerId ? feedPin(pin, event.message) : pin)))
   const pin = fed.find(one => one.peer.id === peerId)
   if (pin?.to.kind === 'main') $.ui.invalidate('prompt.context')
@@ -1235,7 +1333,7 @@ import type { On } from 'claude-code'
 
 import type { BotTest, Notice } from '../types'
 import { failureText } from './ui/model'
-import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, watchLines, type WatchEvent, type WriteResult } from './bottest/calls'
+import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, type WriteResult } from './bottest/calls'
 import { diffPair, replyDiff } from './bottest/diff'
 import { chipAction, readOnlyReason, readOnlyText, type ReadOnly } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, stampFor } from './bottest/latency'
@@ -1270,63 +1368,45 @@ async function say($: $, tone: Notice['tone'], text: string): Promise<void> {
 
 // --- the thread's watch: live replies and local timing ---
 
-let watchRun: { peerId: number; stop: () => void } | null = null
+/** The bot thread whose shared watch bot testing listens on. */
+let watchedPeer: number | null = null
 
 async function stopWatch($: $): Promise<void> {
-  const run = watchRun
-  if (run === null) return
-  watchRun = null
-  run.stop()
+  const peerId = watchedPeer
+  if (peerId === null) return
+  watchedPeer = null
+  await unsubscribeWatch($, peerId, 'bottest')
   await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
 }
 
-/** Runs `tg watch` on a bot thread; its loop is the child's life (see $.process.spawn). */
+/** Listens on the bot thread's shared `tg watch` (the watch hub); bounded, as nobody may stop it. */
 async function startWatch($: $, peer: PeerRef): Promise<void> {
   await stopWatch($)
   await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'starting' } }))
-  const stream = $.process.spawn({ argv: calls.watch(peer.arg) })
-  let isStopped = false
-  const run = {
-    peerId: peer.id,
-    stop: () => {
-      isStopped = true
-      stream.return({ code: null, signal: null }).catch(() => {
-        // The child is already gone; nothing is left to stop.
-      })
+  watchedPeer = peer.id
+  await subscribeWatch($, peer, {
+    name: 'bottest',
+    isBounded: true,
+    after: null,
+    onEvent: (event, isReplay) => onWatchEvent($, peer, event, isReplay),
+    onEnd: async () => {
+      // tg is missing or the watch ended: stamps fall back to message dates.
+      if (watchedPeer !== peer.id) return
+      watchedPeer = null
+      await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
     },
-  }
-  watchRun = run
-  async function pump(): Promise<void> {
-    let rest = ''
-    try {
-      for await (const chunk of stream) {
-        if (isStopped) break
-        if (chunk.stream !== 'stdout') continue
-        const parsed = watchLines(rest, chunk.text)
-        rest = parsed.rest
-        for (const event of parsed.events) await onWatchEvent($, peer, event)
-      }
-    } catch {
-      // tg is missing or the watch could not start: stamps fall back to message dates.
-    } finally {
-      if (watchRun === run) {
-        watchRun = null
-        await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
-      }
-    }
-  }
-  pump().catch(() => {
-    // pump records its own end in state; a failed state write leaves the last stamps.
   })
 }
 
-async function onWatchEvent($: $, peer: PeerRef, event: WatchEvent): Promise<void> {
+async function onWatchEvent($: $, peer: PeerRef, event: WatchEvent, isReplay: boolean): Promise<void> {
   const at = await $.clock.now()
   if (event.event === 'ready') {
     await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'live' } }))
     return
   }
-  await update($, bottest, value => ({ ...value, timing: observe(value.timing, event.event, event.message, at) }))
+  if (event.event !== 'message' && event.event !== 'edit') return
+  // A replayed message arrived while nobody watched: its local time says nothing.
+  if (!isReplay) await update($, bottest, value => ({ ...value, timing: observe(value.timing, event.event, event.message, at) }))
   await mergeIntoThread($, peer, [event.message])
 }
 

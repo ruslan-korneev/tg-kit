@@ -18,12 +18,9 @@ import {
   parentsAtHand,
   parsePlan,
   parseSent,
-  parseWatchLine,
   pinnedContext,
   radarOf,
   routeOfRows,
-  splitLines,
-  watchArgv,
 } from './route'
 
 const PEER = { id: BOT.id, arg: '@example_bot', label: '@example_bot', kind: 'bot' } as const
@@ -123,26 +120,6 @@ describe('the ledger', () => {
 
 describe('live pins', () => {
   const pin: Pin = { peer: PEER, to: { kind: 'main' }, lastId: 677792, messages: [], unsent: [], watch: { status: 'starting' } }
-
-  test('tg watch argv replays from the newest id seen', () => {
-    expect(watchArgv(pin)).toEqual(['tg', 'watch', '@example_bot', '--jsonl', '--events', 'message,edit', '--after', '677792'])
-  })
-
-  test('watch lines: message and edit carry a message, ready marks live, the rest is noise', () => {
-    const line = JSON.stringify({ event: 'message', ...REPLY })
-    expect(parseWatchLine(line)).toEqual({ kind: 'message', message: REPLY })
-    expect(parseWatchLine(JSON.stringify({ event: 'edit', ...REPLY }))?.kind).toBe('message')
-    expect(parseWatchLine('{"event": "ready", "peers": []}')).toEqual({ kind: 'ready' })
-    expect(parseWatchLine('{"event": "typing", "chat_id": 1}')).toBeNull()
-    expect(parseWatchLine('not json')).toBeNull()
-    expect(parseWatchLine(JSON.stringify({ event: 'message', id: 'x' }))).toBeNull()
-  })
-
-  test('lines split across pieces join up', () => {
-    const first = splitLines('', '{"a":1}\n{"b"')
-    expect(first).toEqual({ lines: ['{"a":1}'], rest: '{"b"' })
-    expect(splitLines(first.rest, ':2}\n')).toEqual({ lines: ['{"b":2}'], rest: '' })
-  })
 
   test('an edit replaces its message; agent pins track what is unsent', () => {
     const fed = feedPin(pin, REPLY)

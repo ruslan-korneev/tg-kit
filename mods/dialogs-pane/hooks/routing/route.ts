@@ -21,7 +21,7 @@ import type {
 } from '../../types'
 import { buildPacket, type Packet } from '../packet/build'
 import { INTENTS, INTENT_IDS, type Intent, type IntentId } from '../packet/intents'
-import { parseMessageView, TgJsonError, type Peer } from '../packet/types'
+import type { Peer } from '../packet/types'
 import { GLYPH } from '../ui/model'
 
 // The contract spells the intent ids out (it must be self-contained); these
@@ -320,36 +320,6 @@ export function ledgerStatus(ledger: readonly LedgerEntry[]): string {
 
 const PIN_KEEP = 20
 
-/** One `tg watch --jsonl` line the pin acts on; typing, deletions and noise are null. */
-export type WatchLine = { kind: 'message'; message: TgMessage } | { kind: 'ready' } | null
-
-export function parseWatchLine(line: string): WatchLine {
-  if (line.trim() === '') return null
-  let data: unknown
-  try {
-    data = JSON.parse(line)
-  } catch {
-    // tg prints only JSON under --jsonl; anything else (a warning) is not an event.
-    return null
-  }
-  if (typeof data !== 'object' || data === null || !('event' in data)) return null
-  if (data.event === 'ready') return { kind: 'ready' }
-  if (data.event !== 'message' && data.event !== 'edit') return null
-  try {
-    return { kind: 'message', message: parseMessageView(data) }
-  } catch (error) {
-    if (error instanceof TgJsonError) return null
-    throw error
-  }
-}
-
-/** Splits streamed text into whole lines; the tail waits for the next piece. */
-export function splitLines(buffer: string, text: string): { lines: string[]; rest: string } {
-  const parts = (buffer + text).split('\n')
-  const rest = parts.pop() ?? ''
-  return { lines: parts, rest }
-}
-
 /** A new or edited message reaches the pin: an edit replaces its message in place. */
 export function feedPin(pin: Pin, message: TgMessage): Pin {
   const at = pin.messages.findIndex(one => one.id === message.id)
@@ -357,11 +327,6 @@ export function feedPin(pin: Pin, message: TgMessage): Pin {
     at === -1 ? [...pin.messages, message].sort((a, b) => a.id - b.id).slice(-PIN_KEEP) : pin.messages.with(at, message)
   const unsent = pin.to.kind === 'agent' && !pin.unsent.includes(message.id) ? [...pin.unsent, message.id] : pin.unsent
   return { ...pin, messages, unsent, lastId: Math.max(pin.lastId ?? 0, message.id) }
-}
-
-export function watchArgv(pin: Pin): string[] {
-  const after = pin.lastId === null ? [] : ['--after', String(pin.lastId)]
-  return ['tg', 'watch', pin.peer.arg, '--jsonl', '--events', 'message,edit', ...after]
 }
 
 const PINNED_NOTE =

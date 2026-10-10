@@ -2,7 +2,7 @@
 // (types/index.d.ts), which must be self-contained; this module re-exports
 // them and holds the parsers. A change in tg lands in both in one commit.
 
-import type { Button, Dialog, Media, MessageView, SenderKind } from '../../types'
+import type { Button, Dialog, Media, MessageView, Sender, SenderKind } from '../../types'
 
 export type {
   Button,
@@ -127,21 +127,26 @@ function keyboard(v: unknown, path: string): 'inline' | 'reply' | null {
   throw new TgJsonError(path, 'inline, reply or null')
 }
 
+/** A message's `sender`, or a `tg watch` typing event's. */
+export function parseSender(v: unknown, path = 'sender'): Sender {
+  const s = obj(v, path)
+  return {
+    id: nullable(s.id, `${path}.id`, int),
+    kind: kind(s.kind, `${path}.kind`),
+    username: nullable(s.username, `${path}.username`, str),
+    name: str(s.name, `${path}.name`),
+  }
+}
+
 /** One message of `tg read|msg|search --json`, checked field by field. */
 export function parseMessageView(v: unknown, path = 'message'): MessageView {
   const o = obj(v, path)
-  const s = obj(o.sender, `${path}.sender`)
   const fwd = o.forward === null ? null : obj(o.forward, `${path}.forward`)
   return compact({
     id: int(o.id, `${path}.id`),
     chat_id: int(o.chat_id, `${path}.chat_id`),
     date: str(o.date, `${path}.date`),
-    sender: {
-      id: nullable(s.id, `${path}.sender.id`, int),
-      kind: kind(s.kind, `${path}.sender.kind`),
-      username: nullable(s.username, `${path}.sender.username`, str),
-      name: str(s.name, `${path}.sender.name`),
-    },
+    sender: parseSender(o.sender, `${path}.sender`),
     out: bool(o.out, `${path}.out`),
     text: str(o.text, `${path}.text`),
     reply_to: nullable(o.reply_to, `${path}.reply_to`, int),
