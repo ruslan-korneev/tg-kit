@@ -10,7 +10,7 @@
 //   that step; no hotkey.
 // - here and now: in the action bar when it is one of this context's verbs,
 //   otherwise a hotkey the frame keeps live without drawing it, and in the menu.
-import type { TgPeerKind } from '../../types'
+import type { SheetStep, TgPeerKind } from '../../types'
 
 /** The kinds of chat §4.6 tells apart. */
 export const CHAT_KINDS = ['bot', 'person', 'group', 'channel', 'saved', 'botfather'] as const
@@ -47,7 +47,8 @@ export const CHAT_KIND_LABEL: Record<ChatKind, string> = {
 /**
  * Where the keys act. `chats` and `chat` are the two columns (the cursor's);
  * the rest are layers drawn over the lower part (dock) or the body (inline).
- * `sheet` is today's route picker until the send sheet (T2) replaces it.
+ * `sheet` is the send sheet (§5.1) and the views it opens: targets, inspect, the
+ * Ask field, a broadcast's legs.
  */
 export const WHERES = ['chats', 'chat', 'sheet', 'card', 'activity', 'diff', 'editor', 'menu', 'band'] as const
 export type Where = (typeof WHERES)[number]
@@ -81,8 +82,8 @@ export type KeyFacts = {
   isSavedLens: boolean
   /** The card's chat has its agent running: ⏎ stops it. */
   isAgentOn: boolean
-  /** The route picker shows its intent chip (the broadcast's legs carry their own). */
-  isPicker: boolean
+  /** The send sheet's step while it is up (`broadcast`: the legs, from its targets), else null. */
+  sheet: SheetStep | 'broadcast' | null
 }
 
 export type KeyContext = { where: Where; seat: Seat; kind: ChatKind | null; facts: KeyFacts }
@@ -103,7 +104,7 @@ export const NO_FACTS: KeyFacts = {
   summary: 'none',
   isSavedLens: false,
   isAgentOn: false,
-  isPicker: false,
+  sheet: null,
 }
 
 type Def = {
@@ -116,6 +117,8 @@ type Def = {
   where: readonly Where[]
   /** The kinds of chat it exists in; `any` for keys of the pane, not of a chat. */
   kinds: readonly ChatKind[] | 'any'
+  /** Views where it exists in every kind of chat even so: `a` picks another agent in any chat's send sheet. */
+  anyKindIn?: readonly Where[]
   label: (c: KeyContext) => string
   /** The step it waits for, or null when it works now. */
   needs?: (c: KeyContext) => string | null
@@ -127,6 +130,8 @@ const PANE: readonly Where[] = ['chats', 'chat', 'sheet', 'card', 'activity', 'd
 const LISTS: readonly Where[] = ['chats', 'chat']
 /** §4.6's "what exists in which chat" table, one constant per row. */
 const WRITE: readonly ChatKind[] = ['bot', 'person', 'group', 'saved']
+/** The chats the owner can write to: `n`, and the send sheet's Draft reply to a person (§4.6). */
+export const CHAT_KIND_WRITE = WRITE
 const AGENT: readonly ChatKind[] = ['bot', 'person', 'group', 'channel']
 const WATCH: readonly ChatKind[] = ['bot', 'person', 'group', 'channel']
 const BUTTONS: readonly ChatKind[] = ['bot', 'group', 'channel', 'botfather']
@@ -134,6 +139,8 @@ const BUTTONS: readonly ChatKind[] = ['bot', 'group', 'channel', 'botfather']
 const SUMMARY_LABEL: Record<KeyFacts['summary'], string> = { none: 'summary', loading: 'cancel summary', ok: 'hide summary', error: 'retry summary' }
 
 const noRows = (what: string) => (c: KeyContext) => (c.facts.rows === 0 ? `needs ${what}` : null)
+/** The send sheet's own keys work on its intents; its other steps answer h. */
+const onIntents = (c: KeyContext) => (c.facts.sheet === 'intents' ? null : 'needs the intents (h)')
 
 export const KEYS = [
   { id: 'down', key: 'j', hotkey: 'j', group: 'move', where: LISTS, kinds: 'any', label: () => 'down' },
@@ -154,7 +161,17 @@ export const KEYS = [
     label: () => 'buttons',
     needs: c => (c.facts.hasButtons ? null : 'needs a message with buttons'),
   },
-  { id: 'agent', key: 'a', hotkey: 'a', group: 'chat', where: LISTS, kinds: AGENT, label: () => 'agent' },
+  {
+    id: 'agent',
+    key: 'a',
+    hotkey: 'a',
+    group: 'chat',
+    where: [...LISTS, 'sheet'],
+    kinds: AGENT,
+    anyKindIn: ['sheet'],
+    label: c => (c.where === 'sheet' ? 'another agent' : 'agent'),
+    needs: c => (c.where === 'sheet' ? onIntents(c) : null),
+  },
   { id: 'watch', key: 'w', hotkey: 'w', group: 'chat', where: LISTS, kinds: WATCH, label: c => (c.facts.isWatched ? 'unwatch' : 'watch') },
   { id: 'follow', key: 'p', hotkey: 'p', group: 'chat', where: ['chat'], kinds: AGENT, label: c => (c.facts.isFollowed ? 'unfollow' : 'follow → main') },
   { id: 'summary', key: 't', hotkey: 't', group: 'chat', where: LISTS, kinds: 'any', label: c => SUMMARY_LABEL[c.facts.summary] },
@@ -176,9 +193,29 @@ export const KEYS = [
   { id: 'search', key: 's', hotkey: 's', group: 'chats', where: LISTS, kinds: 'any', label: () => 'search' },
   { id: 'lenses', key: 'z', hotkey: 'z', group: 'chats', where: ['chats', 'editor'], kinds: 'any', label: c => (c.where === 'chats' && c.facts.isSavedLens ? 'edit lens' : 'save lens') },
   { id: 'level', key: '1-4', hotkey: null, group: 'chat', where: ['card'], kinds: AGENT, label: () => 'level', isDigits: true },
-  // The picker's intent chip until T2's sheet puts intents on digits and i on inspect.
-  { id: 'intent', key: 'i', hotkey: 'i', group: 'message', where: ['sheet'], kinds: 'any', label: () => 'intent', needs: c => (c.facts.isPicker ? null : 'needs the target list') },
-  { id: 'target', key: '1-9', hotkey: null, group: 'message', where: ['sheet'], kinds: 'any', label: () => 'send to', isDigits: true },
+  // In a chat, i opens the send sheet on inspect for the cursor's message or the marks.
+  {
+    id: 'inspect',
+    key: 'i',
+    hotkey: 'i',
+    group: 'message',
+    where: ['chat', 'sheet'],
+    kinds: 'any',
+    label: () => 'inspect',
+    needs: c => (c.where === 'chat' ? noRows('a message')(c) : onIntents(c)),
+  },
+  { id: 'intents', key: '1-9', hotkey: null, group: 'message', where: ['sheet'], kinds: 'any', label: () => 'send as', needs: onIntents, isDigits: true },
+  {
+    id: 'target',
+    key: '1-9',
+    hotkey: null,
+    group: 'message',
+    where: ['sheet'],
+    kinds: 'any',
+    label: c => (c.facts.sheet === 'broadcast' ? 'leg on or off' : 'send to'),
+    needs: c => (c.facts.sheet === 'targets' || c.facts.sheet === 'broadcast' ? null : 'needs a: another agent'),
+    isDigits: true,
+  },
   { id: 'edit', key: 'e', hotkey: 'e', group: 'chat', where: ['card', 'band'], kinds: 'any', label: c => (c.where === 'card' ? 'brief' : 'edit') },
   { id: 'dismiss', key: 'd', hotkey: 'd', group: 'pane', where: ['chat', 'card', 'band'], kinds: 'any', label: () => 'dismiss', needs: c => (c.where === 'band' || c.facts.hasNotice ? null : 'needs a notice') },
   { id: 'undo', key: 'u', hotkey: 'u', group: 'safety', where: [...PANE, 'band'], kinds: 'any', label: c => (c.facts.undoLeft > 0 ? `undo ${c.facts.undoLeft}s` : 'undo'), needs: c => (c.where === 'band' || c.facts.undoLeft > 0 ? null : 'needs an auto reply in its 30 s') },
@@ -191,7 +228,7 @@ export const KEYS = [
     group: 'pane',
     where: ['chat', 'sheet', 'card', 'activity', 'diff', 'editor', 'menu'],
     kinds: 'any',
-    label: c => (c.where === 'chat' ? (c.facts.marks > 0 || c.facts.isRangeOpen ? 'clear' : 'chats') : c.where === 'sheet' ? 'cancel' : 'back'),
+    label: c => (c.where === 'chat' ? (c.facts.marks > 0 || c.facts.isRangeOpen ? 'clear' : 'chats') : c.where === 'sheet' && c.facts.sheet === 'intents' ? 'cancel' : 'back'),
   },
   { id: 'menu', key: 'm', hotkey: 'm', group: 'pane', where: [...PANE, 'menu'], kinds: 'any', label: c => (c.where === 'menu' ? 'close' : 'menu') },
   { id: 'hide', key: 'q', hotkey: 'q', group: 'pane', where: PANE, kinds: 'any', label: () => 'hide' },
@@ -203,7 +240,7 @@ export type KeyDef = Def & { id: KeyId }
 const TABLE: readonly KeyDef[] = KEYS
 
 /** The ids a press runs: every key but the digit groups, which their options draw. */
-export type RunKey = Exclude<KeyId, 'lens' | 'level' | 'target'>
+export type RunKey = Exclude<KeyId, 'lens' | 'level' | 'intents' | 'target'>
 
 export function keyDef(id: KeyId): KeyDef {
   const def = TABLE.find(one => one.id === id)
@@ -215,7 +252,7 @@ export function keyDef(id: KeyId): KeyDef {
 /** The key exists in this view and this kind of chat (never here otherwise). */
 export function exists(def: KeyDef, c: KeyContext): boolean {
   if (!def.where.includes(c.where)) return false
-  if (def.kinds === 'any') return true
+  if (def.kinds === 'any' || def.anyKindIn?.includes(c.where) === true) return true
   return c.kind !== null && def.kinds.includes(c.kind)
 }
 

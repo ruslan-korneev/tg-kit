@@ -5,8 +5,8 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
 import { KEYS, hotkeyTable } from '../hooks/ui/keys'
-import type { TgDialog } from '../types'
-import { DIALOGS, MESSAGES } from './fixtures'
+import type { TgDialog, TgMessage } from '../types'
+import { DIALOGS, MESSAGES, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -88,7 +88,7 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
 }
 
 const happy = (argv: readonly string[]) =>
-  argv[1] === 'dialogs' ? json(KINDS) : argv[1] === 'allow' ? json([]) : argv[1] === 'whoami' ? json({ username: null, name: 'Me' }) : json(MESSAGES)
+  argv[1] === 'dialogs' ? json(KINDS) : argv[1] === 'allow' ? json([]) : argv[1] === 'whoami' ? json({ username: null, name: 'Me' }) : json(messagesFor(argv[2]))
 
 const runTg = (args = '', columns = 160) =>
   ({ command: 'tg', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns } }) as const
@@ -223,7 +223,7 @@ describe('the frame', () => {
 })
 
 describe('keys', () => {
-  test('h walks back: the marks, the picker, the card, then up to Chats', async ($, on) => {
+  test('h walks back: the marks, the sheet one step at a time, the card, then up to Chats', async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
     await ui.press({ key: 'key:up' })
@@ -232,12 +232,24 @@ describe('keys', () => {
     expect((await ui.find({ key: 'key:back' }))?.text).toContain('clear')
     await ui.press({ key: 'key:back' })
     expect(await ui.find({ key: 'marks' })).toBeUndefined()
-    // ⏎ on a message opens the picker (the send sheet's place until T2); h cancels it.
+    // ⏎ on a message opens the send sheet in the bar's place; a and i open its steps, h walks back.
     await ui.press({ key: 'msg:677791' })
+    expect(await ui.find({ key: 'sheet' })).toBeDefined()
+    expect(await ui.find({ key: 'bar' })).toBeUndefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › @example_bot')
+    expect((await ui.find({ key: 'key:back' }))?.text).toBe('cancel')
+    await ui.press({ key: 'key:agent' })
     expect(await ui.find({ key: 'route:main' })).toBeDefined()
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › send')
+    expect((await ui.find({ key: 'key:back' }))?.text).toBe('back')
     await ui.press({ key: 'key:back' })
     expect(await ui.find({ key: 'route:main' })).toBeUndefined()
+    await ui.press({ key: 'key:inspect' })
+    expect(await ui.find({ key: 'inspect' })).toBeDefined()
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'sheet:intent:fix' })).toBeDefined()
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'sheet' })).toBeUndefined()
+    expect(await ui.find({ key: 'bar' })).toBeDefined()
     // a: the agent card takes the lower part, the list stays; h closes it.
     await ui.press({ key: 'key:agent' })
     expect(await ui.find({ key: 'ap:card' })).toBeDefined()
@@ -251,7 +263,7 @@ describe('keys', () => {
     await ui.unmount()
   })
 
-  test("x, v and the menu's whole-thread mark; ⏎ with marks offers them to the picker", async ($, on) => {
+  test("x, v and the menu's whole-thread mark; ⏎ with marks opens the sheet for them", async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
     await ui.press({ key: 'key:range' })
@@ -262,7 +274,7 @@ describe('keys', () => {
     await ui.press({ key: 'menu:whole' })
     expect(await ui.find({ type: 'Text', text: '▪ 3 marked' })).toBeDefined()
     await ui.press({ key: 'msg:677791' })
-    expect(await ui.find({ type: 'Text', text: 'send 3 messages to' })).toBeDefined()
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('send 3 messages')
     await ui.unmount()
   })
 
@@ -304,7 +316,23 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
       { name: `chat ${id} inline`, props: INLINE, steps: [`dialog:${id}`] },
       { name: `menu ${id}`, props: DOCK, steps: [`dialog:${id}`, 'key:menu'] },
     ]),
-    { name: 'picker', props: DOCK, steps: ['dialog:1001', 'msg:677791'] },
+    // The send sheet (T2) and its steps, for each sender §4.6 tells apart, in both seats.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        { name: `sheet bot ${seat}`, props, steps: ['dialog:1001', 'msg:677791'] },
+        { name: `sheet person ${seat}`, props, steps: ['dialog:1004', 'msg:92'] },
+        { name: `sheet channel ${seat}`, props, steps: ['dialog:1005', 'msg:7'] },
+        { name: `sheet group member ${seat}`, props, steps: ['dialog:1002', 'msg:499'] },
+        { name: `sheet Saved ${seat}`, props, steps: ['dialog:1003', 'msg:677791'] },
+        { name: `sheet BotFather ${seat}`, props, steps: ['dialog:1006', 'msg:677791'] },
+        { name: `sheet targets ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'key:agent'] },
+        { name: `sheet inspect ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'key:inspect'] },
+        { name: `sheet ask ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'sheet:intent:raw'] },
+        { name: `sheet several ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'key:agent', 'route:broadcast'] },
+        { name: `sheet menu ${seat}`, props, steps: ['dialog:1004', 'msg:92', 'key:menu'] },
+      ]
+    }),
     { name: 'card', props: DOCK, steps: ['dialog:1004', 'key:agent'] },
     { name: 'card menu', props: DOCK, steps: ['dialog:1004', 'key:agent', 'key:menu'] },
     { name: 'activity', props: INLINE, steps: ['key:activity'] },
@@ -358,6 +386,98 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     drawn = await hotkeys(ui)
     expect(drawn).toContain('f')
     expect(await barKeys(ui)).toContain('diff')
+    await ui.unmount()
+  })
+})
+
+describe('long lists scroll at the edges (the ring keeps its place among the Buttons)', () => {
+  const fixture = <T,>(one: T | undefined): T => {
+    if (one === undefined) throw new Error('a fixture is missing')
+    return one
+  }
+  const LONG: TgMessage[] = Array.from({ length: 40 }, (_, index) => ({
+    ...fixture(MESSAGES.at(-1)),
+    id: 700001 + index,
+    text: `reply ${index + 1}`,
+    date: `2026-10-10T11:${String(index).padStart(2, '0')}:00Z`,
+  }))
+  const MANY: TgDialog[] = [
+    ...KINDS,
+    ...Array.from({ length: 54 }, (_, index) => ({ ...fixture(KINDS[3]), id: 3000 + index, title: `Contact ${index + 10}` })),
+  ]
+  const long = (argv: readonly string[]) => (argv[1] === 'read' ? json(LONG) : argv[1] === 'dialogs' ? json(MANY) : happy(argv))
+
+  /** The ids of the rows drawn as `prefix:<id>` Buttons, in order. */
+  async function rows(ui: Ui, prefix: string): Promise<string[]> {
+    return (await ui.findAll({ type: 'Button' })).flatMap(button => {
+      const key = String(button.props.key ?? '')
+      return key.startsWith(prefix) ? [key] : []
+    })
+  }
+
+  for (const list of [
+    { name: 'a thread', prefix: 'msg:', open: true, step: 'key:up' },
+    { name: 'Chats', prefix: 'dialog:', open: false, step: 'key:down' },
+  ] as const) {
+    test(`${list.name}: moves inside the window keep its first row; one past the edge shifts it by one`, async ($, on) => {
+      const { ui } = await openPane($, on, DOCK, long)
+      if (list.open) await openChat(ui, 1001)
+      const before = await rows(ui, list.prefix)
+      expect(before.length).toBeGreaterThan(3)
+      expect(before.length).toBeLessThan(list.open ? LONG.length : MANY.length)
+      // The cursor starts at one edge (the newest message, the first chat): walk to the other one.
+      for (let i = 0; i < before.length - 1; i++) {
+        await ui.press({ key: list.step })
+        expect(await rows(ui, list.prefix)).toEqual(before)
+      }
+      await ui.press({ key: list.step })
+      const after = await rows(ui, list.prefix)
+      expect(after).toEqual(list.open ? [list.prefix + String(Number(before[0]?.slice(4)) - 1), ...before.slice(0, -1)] : [...before.slice(1), after.at(-1)])
+      expect(after).not.toEqual(before)
+      await ui.unmount()
+    })
+  }
+})
+
+describe('a layer opening or closing keeps the ring stops above the chat (the ring keeps its place)', () => {
+  /** Ring stops (Buttons, Inputs, Selects) drawn above the dock's divider, in document order. */
+  async function stopsAbove(ui: Ui): Promise<number> {
+    let count = 0
+    let isDone = false
+    const walk = (node: unknown) => {
+      if (isDone || typeof node !== 'object' || node === null) return
+      const { type, children } = node as { type?: unknown; children?: unknown }
+      if (type === 'Text' && Array.isArray(children) && typeof children[0] === 'string' && children[0].startsWith('─ ')) {
+        isDone = true
+        return
+      }
+      if (type === 'Button' || type === 'Input' || type === 'Select') count += 1
+      if (Array.isArray(children)) for (const child of children) walk(child)
+    }
+    walk(await ui.drawn())
+    return count
+  }
+
+  // More chats than the list's window, so a list sized by what the sheet leaves would lose rows.
+  const many = (argv: readonly string[]) =>
+    argv[1] === 'dialogs' ? json([...KINDS, ...Array.from({ length: 54 }, (_, index) => ({ ...KINDS[3], id: 3000 + index, title: `Contact ${index + 10}` }))]) : happy(argv)
+
+  test('the sheet and each of its steps, and the card, open and close over the same stops', async ($, on) => {
+    const { ui } = await openPane($, on, DOCK, many)
+    // The search field is up (it sits on top), so the rows on top count as well as the strip.
+    await ui.press({ key: 'key:search' })
+    await openChat(ui, 1001)
+    const base = await stopsAbove(ui)
+    expect(await ui.find({ key: 'search' })).toBeDefined()
+    for (const steps of [['msg:677792'], ['msg:677792', 'key:agent'], ['msg:677792', 'key:inspect'], ['msg:677792', 'sheet:intent:raw'], ['key:agent']]) {
+      for (const key of steps) await ui.press({ key })
+      expect(await stopsAbove(ui)).toBe(base)
+      while ((await ui.find({ key: 'sheet' })) !== undefined || (await ui.find({ key: 'targets' })) !== undefined || (await ui.find({ key: 'inspect' })) !== undefined || (await ui.find({ key: 'ap:card' })) !== undefined) {
+        if ((await ui.find({ key: 'sheet:ask' })) !== undefined) await ui.input({ key: 'sheet:ask', text: '' })
+        else await ui.press({ key: 'key:back' })
+      }
+      expect(await stopsAbove(ui)).toBe(base)
+    }
     await ui.unmount()
   })
 })

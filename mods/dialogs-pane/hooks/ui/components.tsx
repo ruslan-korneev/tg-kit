@@ -25,11 +25,22 @@ export type Els = ElementTable
 const pad = (text: string, width: number) =>
   text.length >= width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width)
 
-/** The rows of `list` a window of `rows` shows so that `cursor` stays in it. */
-export function windowAround<T>(list: readonly T[], cursor: number, rows: number): { start: number; items: T[] } {
+/**
+ * Where a list's window starts so that `cursor` is in it, scrolling at the
+ * edges: the start moves only when the cursor leaves [start, start + rows).
+ * The engine keeps the focus ring by its place among a site's Buttons across
+ * a redraw (2.1.296), so a window that recentred on every move left the ring
+ * one row off the cursor; one that holds still keeps them together.
+ */
+export function edgeStart(start: number, cursor: number, rows: number, length: number): number {
   const room = Math.max(1, rows)
-  const start = Math.min(Math.max(0, cursor - Math.floor(room / 2)), Math.max(0, list.length - room))
-  return { start, items: list.slice(start, start + room) }
+  const moved = cursor < start ? cursor : cursor >= start + room ? cursor - room + 1 : start
+  return Math.min(Math.max(0, moved), Math.max(0, length - room))
+}
+
+/** The rows of `list` a window of `rows` from `start` shows. */
+export function windowAt<T>(list: readonly T[], start: number, rows: number): T[] {
+  return list.slice(start, start + Math.max(1, rows))
 }
 
 export function DialogRow(
@@ -92,6 +103,12 @@ export function MessageCard(
   props: {
     message: TgMessage
     isCursor: boolean
+    /**
+     * Drawn without ring stops (plain Text, chips as text) while the send sheet
+     * holds the keys: the engine keeps the ring by its place among the stops, so
+     * rows coming back under a closing sheet would leave it above ▸. The ▸ shows.
+     */
+    isStatic?: boolean
     isSelected: boolean
     isAnchor: boolean
     width: number
@@ -108,20 +125,33 @@ export function MessageCard(
   const id = `#${message.id}`
   const stamp = props.stamp ?? null
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
-  // cursor(1) time(11) sender(6) text, then " ⏱1.4s" and " #id": one column spare so nothing wraps.
-  const textWidth = Math.max(10, props.width - 20 - id.length - (stamp === null ? 0 : stamp.text.length + 1))
+  // cursor(1) mark(1) time(11) sender(6) text, then " ⏱1.4s" and " #id": one column spare so nothing wraps.
+  const textWidth = Math.max(10, props.width - 21 - id.length - (stamp === null ? 0 : stamp.text.length + 1))
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
+  // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.
+  const mark = props.isSelected ? GLYPH.marked : props.isAnchor ? 'v' : ' '
+  const cells = [
+    <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
+    <Text dimColor> {shortTime(message.date, props.now).padEnd(9)} </Text>,
+    <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{pad(sender, 6)}</Text>,
+    <Text color={color}>{pad(oneLine(body, textWidth), textWidth)}</Text>,
+    stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>,
+    <Text dimColor> {id}</Text>,
+  ]
+  if (props.isStatic === true) {
+    return (
+      <Box key={`card:${message.id}`} flexDirection="column">
+        <Box key={`row:${message.id}`} flexDirection="row">
+          {...cells}
+        </Box>
+        {message.buttons.length > 0 ? ButtonRow(els, { message, isDim: true }) : null}
+      </Box>
+    )
+  }
   return (
     <Box key={`card:${message.id}`} flexDirection="column">
       <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onPress}>
-        <Text color={TOKEN.accent}>{props.isCursor ? GLYPH.cursor : props.isAnchor ? 'v' : ' '}</Text>
-        <Text dimColor> {shortTime(message.date, props.now).padEnd(9)} </Text>
-        <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{pad(sender, 6)}</Text>
-        <Text color={color} inverse={props.isSelected}>
-          {pad(oneLine(body, textWidth), textWidth)}
-        </Text>
-        {stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>}
-        <Text dimColor> {id}</Text>
+        {...cells}
       </Button>
       {props.buttonRow !== undefined ? props.buttonRow : message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
     </Box>

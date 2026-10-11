@@ -1,11 +1,11 @@
-// Routing through the engine: send to main, the route picker and its radar
-// (⏎ on a message opens it until the send sheet, T2), new agent, broadcast,
-// the ledger, live pins, the Hidden band and drafted replies. tg, the agents
-// and the session are answered beneath the plugin.
+// Routing through the engine: the send sheet (dialogs-pane-ux.md §5.1, §8 T2)
+// with its intents by sender, its targets from the radar, inspect and marks;
+// new agent, broadcast, the ledger, live pins, the Hidden band and drafted
+// replies. tg, the agents and the session are answered beneath the plugin.
 import type { AgentInfo, On, ProcessRunResult, RenderPropsOf, SessionSendInput } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
-import { DIALOGS, MESSAGES } from './fixtures'
+import { DIALOGS, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 
@@ -47,15 +47,18 @@ type World = {
   toasts: string[]
   logs: string[]
   agents: AgentInfo[]
+  store: Map<string, unknown>
 }
 
-/** tg answers: dialogs, the thread, `tg msg` from MESSAGES (exit 4 when one is missing). */
+const ALL_DIALOGS = [...DIALOGS, ...MORE_DIALOGS]
+
+/** tg answers: dialogs, each chat's thread, `tg msg` from them (exit 4 when one is missing). */
 function tgAnswer(argv: readonly string[]): ProcessRunResult {
-  if (argv[1] === 'dialogs') return json(DIALOGS)
-  if (argv[1] === 'read') return json(MESSAGES)
+  if (argv[1] === 'dialogs') return json(ALL_DIALOGS)
+  if (argv[1] === 'read') return json(messagesFor(argv[2]))
   if (argv[1] === 'msg') {
     const ids = argv.slice(3, -1).map(Number)
-    const found = MESSAGES.filter(message => ids.includes(message.id))
+    const found = messagesFor(argv[2]).filter(message => ids.includes(message.id))
     return found.length === ids.length ? json(found) : run(4, JSON.stringify(found), 'error: no message in @example_bot')
   }
   return run(1, '', `error: unexpected ${argv.join(' ')}`)
@@ -75,8 +78,8 @@ function world(
     store?: Record<string, unknown>
   } = {},
 ): World {
-  const seen: World = { runs: [], spawns: [], sends: [], spawned: [], prompts: [], toasts: [], logs: [], agents: [] }
   const store = new Map(Object.entries(options.store ?? {}))
+  const seen: World = { runs: [], spawns: [], sends: [], spawned: [], prompts: [], toasts: [], logs: [], agents: [], store }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: store.get(e.key) }))
   on('store.set', (_$, e) => {
@@ -152,23 +155,70 @@ async function openAndSelect($: Engine, clock: MockClock) {
 
 type Ui = Awaited<ReturnType<typeof openAndSelect>>
 
-/** ⏎ (the bar's), the picker's intent chip until `label`, then a target: it sends at once. */
-async function sendTo(ui: Ui, target = 'route:main', label = 'Fix') {
+/**
+ * The send sheet (§5.1): ⏎ (the bar's `send…`), then `a` and a target digit
+ * when the target is not main, then the intent's digit, which sends at once.
+ */
+async function sendTo(ui: Ui, target = 'route:main', intent = 'fix') {
   await ui.press({ key: 'key:send' })
-  for (let i = 0; i < 8 && !((await ui.find({ key: 'picker:intent' }))?.text ?? '').includes(`[${label}]`); i++) await ui.press({ key: 'picker:intent' })
-  await ui.press({ key: target })
+  if (target !== 'route:main') {
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: target })
+  }
+  await ui.press({ key: `sheet:intent:${intent}` })
 }
 
-describe('send to main', () => {
-  test('⏎ submits the packet and its intent line as a visible prompt to main', async ($, on) => {
+/** The sheet's intent Buttons in digit order: `1: fix`, … as hotkey and key. */
+async function sheetIntents(ui: Ui): Promise<string[]> {
+  const buttons = await ui.findAll({ type: 'Button' })
+  return buttons.flatMap(button => {
+    const key = String(button.props.key ?? '')
+    return key.startsWith('sheet:intent:') ? [`${String(button.props.hotkey)}: ${key.slice('sheet:intent:'.length)}`] : []
+  })
+}
+
+/** The Button ⏎ presses: the one the sheet draws autoFocus (openSheet moves the ring there too). */
+async function ringed(ui: Ui): Promise<string | undefined> {
+  const buttons = await ui.findAll({ type: 'Button' })
+  const key = buttons.find(button => String(button.props.key ?? '').startsWith('sheet:') && button.props.autoFocus === true)?.props.key
+  return key === undefined ? undefined : String(key)
+}
+
+/** ⏎ in the sheet: the engine presses the ringed Button. */
+async function enter(ui: Ui) {
+  const key = await ringed(ui)
+  if (key === undefined) throw new Error('nothing ringed in the sheet')
+  await ui.press({ key })
+}
+
+/** /tg, then ⏎ on chat `id`'s row and the cursor on message `message` (Chats open on the bot). */
+async function openChatAt($: Engine, clock: MockClock, id: number, message: number) {
+  await $.session.start(START)
+  await $.command.run(WIDE)
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+  await ui.press({ key: `dialog:${id}` })
+  for (let i = 0; i < 5 && !((await ui.find({ key: `msg:${message}` }))?.text ?? '').includes('▸'); i++) await ui.press({ key: 'key:up' })
+  return ui
+}
+
+describe('the send sheet: send to main', () => {
+  test('⏎ 1 sends one Fix packet to main: the packet and its intent line as a visible prompt (2 steps)', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const session = mock.session(on)
     const seen = world(on)
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:send' })
-    expect((await ui.find({ key: 'route:main' }))?.text).toContain('main (this session)')
-    expect((await ui.find({ key: 'picker:intent' }))?.text).toContain('[Fix]')
-    await ui.press({ key: 'route:main' })
+    // The sheet takes the bar's place under the chat: the thread stays, its cursor ▸ too.
+    expect(await ui.find({ key: 'bar' })).toBeUndefined()
+    expect((await ui.find({ key: 'card:677791' }))?.text).toContain('Something went wrong')
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('send #677791 + 1 parent')
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('→ main · idle')
+    expect(await sheetIntents(ui)).toEqual(['1: fix', '2: reproduce', '3: explain', '4: test', '5: raw'])
+    expect((await ui.find({ key: 'sheet:intent:raw' }))?.text).toBe('Ask in my words…')
+    // Bots start on Fix: ⏎ would send it.
+    expect(await ringed(ui)).toBe('sheet:intent:fix')
+    await ui.press({ key: 'sheet:intent:fix' })
 
     // One prompt, the packet whole: what the transcript shows is what the model reads.
     expect(seen.prompts).toHaveLength(1)
@@ -180,9 +230,10 @@ describe('send to main', () => {
     expect(seen.logs).toEqual([])
     // The parent was in the thread: no tg msg ran.
     expect(seen.runs.some(one => one.argv[1] === 'msg')).toBe(false)
-    // Delivered everywhere: the marks are cleared, and the picker is gone.
+    // Delivered everywhere: the marks are cleared, the sheet is gone, the bar is back.
     expect(await ui.find({ key: 'marks' })).toBeUndefined()
-    expect(await ui.find({ key: 'route:main' })).toBeUndefined()
+    expect(await ui.find({ key: 'sheet' })).toBeUndefined()
+    expect(await ui.find({ key: 'bar' })).toBeDefined()
 
     await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('#677791 @example_bot → main · Fix · · sent')
@@ -193,12 +244,65 @@ describe('send to main', () => {
     await ui.unmount()
   })
 
+  test('⏎ ⏎ repeats the last intent used for this kind of sender, kept in $.store', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const ui = await openAndSelect($, clock)
+    // ⏎ 3: Explain, two steps.
+    await ui.press({ key: 'msg:677791' })
+    await ui.press({ key: 'sheet:intent:explain' })
+    expect(seen.prompts[0]).toMatch(/\nIntent: Explain — explain what happened in these messages and which code path/)
+    expect(seen.store.get('send.intents')).toEqual({ bot: 'explain' })
+    // ⏎ ⏎: the ring is on Explain now, so the second ⏎ sends it again.
+    await ui.press({ key: 'msg:677791' })
+    expect(await ringed(ui)).toBe('sheet:intent:explain')
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('last used for bots')
+    await enter(ui)
+    expect(seen.prompts).toHaveLength(2)
+    expect(seen.prompts[1]).toContain('intent="explain"')
+    await ui.unmount()
+  })
+
+  test('the remembered intent comes from $.store, so another session rings it too', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on, { store: { 'send.intents': { bot: 'test', person: 'nonsense' } } })
+    const ui = await openAndSelect($, clock)
+    await ui.press({ key: 'key:send' })
+    expect(await ringed(ui)).toBe('sheet:intent:test')
+    await ui.unmount()
+  })
+
+  test('Ask: the last digit opens a field; its words are the intent line; an empty one goes back', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const ui = await openAndSelect($, clock)
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'sheet:intent:raw' })
+    expect(await ui.find({ key: 'sheet:intents' })).toBeUndefined()
+    expect((await ui.find({ key: 'sheet:ask' }))?.props.autoFocus).toBe(true)
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('⏎ on an empty field goes back')
+    await ui.input({ key: 'sheet:ask', text: '   ' })
+    expect(await ui.find({ key: 'sheet:intents' })).toBeDefined()
+    expect(seen.prompts).toEqual([])
+    await ui.press({ key: 'sheet:intent:raw' })
+    await ui.input({ key: 'sheet:ask', text: 'why does Retry fail right after /settings?' })
+    expect(seen.prompts).toHaveLength(1)
+    expect(seen.prompts[0]).toContain('intent="raw"')
+    expect(seen.prompts[0]).toMatch(/<\/tg-packet>\nwhy does Retry fail right after \/settings\?$/)
+    expect(seen.prompts[0]).not.toContain('Intent:')
+    await ui.press({ key: 'key:activity' })
+    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('→ main · Ask')
+    await ui.unmount()
+  })
+
   test('a busy main gets the packet as its next prompt; the ledger waits for that turn', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const ui = await openAndSelect($, clock)
     await $.turn.start({ text: 'working on something', turnId: 't-0' })
-    await sendTo(ui)
+    await ui.press({ key: 'key:send' })
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('→ main · …running')
+    await ui.press({ key: 'sheet:intent:fix' })
     expect(seen.prompts).toHaveLength(1)
     // The running turn ends: not the packet's turn, so the entry is still waiting.
     await $.turn.complete({ answer: 'other work', durationMs: 1, isAborted: false, turnId: 't-0', reason: 'answer' })
@@ -217,24 +321,6 @@ describe('send to main', () => {
     await ui.unmount()
   })
 
-  test("the picker's intent chip cycles the intent; redaction says what it masks and can be turned off", async ($, on) => {
-    const clock = mock.clock(on, { now: NOW })
-    const seen = world(on)
-    const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'key:send' })
-    // i cycles it until T2's sheet puts intents on digits.
-    expect((await ui.find({ key: 'picker:intent' }))?.props.hotkey).toBe('i')
-    await ui.press({ key: 'picker:intent' })
-    expect((await ui.find({ key: 'picker:intent' }))?.text).toContain('[Reproduce]')
-    // #677790 is from Me: its name is masked; the bot stays readable.
-    expect((await ui.find({ key: 'redact' }))?.text).toContain('on · 3 masked')
-    await ui.press({ key: 'redact' })
-    expect((await ui.find({ key: 'redact' }))?.text).toContain('off')
-    await ui.press({ key: 'route:main' })
-    expect(seen.prompts[0]).toContain('intent="reproduce" source="dialogs-pane" redacted="false"')
-    await ui.unmount()
-  })
-
   test('a parent outside the thread is fetched with tg msg; exit 4 leaves it missing', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const orphan = { ...MESSAGES[2], id: 677793, reply_to: 600000 }
@@ -248,7 +334,9 @@ describe('send to main', () => {
     // The cursor started on #677793; hint:up then select picked #677792. Select #677793 too.
     await ui.press({ key: 'key:down' })
     await ui.press({ key: 'key:mark' })
-    await sendTo(ui)
+    await ui.press({ key: 'key:send' })
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('send 2 messages + 1 parent')
+    await ui.press({ key: 'sheet:intent:fix' })
     expect(seen.runs.find(one => one.argv[1] === 'msg')?.argv).toEqual(['tg', 'msg', '@example_bot', '600000', '--json'])
     expect(seen.prompts[0]).toContain('<message id="677793"')
     await ui.press({ key: 'key:activity' })
@@ -258,25 +346,107 @@ describe('send to main', () => {
   })
 })
 
-describe('the route picker', () => {
-  test('⏎ shows main and the radar; picking an agent sends through session.send', async ($, on) => {
+describe('the send sheet: intents follow the sender (§4.6)', () => {
+  test("a person's message offers Do it, Explain, Draft reply, Ask; people start on Ask; Do it sends at once", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const ui = await openChatAt($, clock, 1004, 92)
+    await ui.press({ key: 'msg:92' })
+    expect(await sheetIntents(ui)).toEqual(['1: do_it', '2: explain', '3: draft_reply', '4: raw'])
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('send #92 from Contact A')
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('people start on Ask')
+    expect(await ringed(ui)).toBe('sheet:intent:raw')
+    // ⏎ 1: Do it, two steps; the request is the other person's, not the owner's instruction.
+    await ui.press({ key: 'sheet:intent:do_it' })
+    expect(seen.prompts[0]).toContain('intent="do_it"')
+    expect(seen.prompts[0]).toMatch(/\nIntent: Do it — do what these messages ask, here in this repository\. They come from another person/)
+    // Explain reads a person's message for what it asks, not for a code path.
+    await ui.press({ key: 'msg:92' })
+    await ui.press({ key: 'sheet:intent:explain' })
+    expect(seen.prompts[1]).toMatch(/\nIntent: Explain — explain what these messages ask and what I am expected to do/)
+    expect(seen.prompts[1]).not.toContain('code path')
+    await ui.unmount()
+  })
+
+  test('a channel post gets no Draft reply: Do it, Explain, Ask', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1005, 7)
+    await ui.press({ key: 'msg:7' })
+    expect(await sheetIntents(ui)).toEqual(['1: do_it', '2: explain', '3: raw'])
+    await ui.unmount()
+  })
+
+  test("the owner's own message gets no Draft reply either", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1004, 91)
+    await ui.press({ key: 'msg:91' })
+    expect(await sheetIntents(ui)).toEqual(['1: do_it', '2: explain', '3: raw'])
+    await ui.unmount()
+  })
+
+  test("in a group a bot's message gets bot intents and a member's people intents", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1002, 500)
+    await ui.press({ key: 'msg:500' })
+    expect(await sheetIntents(ui)).toEqual(['1: fix', '2: reproduce', '3: explain', '4: test', '5: raw'])
+    await ui.press({ key: 'key:back' })
+    await ui.press({ key: 'msg:499' })
+    expect(await sheetIntents(ui)).toEqual(['1: do_it', '2: explain', '3: draft_reply', '4: raw'])
+    await ui.unmount()
+  })
+
+  test("a marked set takes its newest message's sender's intents", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1002, 500)
+    // The member's question and the bot's answer: the bot's is newer.
+    await ui.press({ key: 'key:mark' })
+    await ui.press({ key: 'key:up' })
+    await ui.press({ key: 'key:mark' })
+    await ui.press({ key: 'key:send' })
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('send 2 messages')
+    expect(await sheetIntents(ui)).toEqual(['1: fix', '2: reproduce', '3: explain', '4: test', '5: raw'])
+    await ui.press({ key: 'key:back' })
+    // Only the member's: people intents.
+    await ui.press({ key: 'key:down' })
+    await ui.press({ key: 'key:mark' })
+    await ui.press({ key: 'key:send' })
+    expect(await sheetIntents(ui)).toEqual(['1: do_it', '2: explain', '3: draft_reply', '4: raw'])
+    await ui.unmount()
+  })
+})
+
+describe('the send sheet: another agent', () => {
+  test('⏎ a 2 4: the radar on digits; the packet goes to that agent as Test (4 steps)', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     seen.agents.push(TESTER, { id: 'agent-2', description: 'old task', type: 'Explore', status: 'completed' })
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:send' })
-    expect((await ui.find({ key: 'route:main' }))?.text).toContain('main (this session)')
+    await ui.press({ key: 'key:agent' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › send to · @example_bot')
+    expect((await ui.find({ key: 'route:main' }))?.props.hotkey).toBe('1')
     expect((await ui.find({ key: 'route:main' }))?.text).toContain('·idle')
+    expect((await ui.find({ key: 'route:agent:agent-1' }))?.props.hotkey).toBe('2')
     expect((await ui.find({ key: 'route:agent:agent-1' }))?.text).toContain('…running')
     expect((await ui.find({ key: 'route:agent:agent-2' }))?.text).toContain('✓ done')
+    expect((await ui.find({ key: 'route:new' }))?.text).toBe('+ a new agent, this packet as its brief')
+    expect((await ui.find({ key: 'route:broadcast' }))?.text).toBe('⇉ several agents, an intent each')
     await ui.press({ key: 'route:agent:agent-1' })
+    // Back on the intents, now sending to tester; nothing went yet.
+    expect(seen.sends).toEqual([])
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('→ tester · …running')
+    await ui.press({ key: 'sheet:intent:test' })
     expect(seen.sends.map(one => one.to)).toEqual(['agent-1'])
-    expect(seen.sends[0]?.text).toContain('<tg-packet')
+    expect(seen.sends[0]?.text).toContain('<tg-packet v="1" intent="test"')
 
     // The radar: running → working; the agent's own turn ending → done.
     await clock.advance(5000)
     await ui.press({ key: 'key:activity' })
-    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('→ tester · Fix · …working')
+    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('→ tester · Test · …working')
     await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'x', reason: 'answer', agentId: 'agent-1' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('✓ done')
     await ui.unmount()
@@ -286,8 +456,7 @@ describe('the route picker', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const ui = await openAndSelect($, clock)
-    await ui.press({ key: 'key:send' })
-    await ui.press({ key: 'route:new' })
+    await sendTo(ui, 'route:new')
     expect(seen.spawned).toHaveLength(1)
     expect(seen.spawned[0]).toContain('<tg-packet v="1" intent="fix"')
     await ui.press({ key: 'key:activity' })
@@ -295,21 +464,146 @@ describe('the route picker', () => {
     await ui.unmount()
   })
 
-  test('broadcast sends one packet with an intent per leg', async ($, on) => {
+  test('⇉ several agents: one packet, an intent per leg from the sender\'s own; legs on digits', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     seen.agents.push(TESTER)
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'route:broadcast' })
+    expect((await ui.find({ key: 'leg:1:on' }))?.props.hotkey).toBe('2')
+    // h goes back to the targets, and a picks the legs again.
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'route:main' })).toBeDefined()
     await ui.press({ key: 'route:broadcast' })
     // Rows: main (on, Fix), tester (off, Reproduce), new agent (off, Test).
     await ui.press({ key: 'leg:1:on' })
     await ui.press({ key: 'leg:2:on' })
+    // A bot's legs cycle bot intents: Test → Fix, never Draft reply.
     await ui.press({ key: 'leg:2:intent' })
     await ui.press({ key: 'broadcast:done' })
     expect(seen.prompts[0]).toContain('intent="fix"')
     expect(seen.sends[0]?.text).toContain('intent="reproduce"')
-    expect(seen.spawned[0]).toContain('intent="draft_reply"')
+    expect(seen.spawned[0]).toContain('intent="fix"')
+    await ui.unmount()
+  })
+})
+
+describe('the send sheet: inspect, marks', () => {
+  test('redaction off in inspect holds for every leg of ⇉ several agents', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const ui = await openAndSelect($, clock)
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'key:inspect' })
+    await ui.press({ key: 'sheet:redact' })
+    await ui.press({ key: 'key:back' })
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'route:broadcast' })
+    await ui.press({ key: 'leg:1:on' })
+    await ui.press({ key: 'broadcast:done' })
+    expect(seen.prompts[0]).toContain('redacted="false"')
+    expect(seen.spawned[0]).toContain('redacted="false"')
+    await ui.unmount()
+  })
+
+  test('i shows what the agent reads: facts, the masks; ⏎ turns redaction off for this packet only', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const ui = await openAndSelect($, clock)
+    await ui.press({ key: 'key:send' })
+    // #677790 is from Me: its name and ids are masked; the bot stays readable.
+    expect((await ui.find({ key: 'key:inspect' }))?.text).toBe('inspect (3 masked)')
+    await ui.press({ key: 'key:inspect' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › inspect · @example_bot')
+    const shown = (await ui.find({ key: 'inspect' }))?.text ?? ''
+    expect(shown).toContain('inspect · main reads this')
+    expect(shown).toContain('@example_bot (bot) · Fix · redacted')
+    expect(shown).toContain('#677791 bot  "⚠ Something went wrong" · buttons Retry, Back')
+    expect(shown).toContain('+ parent #677790 you  "/settings"')
+    expect(shown).toContain('tg send @example_bot /settings')
+    expect(shown).toContain('1003 → [id-')
+    expect(shown).toContain('Me → [name-')
+    await ui.press({ key: 'sheet:redact' })
+    expect((await ui.find({ key: 'inspect' }))?.text).toContain('nothing: redaction is off for this packet')
+    // h: back to the intents, which say so; the digit sends this packet unredacted.
+    await ui.press({ key: 'key:back' })
+    expect((await ui.find({ key: 'key:inspect' }))?.text).toBe('inspect (not redacted)')
+    await ui.press({ key: 'sheet:intent:fix' })
+    expect(seen.prompts[0]).toContain('intent="fix" source="dialogs-pane" redacted="false"')
+    // The next packet is redacted again: the toggle was this packet's.
+    await ui.press({ key: 'msg:677791' })
+    await ui.press({ key: 'sheet:intent:fix' })
+    expect(seen.prompts[1]).toContain('redacted="true"')
+    await ui.unmount()
+  })
+
+  test('i in a chat opens the sheet on inspect for the cursor message; h then shows its intents', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1004, 92)
+    await ui.press({ key: 'key:inspect' })
+    expect((await ui.find({ key: 'inspect' }))?.text).toContain('Contact A (person) · Ask · redacted')
+    // A person's name is masked in what the agent reads.
+    expect((await ui.find({ key: 'inspect' }))?.text).toContain('#92 [name-')
+    await ui.press({ key: 'key:back' })
+    expect(await sheetIntents(ui)).toEqual(['1: do_it', '2: explain', '3: draft_reply', '4: raw'])
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'sheet' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('marks are ▪ in their own column, never inverse text', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openAndSelect($, clock)
+    const row = await ui.find({ key: 'msg:677791' })
+    expect(row?.text.startsWith('▸▪')).toBe(true)
+    expect(JSON.stringify(row)).not.toContain('"inverse":true')
+    await ui.press({ key: 'key:down' })
+    expect((await ui.find({ key: 'msg:677791' }))?.text.startsWith(' ▪')).toBe(true)
+    expect((await ui.find({ key: 'msg:677792' }))?.text.startsWith('▸ ')).toBe(true)
+    await ui.unmount()
+  })
+})
+
+describe('the send sheet keeps the ring on ▸ (the engine keeps it by place among the stops)', () => {
+  const stops = async (ui: Ui) =>
+    (await ui.findAll({ type: 'Button' })).flatMap(button => {
+      const key = String(button.props.key ?? '')
+      return key.startsWith('msg:') || key.startsWith('btn:') ? [key] : []
+    })
+
+  test('under the intents and the Ask field the chat is drawn without stops, ▸ kept; h or a send brings the cursor row back ringed', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1001, 677791)
+    expect(await stops(ui)).toContain('btn:677791:0:0')
+    await ui.press({ key: 'key:send' })
+    expect(await stops(ui)).toEqual([])
+    expect((await ui.find({ key: 'row:677791' }))?.text.startsWith('▸')).toBe(true)
+    expect((await ui.find({ key: 'card:677791' }))?.text).toContain('[ Retry ]')
+    await ui.press({ key: 'sheet:intent:raw' })
+    expect(await stops(ui)).toEqual([])
+    await ui.input({ key: 'sheet:ask', text: '' })
+    await ui.press({ key: 'key:back' })
+    expect((await ui.find({ key: 'msg:677791' }))?.props.autoFocus).toBe(true)
+    expect(await stops(ui)).toContain('btn:677791:0:0')
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'sheet:intent:fix' })
+    expect((await ui.find({ key: 'msg:677791' }))?.props.autoFocus).toBe(true)
+    await ui.unmount()
+  })
+
+  test('targets and inspect take the lower part; back on the intents the chat has no stops again', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1001, 677791)
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'key:back' })
+    expect(await stops(ui)).toEqual([])
     await ui.unmount()
   })
 })
@@ -405,27 +699,51 @@ describe('hidden band', () => {
     // The dialogs poll is 5 min since triage made watched dialogs live.
     await clock.advance(300_000)
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect((await band.find({ key: 'band:main' }))?.text).toContain('send to main')
+    // The band names the intent its ⏎ sends: a bot's chat, bots' last intent (Fix before any).
+    expect((await band.find({ key: 'band:main' }))?.text).toBe('⏎ send to main as Fix')
     await band.press({ key: 'band:main' })
     expect(seen.prompts[0]).toContain('<message id="677792"')
+    expect(seen.prompts[0]).toMatch(/\nIntent: Fix — /)
+    await band.unmount()
+  })
+
+  test("the band's ⏎ follows the sheet's last intent, but never Ask, which needs words", async ($, on) => {
+    let unread = 2
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, {
+      store: { mode: 'hidden', 'send.intents': { bot: 'explain', person: 'raw', other: 'raw' } },
+      tg: ran => (ran.argv[1] === 'dialogs' ? json(ALL_DIALOGS.map(d => (d.id === 1001 ? { ...d, unread } : d))) : tgAnswer(ran.argv)),
+    })
+    await $.session.start(START)
+    await clock.settle()
+    unread = 3
+    await clock.advance(300_000)
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    expect((await band.find({ key: 'band:main' }))?.text).toBe('⏎ send to main as Explain')
+    seen.store.set('send.intents', { bot: 'raw', person: 'raw', other: 'raw' })
+    await band.redraw()
+    expect((await band.find({ key: 'band:main' }))?.text).toBe('⏎ send to main as Fix')
     await band.unmount()
   })
 })
 
 describe('drafted reply', () => {
+  // Draft reply is a people intent (§4.6): every chat here reads as Contact A's thread.
+  const personTg = (argv: readonly string[]) => (argv[1] === 'read' ? json(PERSON_MESSAGES) : tgAnswer(argv))
+
   const draftRun = (plan: { allowed: boolean; reason: string }) => (ran: Ran) => {
     // tg's guard: --yes confirms a target outside allow.toml; `readonly = true` refuses either way.
-    if (ran.argv[1] !== 'send') return tgAnswer(ran.argv)
+    if (ran.argv[1] !== 'send') return personTg(ran.argv)
     const guard = plan.allowed || plan.reason.startsWith('readonly') || !ran.argv.includes('--yes') ? plan : { allowed: true, reason: 'confirmed with --yes' }
     if (ran.argv.includes('--dry-run')) return json({ action: 'send', target: {}, steps: [], guard })
     return json({ sent: [{ id: 677900 }] })
   }
 
-  async function drafted($: Engine, on: On, plan: { allowed: boolean; reason: string }, dialogs = DIALOGS, answer = 'On it, fixing now.') {
+  async function drafted($: Engine, on: On, plan: { allowed: boolean; reason: string }, dialogs = ALL_DIALOGS, answer = 'On it, fixing now.') {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { tg: ran => (ran.argv[1] === 'dialogs' ? json(dialogs) : draftRun(plan)(ran)) })
-    const ui = await openAndSelect($, clock)
-    await sendTo(ui, 'route:main', 'Draft reply')
+    const ui = await openChatAt($, clock, 1004, 92)
+    await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
     return { ui, seen }
@@ -433,10 +751,10 @@ describe('drafted reply', () => {
 
   test('the agent answer is drafted; check shows the plan; send runs the same tg send', async ($, on) => {
     const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('reply to #677791 in @example_bot')
+    expect((await ui.find({ key: 'draft' }))?.text).toContain('reply to #92 in Contact A')
     await ui.press({ key: 'draft:check' })
     const dry = seen.runs.find(one => one.argv.includes('--dry-run'))
-    expect(dry?.argv).toEqual(['tg', 'send', '@example_bot', '-', '--reply-to', '677791', '--plain', '--json', '--yes', '--dry-run'])
+    expect(dry?.argv).toEqual(['tg', 'send', '1004', '-', '--reply-to', '92', '--plain', '--json', '--yes', '--dry-run'])
     expect(dry?.stdin).toBe('On it, fixing now.')
     expect((await ui.find({ key: 'draft' }))?.text).toContain('plan ok: allowlisted')
     await ui.press({ key: 'draft:send' })
@@ -448,7 +766,7 @@ describe('drafted reply', () => {
 
   test("outside allow.toml: the owner's check and send carry --yes, the plan is allowed, and the whole text shows before send", async ($, on) => {
     const long = 'On it: the handler crashed on an empty callback payload, the fix is merged and deployed, so please press Settings once more and tell me what you see.'
-    const { ui, seen } = await drafted($, on, { allowed: false, reason: 'target is not in the allowlist' }, DIALOGS, long)
+    const { ui, seen } = await drafted($, on, { allowed: false, reason: 'target is not in the allowlist' }, ALL_DIALOGS, long)
     await ui.press({ key: 'draft:check' })
     expect((await ui.find({ key: 'draft' }))?.text).toContain('plan ok: confirmed with --yes')
     // Longer than the pane is wide: drawn whole and wrapped, not as a one-line field or a truncated line.
@@ -463,8 +781,10 @@ describe('drafted reply', () => {
     await ui.unmount()
   })
 
+  // The sheet offers Draft reply in no bot chat, so this BotFather is a user-kind chat with its
+  // username: the refusal by name, checked before tg runs, must hold however a draft came to be.
   test('BotFather: check and send run nothing, whatever the guard would say', async ($, on) => {
-    const dialogs = DIALOGS.map(one => (one.id === 1001 ? { ...one, username: 'BotFather', title: 'BotFather' } : one))
+    const dialogs = ALL_DIALOGS.map(one => (one.id === 1004 ? { ...one, username: 'BotFather', title: 'BotFather' } : one))
     const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' }, dialogs)
     await ui.press({ key: 'draft:check' })
     expect((await ui.find({ key: 'draft' }))?.text).toContain('BotFather is read-only')
@@ -497,14 +817,13 @@ describe('drafted reply', () => {
   async function twoDrafts($: Engine, on: On, tgAsync: (ran: Ran) => Promise<ProcessRunResult>, second: number) {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { tgAsync })
-    const ui = await openAndSelect($, clock)
-    await sendTo(ui, 'route:main', 'Draft reply')
+    const ui = await openChatAt($, clock, 1004, 92)
+    await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer: 'First draft.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
-    if (second !== 1001) await ui.press({ key: `dialog:${second}` })
-    await ui.press({ key: 'key:up' })
-    await ui.press({ key: 'key:mark' })
-    await sendTo(ui, 'route:main', 'Draft reply')
+    // The cursor lands on the newest message, #92 again: the second packet is about it.
+    if (second !== 1004) await ui.press({ key: `dialog:${second}` })
+    await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-2' })
     return { ui, seen }
   }
@@ -513,11 +832,12 @@ describe('drafted reply', () => {
     $.turn.complete({ answer: 'Second draft.', durationMs: 1, isAborted: false, turnId: 't-2', reason: 'answer' })
 
   test('a draft that lands while check runs gets no plan of its own, and BotFather is never sent to', async ($, on) => {
-    const dialogs = DIALOGS.map(one => (one.id === 1002 ? { ...one, kind: 'bot', username: 'BotFather', title: 'BotFather' } : one))
+    // As above: BotFather by username in a chat whose newest message is a person's.
+    const dialogs = ALL_DIALOGS.map(one => (one.id === 1002 ? { ...one, kind: 'user' as const, username: 'BotFather', title: 'BotFather' } : one))
     let isFinished = false
     const { ui, seen } = await twoDrafts($, on, async ran => {
       if (ran.argv[1] === 'dialogs') return json(dialogs)
-      if (ran.argv[1] !== 'send') return tgAnswer(ran.argv)
+      if (ran.argv[1] !== 'send') return personTg(ran.argv)
       if (ran.argv.includes('--dry-run') && !isFinished) {
         isFinished = true
         await finishSecond($) // main answers the BotFather packet while the first draft's dry run is out
@@ -534,14 +854,14 @@ describe('drafted reply', () => {
   test('a draft that lands while send runs is not marked sent', async ($, on) => {
     let isFinished = false
     const { ui, seen } = await twoDrafts($, on, async ran => {
-      if (ran.argv[1] !== 'send') return tgAnswer(ran.argv)
+      if (ran.argv[1] !== 'send') return personTg(ran.argv)
       if (ran.argv.includes('--dry-run')) return json({ action: 'send', target: {}, steps: [], guard: { allowed: true, reason: 'confirmed with --yes' } })
       if (!isFinished) {
         isFinished = true
         await finishSecond($) // main answers the second packet while the first draft is being sent
       }
       return json({ sent: [{ id: 677900 }] })
-    }, 1001)
+    }, 1004)
     // twoDrafts sent the second packet after the first draft came; check the first one now.
     await ui.press({ key: 'draft:check' })
     await ui.press({ key: 'draft:send' })

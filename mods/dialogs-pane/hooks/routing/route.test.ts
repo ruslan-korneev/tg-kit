@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { LedgerEntry, Pin, RadarEntry, RouteIntent } from '../../types'
+import type { LedgerEntry, Pin, RadarEntry } from '../../types'
 import { BOT, REPLY, SENT, msg } from '../packet/fixtures'
 import {
   addEntry,
@@ -11,7 +11,6 @@ import {
   feedPin,
   ledgerRowText,
   legsOf,
-  nextIntent,
   onMainTurnStart,
   onRadar,
   onTurnComplete,
@@ -42,16 +41,6 @@ const entry = (over: Partial<LedgerEntry>): LedgerEntry => ({
 const TESTER: RadarEntry = { agentId: 'a1', label: 'tester', type: 'general-purpose', state: 'running' }
 
 describe('intents and routes', () => {
-  test('i cycles every intent and comes back', () => {
-    let at: RouteIntent = 'fix'
-    const seen: RouteIntent[] = [at]
-    for (let i = 0; i < 6; i++) {
-      at = nextIntent(at)
-      seen.push(at)
-    }
-    expect(seen).toEqual(['fix', 'reproduce', 'explain', 'test', 'draft_reply', 'raw', 'fix'])
-  })
-
   test('the radar folds statuses into idle / running / done, live agents first', () => {
     const radar = radarOf([
       { id: 'a3', description: 'old', type: 'Explore', status: 'completed' },
@@ -65,14 +54,15 @@ describe('intents and routes', () => {
     ])
   })
 
-  test('broadcast rows: main on, live agents and a new one off, intents split', () => {
-    const rows = broadcastRows([TESTER, { ...TESTER, agentId: 'a9', state: 'done' }], 'fix')
+  test('broadcast rows: main on, live agents and a new one off, the split handed round', () => {
+    const split = ['reproduce', 'test', 'explain'] as const
+    const rows = broadcastRows([TESTER, { ...TESTER, agentId: 'a9', state: 'done' }], 'fix', split)
     expect(rows.map(row => [row.to.kind, row.intent, row.isOn])).toEqual([
       ['main', 'fix', true],
       ['agent', 'reproduce', false],
       ['new', 'test', false],
     ])
-    const more = addNewLeg(rows)
+    const more = addNewLeg(rows, split)
     expect(more.at(-1)).toEqual({ to: { kind: 'new' }, intent: 'test', isOn: true })
     expect(routeOfRows(rows.map(row => ({ ...row, isOn: false })))).toBeNull()
     const chosen = routeOfRows(more)
