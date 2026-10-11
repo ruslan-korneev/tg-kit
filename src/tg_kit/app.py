@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import signal
 import sys
 from collections.abc import AsyncIterator, Callable, Coroutine
@@ -20,6 +21,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 
 import typer
+from typer._click.core import Context as ClickContext
+from typer._click.parser import _OptionParser, _ParsingState
+from typer.core import TyperCommand
 
 from tg_kit.allowlist import Allowlist, load_allowlist
 from tg_kit.config import Config, config_dir, load_config
@@ -36,6 +40,7 @@ __all__ = [
     "Globals",
     "JsonOpt",
     "Runtime",
+    "TgTyper",
     "TimeoutOpt",
     "VerboseOpt",
     "YesOpt",
@@ -47,7 +52,45 @@ __all__ = [
     "run",
 ]
 
-app = typer.Typer(
+# A marked chat id (-100… channel, -… group). No option of ours is a digit, so
+# such a token is always a PEER, never a flag.
+_NEGATIVE_ID = re.compile(r"-\d+")
+
+
+class _NegativeIdParser(_OptionParser):
+    """Click's parser, except a negative id is a positional argument, not `-1…` flags.
+
+    Only tokens Click would read as options reach `_process_opts`; option values
+    (`--after -5`) and everything after `--` never do. Any other unknown flag
+    still fails with "No such option", unlike `ignore_unknown_options`, which
+    would turn `tg send me --typo` into a message saying "--typo".
+    """
+
+    def _process_opts(self, arg: str, state: _ParsingState) -> None:
+        if _NEGATIVE_ID.fullmatch(arg):
+            state.largs.append(arg)
+        else:
+            super()._process_opts(arg, state)
+
+
+class NegativeIdCommand(TyperCommand):
+    def make_parser(self, ctx: ClickContext) -> _OptionParser:
+        parser = _NegativeIdParser(ctx)
+        for param in self.get_params(ctx):
+            param.add_to_parser(parser, ctx)
+        return parser
+
+
+class TgTyper(typer.Typer):
+    """`typer.Typer` whose commands accept negative chat ids (`tg read -100…`)."""
+
+    def command(  # type: ignore[override]
+        self, name: str | None = None, *, cls: type[TyperCommand] | None = None, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        return super().command(name, cls=cls or NegativeIdCommand, **kwargs)
+
+
+app = TgTyper(
     add_completion=False,
     no_args_is_help=True,
     pretty_exceptions_enable=False,
