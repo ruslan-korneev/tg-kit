@@ -11,6 +11,9 @@ The rules, which the consumers (agents, the Dialogs Pane mod) rely on:
    belongs to (message ids there are per account). Such deletions are reported
    only for ids this watch has printed; channel and supergroup deletions always.
 5. `--idle-exit` ends the stream after that long with nothing printed (exit 0).
+6. `--topic` keeps one forum topic: its messages, edits and typing. Telegram does
+   not say which topic a deletion was in, so deletions are reported only for ids
+   this watch has printed, as in rule 4.
 
 `Follower` and `follow` are pure over an event source and a clock, so these
 rules are unit-tested without a network.
@@ -25,7 +28,14 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from tg_kit.errors import UsageError
-from tg_kit.model import DeleteEvent, MessageEvent, MessageView, TypingEvent, WatchEvent
+from tg_kit.model import (
+    GENERAL_TOPIC,
+    DeleteEvent,
+    MessageEvent,
+    MessageView,
+    TypingEvent,
+    WatchEvent,
+)
 
 __all__ = [
     "EVENT_KINDS",
@@ -67,10 +77,11 @@ def parse_events(value: str | None) -> frozenset[str]:
 
 @dataclass
 class Follower:
-    """Decides what of the raw stream gets printed (rules 1, 3, 4)."""
+    """Decides what of the raw stream gets printed (rules 1, 3, 4, 6)."""
 
     chat_ids: frozenset[int]
     kinds: frozenset[str]
+    topic: int | None = None  # the one forum topic kept (rule 6)
     replayed: set[tuple[int, int]] = field(default_factory=set)
     _chat_of: dict[int, int] = field(default_factory=dict)
 
@@ -90,9 +101,13 @@ class Follower:
             return [e for e in self._attribute(event) if "delete" in self.kinds]
         if isinstance(event, TypingEvent):
             ok = event.chat_id in self.chat_ids and "typing" in self.kinds
-            return [event] if ok else []
+            # Typing in General names no topic; the watched chat is a forum (rule 6).
+            in_topic = self.topic is None or (event.top_msg_id or GENERAL_TOPIC) == self.topic
+            return [event] if ok and in_topic else []
         view = event.view
         if view.chat_id not in self.chat_ids:
+            return []
+        if self.topic is not None and view.topic_id != self.topic:
             return []
         key = (view.chat_id, view.id)
         if not event.edit and key in self.replayed:
@@ -101,7 +116,7 @@ class Follower:
         return [event] if kind_of(event) in self.kinds else []
 
     def _attribute(self, event: DeleteEvent) -> list[DeleteEvent]:
-        if event.chat_id is not None:
+        if event.chat_id is not None and self.topic is None:
             return [event] if event.chat_id in self.chat_ids else []
         by_chat: dict[int, list[int]] = {}
         for msg_id in event.ids:

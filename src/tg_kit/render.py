@@ -6,6 +6,7 @@ Compact, one line per message, buttons on indented lines under it:
       [0:0 cb "My bot"] [0:1 cb "Back"]
     #677792 09-29 14:02 me ↩677791: /start
     #677794 09-29 14:05 @example_bot ✎×2: updated text {👍3}
+    #812 09-29 14:06 [topic:12] @example_bot ↩809: a reply inside forum topic 12
 
 `tg watch` adds typing and delete lines, and one JSON object per line with `--jsonl`:
 
@@ -20,6 +21,11 @@ Compact, one line per message, buttons on indented lines under it:
     5 Team Projects (shared)
 
 `tg folders --chats` ends each folder line with its size: `2 Work [3 unread] · 14 chats`.
+
+`tg topics` prints one line per forum topic:
+
+    12 Releases 📌 [5 unread, 1 mention] — v2.3 is out
+    1 General 🔒 — welcome
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ from tg_kit.model import (
     MessageEvent,
     MessageView,
     Sender,
+    TopicView,
     TypingEvent,
     WatchEvent,
 )
@@ -53,6 +60,8 @@ __all__ = [
     "message_json",
     "ready_json",
     "sender_label",
+    "topic_json",
+    "topic_line",
 ]
 
 # List commands cut text here; `tg msg` and `--full` never do. 300 keeps a
@@ -87,10 +96,13 @@ def compact(  # noqa: C901, PLR0912 — one branch per case keeps the contract r
     head = f"#{view.id} {stamp} "
     if view.chat_title:
         head += f"[{view.chat_title}] "
+    if view.topic_id is not None:
+        head += f"[topic:{view.topic_id}] "
     head += sender_label(view)
     if view.via_bot:
         head += f" via @{view.via_bot}"
-    if view.reply_to:
+    # A message posted straight into a topic "replies" to the topic's id: not a reply.
+    if view.reply_to and view.reply_to != view.topic_id:
         head += f" ↩{view.reply_to}"
     if view.forward:
         head += f" ⤳{view.forward.from_name or view.forward.from_id or 'hidden'}"
@@ -199,6 +211,7 @@ def message_json(view: MessageView) -> dict[str, object]:
         "out": view.out,
         "text": view.text,
         "reply_to": view.reply_to,
+        "topic_id": view.topic_id,
         "forward": (
             {
                 "from_id": view.forward.from_id,
@@ -245,22 +258,59 @@ def dialog_json(view: DialogView) -> dict[str, object]:
         "last_id": view.last_id,
         "last_date": view.last_date.isoformat() if view.last_date else None,
         "last_text": view.last_text,
+        "forum": view.forum,
     }
 
 
 def dialog_line(view: DialogView) -> str:
     name = f"@{view.username}" if view.username else view.title
+    forum = " (forum)" if view.forum else ""
     marks = (" 📌" if view.pinned else "") + (" 🔕" if view.muted else "")
+    unread = _counts(view.unread, view.mentions)
+    return f"{view.id} {view.kind} {name}{forum}{marks}{unread} — {_preview(view.last_text)}"
+
+
+def _counts(unread: int, mentions: int) -> str:
     counts = []
-    if view.unread:
-        counts.append(f"{view.unread} unread")
-    if view.mentions:
-        counts.append(f"{view.mentions} mention{'s' if view.mentions > 1 else ''}")
-    unread = f" [{', '.join(counts)}]" if counts else ""
-    preview = view.last_text.replace("\n", " ⏎ ")
+    if unread:
+        counts.append(f"{unread} unread")
+    if mentions:
+        counts.append(f"{mentions} mention{'s' if mentions > 1 else ''}")
+    return f" [{', '.join(counts)}]" if counts else ""
+
+
+def _preview(text: str) -> str:
+    preview = text.replace("\n", " ⏎ ")
     if len(preview) > DIALOG_PREVIEW:
         preview = preview[:DIALOG_PREVIEW] + "…"
-    return f"{view.id} {view.kind} {name}{marks}{unread} — {preview}"
+    return preview
+
+
+def topic_json(view: TopicView) -> dict[str, object]:
+    """One `tg topics --json` row (documented in README → JSON output)."""
+    return {
+        "id": view.id,
+        "title": view.title,
+        "icon_color": view.icon_color,
+        "unread": view.unread,
+        "mentions": view.mentions,
+        "pinned": view.pinned,
+        "closed": view.closed,
+        "hidden": view.hidden,
+        "last_id": view.last_id,
+        "last_date": view.last_date.isoformat() if view.last_date else None,
+        "last_text": view.last_text,
+    }
+
+
+def topic_line(view: TopicView) -> str:
+    marks = (
+        (" 📌" if view.pinned else "")
+        + (" 🔒" if view.closed else "")
+        + (" (hidden)" if view.hidden else "")
+    )
+    unread = _counts(view.unread, view.mentions)
+    return f"{view.id} {view.title}{marks}{unread} — {_preview(view.last_text)}"
 
 
 def folder_json(folder: Folder, unread: int | None = None) -> dict[str, object]:
