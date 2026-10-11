@@ -24,6 +24,12 @@ for the ring checks. `echo 40 > "$FAKE_TG_DIR/flood"` makes the next
 `folders --chats` exit 5 with FLOOD_WAIT 40s (the file is removed), as tg does
 past flood_sleep_threshold. The pass bumps a chat that `watch.jsonl` wrote to,
 so a later pass agrees with the live events.
+
+States (§7.4, T7), each a file in $FAKE_TG_DIR while it exists: `auth` makes
+every call exit 3 (not logged in), `down` every call exit 1, `readonly` every
+write exit 7 as tg's guard refuses it, --yes or not, and `slow` (seconds,
+default 5) makes every call wait first, for the loading rows. The
+folder Quiet, last, lists no chat: the empty folder.
 """
 
 import json
@@ -78,7 +84,7 @@ FOLDERS = [
 ] + [
     {"id": 20 + k, "title": title, "kind": "shared" if k % 4 == 3 else "folder", "chats": [1003]}
     for k, title in enumerate(["Clients", "Family", "Study", "Travel", "Reading", "Dev", "Old", "Music", "Sport", "Friends"])
-]
+] + [{"id": 40, "title": "Quiet", "kind": "folder", "chats": []}]
 ALLOW_FILE = os.path.join(STATE, "allow.json")
 # Dev Team is allowed; `tg allow add PEER --yes` adds to $FAKE_TG_DIR/allow.json, as the card's ⏎ asks the owner to run.
 ALLOW = json.load(open(ALLOW_FILE)) if os.path.exists(ALLOW_FILE) else [1002]
@@ -178,6 +184,13 @@ def fail(text, code):
     sys.exit(code)
 
 
+def refuse(verdict, plan, hint):
+    """tg's refusal on stderr: the plan first, then the guard's reason (common.py, app.py)."""
+    print("refused; nothing was sent. The plan was:", file=sys.stderr)
+    print(json.dumps({**plan, "guard": verdict}), file=sys.stderr)
+    fail(f"{verdict['reason']}\n  fix: {hint}", 7)
+
+
 def guard(argv, pid):
     """tg's guard, as far as the pane meets it: allow.toml unless --yes.
 
@@ -189,6 +202,8 @@ def guard(argv, pid):
         with open(os.path.join(STATE, "calls.log"), "a") as log:
             log.write(f"!! {loud}\n")
         fail(loud, 1)
+    if os.path.exists(os.path.join(STATE, "readonly")):
+        return {"allowed": False, "reason": "readonly = true in config.toml: every write is refused"}
     if pid not in ALLOW and "--yes" not in argv:
         return {"allowed": False, "reason": "target is not in the allowlist"}
     return {"allowed": True, "reason": "allowlisted" if pid in ALLOW else "confirmed with --yes"}
@@ -198,9 +213,21 @@ def flag(argv, name, default=None):
     return argv[argv.index(name) + 1] if name in argv else default
 
 
+def states():
+    """The §7.4 states the lab switches on with a file: slow first, then not logged in or down."""
+    slow = os.path.join(STATE, "slow")
+    if os.path.exists(slow):
+        time.sleep(float(open(slow).read().strip() or "5"))
+    if os.path.exists(os.path.join(STATE, "auth")):
+        fail("not logged in\n  fix: tg login", 3)
+    if os.path.exists(os.path.join(STATE, "down")):
+        fail("the fake is down (rm $FAKE_TG_DIR/down)", 1)
+
+
 def main(argv):
     with open(os.path.join(STATE, "calls.log"), "a") as log:
         log.write(" ".join(argv) + "\n")
+    states()
     cmd = argv[0] if argv else ""
     if cmd == "whoami":
         out(ME)
@@ -263,7 +290,7 @@ def main(argv):
         if "--dry-run" in argv:
             out({"action": "send", "target": {"id": pid}, "steps": [], "guard": verdict})
         if not verdict["allowed"]:
-            fail(f"{verdict['reason']}; rerun with --yes only if the owner agreed\n  fix: tg allow add", 7)
+            refuse(verdict, {"action": "send", "target": {"id": pid}}, "ask the account owner; add --yes only with their explicit OK")
         text = sys.stdin.read()
         sent = msg(int(time.time()) % 100000 + 700000, text, ME, pid, True)
         replies = [msg(sent["id"] + 1, f"got: {text}", BOT, pid)] if pid == 1001 and "--wait" in argv else []
@@ -271,7 +298,7 @@ def main(argv):
     if cmd == "press":
         verdict = guard(argv, pid)
         if not verdict["allowed"]:
-            fail(f"{verdict['reason']}\n  fix: tg allow add", 7)
+            refuse(verdict, {"action": "press", "target": {"id": pid}}, "ask the account owner; add --yes only with their explicit OK")
         target = int(argv[2])
         edited = msg(target, "Settings saved", BOT, pid, buttons=[[RETRY[0][1]]])
         out({"button": BUTTONS[0][0], "answer": {"alert": None, "toast": "Saved", "url": None}, "replies": [edited]})
