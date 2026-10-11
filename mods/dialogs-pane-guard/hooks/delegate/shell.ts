@@ -290,8 +290,12 @@ const LAUNCHER_VALUE = new Set([
   '--cache-dir', '-w', '--spec', '--pip-args', '--color',
 ])
 
-/** Past a launcher's options to its next word; `-m X` is Python's module X. */
-function pastOptions(words: readonly string[]): string[] {
+/**
+ * Past a launcher's options to its next word; `-m X` is Python's module X.
+ * `--directory DIR` (uv's only option that moves where the command runs; uv
+ * 0.12 `--help`) goes into `dirs`.
+ */
+function pastOptions(words: readonly string[], dirs: string[]): string[] {
   let rest = [...words]
   for (;;) {
     const word = rest[0]
@@ -299,27 +303,39 @@ function pastOptions(words: readonly string[]): string[] {
     if (word === '--') return rest.slice(1)
     if (word === '-m' || word === '--module') return ['python', '-m', rest[1] ?? '']
     if (word.startsWith('--module=')) return ['python', '-m', word.slice(9)]
+    if (word === '--directory') dirs.push(rest[1] ?? '')
+    if (word.startsWith('--directory=')) dirs.push(word.slice(12))
     rest = rest.slice(word.includes('=') || !LAUNCHER_VALUE.has(word) ? 1 : 2)
   }
 }
 
-/** What a launcher runs: `uv run X`, `uv tool run X`, `uvx X`, `pipx run X`; null when it is no launcher. */
-export function launched(simple: Simple): string[] | null {
+/**
+ * What a launcher runs: `uv run X`, `uv tool run X`, `uvx X`, `pipx run X`,
+ * and the directories it moves to first; null when it is no launcher.
+ */
+export function launched(simple: Simple): { words: string[]; dirs: string[] } | null {
   const name = base(simple[0] ?? '').toLowerCase()
-  if (name === 'uvx') return pastOptions(simple.slice(1))
+  const dirs: string[] = []
+  if (name === 'uvx') return { words: pastOptions(simple.slice(1), dirs), dirs }
   if (name !== 'uv' && name !== 'pipx') return null
-  let rest = pastOptions(simple.slice(1))
-  if (name === 'uv' && rest[0] === 'tool') rest = pastOptions(rest.slice(1))
-  return rest[0] === 'run' ? pastOptions(rest.slice(1)) : null
+  let rest = pastOptions(simple.slice(1), dirs)
+  if (name === 'uv' && rest[0] === 'tool') rest = pastOptions(rest.slice(1), dirs)
+  return rest[0] === 'run' ? { words: pastOptions(rest.slice(1), dirs), dirs } : null
 }
 
 /**
  * The reading with what its launchers run added (`uv run gh pr merge` → `gh
  * pr merge` too), launchers in launchers as well; deeper than the reader
- * goes is isTooDeep. The grant's tg rule and the hard stops both read it.
+ * goes is isTooDeep. A launcher that moves first (`--directory DIR`, or
+ * UV_WORKING_DIR set for uv) gets a `cd DIR` before what it runs, so paths
+ * are read from there. The grant's tg rule and the hard stops both read it.
  */
 export function seeThrough(reading: Reading): Reading {
   const out: Reading = { ...reading, commands: [...reading.commands], expanded: new Set(reading.expanded), assigns: [...reading.assigns] }
+  // UV_WORKING_DIR=DIR, as a prefix, through env or exported: uv's --directory by another name.
+  const working = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))]
+    .filter(word => word.startsWith('UV_WORKING_DIR='))
+    .map(word => word.slice(15))
   let layer = reading.commands
   for (let depth = 0; layer.length > 0; depth++) {
     const next: Simple[] = []
@@ -330,7 +346,9 @@ export function seeThrough(reading: Reading): Reading {
         out.isTooDeep = true
         continue
       }
-      const read = expand(inner, 0)
+      const isUv = base(simple[0] ?? '').toLowerCase() !== 'pipx'
+      for (const dir of [...(isUv ? working : []), ...inner.dirs]) out.commands.push(['cd', dir])
+      const read = expand(inner.words, 0)
       merge(out, read)
       next.push(...read.commands)
     }

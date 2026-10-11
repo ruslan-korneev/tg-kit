@@ -515,17 +515,19 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
   const tg = seen.commands.find(runsTg)
   if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run, in either commands mode; the Speaker is the only voice in the chat`)
   const start = scope.worktrees[0] ?? '/'
-  // Where each simple command stands: its worktree, and where a `cd` before it went (null: it cannot be told).
+  // Where each simple command stands: its worktree, and where a `cd` before it went.
   // Read over `seen`, so a launcher's own `sh -c 'cd …'` counts; its first commands are the reading's, in order.
   const cwds: string[][] = []
-  let cwd: string | null = start
+  let cwd = start
   for (const simple of seen.commands) {
-    cwds.push([...new Set([start, cwd ?? start])])
+    cwds.push([...new Set([start, cwd])])
     const name = base(simple[0] ?? '')
     if (name === 'cd' || name === 'pushd') {
       const target = operands(simple)[0]
       const expanded = target === undefined ? scope.home : expandWord(target, scope)
-      cwd = expanded === null ? null : resolvePath(expanded, cwd ?? start, scope.home)
+      // Fail closed, in both modes: past a move it cannot follow, no relative path can be read.
+      if (expanded === null || expanded === '') return refuse(`${simple.join(' ').slice(0, 60)}: a directory the grant cannot resolve (a variable, or a launcher's --directory); write the path out`)
+      cwd = resolvePath(expanded, cwd, scope.home)
     }
   }
   // tg-kit's config directory, reads too, in either mode (decision 11): allow.toml, the sessions, the config.

@@ -311,6 +311,26 @@ describe('the grant', () => {
     }
   })
 
+  // The review's X5: a launcher's --directory (or UV_WORKING_DIR) moves where its command's paths start.
+  const X5 = [
+    'uv --directory /home/me/.config run cat tg-kit/sessions/main.session', 'uv run --directory /home/me/.config cat tg-kit/sessions/main.session',
+    'uv --directory=/home/me/.config run cat tg-kit/allow.toml', 'uvx --directory /home/me/.config cat tg-kit/allow.toml', 'uv tool run --directory=/home/me/.config cat tg-kit/allow.toml',
+    'uv --directory /home/me/code run cat app/secret', 'uv run --directory /home/me/code sh -c "echo x > app/secret"', 'uv --directory /home/me run --directory code cat app/secret',
+    'UV_WORKING_DIR=/home/me/code uv run cat app/secret', 'env UV_WORKING_DIR=/home/me/.config uvx cat tg-kit/allow.toml', 'export UV_WORKING_DIR=/home/me/.config; uv run cat tg-kit/allow.toml',
+    'uv run --directory $D cat x', 'uv run --directory= cat x', 'cd $D && cat x',
+  ]
+  for (const command of X5) {
+    test(`X5: ${command} is refused in both modes`, () => {
+      for (const g of both) expect([g.commands, ok('Bash', { command }, g)]).toEqual([g.commands, false])
+    })
+  }
+
+  test('X5: a --directory into the worktree still passes under any (checks refuses the launcher itself)', () => {
+    for (const command of [`uv run --directory ${WT}/src cat a.ts`, 'uv run --directory src cat a.ts', `uvx --directory=${WT} ruff check .`, 'UV_WORKING_DIR=src uv run cat a.ts']) {
+      expect([command, ok('Bash', { command }, grant({ commands: 'any' }))]).toEqual([command, true])
+    }
+  })
+
   test("decision 11: the Worker's own worktree under tg-kit's config still passes, in both modes; tg named as data is no run", () => {
     for (const command of [
       `cat ${WT}/README.md`, `echo x > ${WT}/out.txt`, `ls ~/.config/tg-kit/worktrees/app-task-1/src`, `uv run pytest > ${WT}/log.txt 2>&1`,
