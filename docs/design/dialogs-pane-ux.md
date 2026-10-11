@@ -61,6 +61,23 @@ above the prompt.
 | A plain `Button`'s label | the engine draws the hotkey before the label (`3: …`) and does not cut the label: a long one wraps. A row that must stay one line cuts its own text, and a mark like `▸` sits outside the Button (T3, live) |
 | `$.ui.ask` from a key in the pane | the dialog takes the keys; once it closes they go to the prompt, not back to the pane, and the header reads `ctrl+x tab: keys` (T3, live). Its options take digits: `2` picks the second. `$.ui.focus` cannot bring the keys back (it moves a ring only in a site that holds them); `$.ui.open` with `focus` asks for them, and its doc grants that only while the prompt holds the keys over an empty box (not yet seen live). §5.4 leans on it, Appendix A checks it |
 
+T11 ran §10.11's probes on 2026-10-11: claude 2.1.296, the default dark theme, tmux 3.5a inside
+Alacritty (the owner's terminal), the throwaway mod `dev/probes/tg-probes` (`/probe <view>`,
+`/probe-card on|off`) and, for P8, the built pane on the fake tg. Each result was read off
+`tmux capture-pane -e`, so a colour is quoted as the escape the engine wrote. "tmux" means a
+session inside tmux; "truecolor" means the same claude run with `TMUX` and `TERM_PROGRAM` unset.
+
+| Probe | Verdict | What was seen | Fallback taken |
+| --- | --- | --- | --- |
+| P1 hex in `color` and `borderColor` | pass | `#CBA6F7` draws on a Text and a round border in the Pane, and on the AbovePrompt card's border (`register.tsx:156`, `:195`): `38;2;203;166;247` truecolor, `38;5;183` in tmux (the engine downsamples there, P7) | — |
+| P2 a title in the top border | pass, by another join | `borderTop={false}` is refused and the engine draws its own pane: `ui.render (Pane) refused: Box prop "borderTop" is not allowed`. A full round border with a sibling `Box position="absolute" top={0} left={2}` holding ` TITLE `, and one at `right={2}` for the corner, paints over the top edge: `╭─ FOR YOU · 2 ─────── y: all ─╮`, the title in the border's escape (`38;5;223` both) (`register.tsx:67–80`). `bottom={0}` does the same on the bottom edge in AbovePrompt (`╰─ ⏎ open · q: hide ──╯`). An absolute Box inside the bordered Box at `top={-1}` is clipped and draws nothing | none needed: no Text sides, no extra row |
+| P3 the compact card with statuspane 1.3.3 | pass | the card chains `next(e)` and stacks under statuspane's card, no blank row, both right-aligned. ctrl+x tab puts the inverse ring on its `autoFocus` row; `j` and `k` move it, ⏎ presses the row, `q` (a Button in a `display: "none"` Box) hides the card. Seen at 180 and 100 columns, and at 60, where statuspane steps aside. Ours ends one column right of statuspane's (column 94 against 93 at 100): statuspane pads `paddingRight={1}`. Only seen with ours as the outer plugin (`--plugin-dir`) | — |
+| P4 the Pane's grey fill | fail | the fill is the engine's: `48;2;38;38;38` (#262626) truecolor, `48;5;235` in tmux, on the body, the ✕ row and the divider. No Pane prop sets it. A root `backgroundColor` paints only the rows the tree has; `height="100%"` does not grow it; `height={scroll.bodyRows}` with `#1E1E2E` paints every body row full width, but the ✕ row and the last row keep #262626. No theme key resolved to #262626 (`background` is a cyan, `0;204;204`) | accepted; LOG fills the height (§10.5) |
+| P5 ⚡ in the 3-cell symbol column | partial | the engine and tmux count `⚡` (and `⚡︎` with VS15) as two cells: the probe column's right border lines up (`register.tsx:162`). The engine writes the `ok` escape before it (`38;5;151`). How a terminal draws it was not seen: `screencapture` gave a black image (no screen-recording permission). From the font, not the screen: Alacritty's MesloLGS Nerd Font Mono has a monochrome `zap` glyph for U+26A1, so Alacritty should draw it in the fg colour, not as a colour emoji. Not tested: Terminal.app, kitty, iTerm2 and Ghostty (the last two not installed). The same font lacks `⬡` (U+2B21) and `⌗` (U+2317), so both draw from a fallback font, look unseen | `⚡` stays (decision 3) until someone looks at it in a terminal; `↯` is ready |
+| P6 theme keys | pass | all 23 typed `ThemeKey`s resolve, and so do theme keys outside the type: `fastMode`, `rate_limit_fill`, `rate_limit_empty`, `professionalBlue`, `chromeYellow`, `clawd_body`, `briefLabelYou`, `briefLabelClaude`, `selectionBg`, `userMessageBackground`, `claudeShimmer`, `warningShimmer`, `permissionShimmer`, `background`, and the eight `*_FOR_SUBAGENTS_ONLY`. An unknown key (`nopeNotAKey`, `secondaryText`) draws in the default colour, no throw, no refusal; a bad hex (`#zzz`) draws black. In the dark theme `suggestion` = `permission` = `remember` (`177;185;249`), and `merged` = `autoAccept` (`175;135;255`). A plugin's `$.ui.status` draws `⚠ name: …` in `warning` (`38;5;220`) | — |
+| P7 colour depth | pass, with a catch | nothing reports the depth to a plugin (`RenderViewport` has `columns`, `rows`, `isFullscreen`). The engine picks it itself: truecolor outside tmux; 256 inside tmux, even with `COLORTERM=truecolor` or `FORCE_COLOR=3`; 16 with `TERM=xterm` and no `COLORTERM`. At 256, `mocha` loses three pairs: peach and yellow both `223`, blue and sky both `153`, red and maroon both `217`. At 16, the hex collapse: mauve, red, peach, yellow, blue, sky, pink and text become `97`; green, teal and subtext `37`; overlay `34`; surface `30` (black, so borders vanish on a black background). Named colours stay apart (`magenta` → `35`, or `38;5;169` at 256) | `ansi` and `mocha256` palettes (decision 8, §10.2) |
+| P8 the key line, dim | pass, unchanged | the built pane on the fake tg, without the keys: the bar's labels `38;5;246`, their hotkey letters `38;5;153` (accent, not dimmed), `ctrl+x tab: keys` dim in the header; with the keys, the labels in the default colour. The probe's line, with a dim `ctrl+x tab: keys` Text before the Buttons (`register.tsx:102`), draws the same escapes and drops the text once the pane holds the keys; `j`, `w` and `m` press. Appendix A's check: `j` moved ▸ from Contact A to Contact B, `q` closed the pane. With statuspane's band up, ctrl+x tab took three presses to reach the pane | — |
+
 ## 2. Audit of today's UX
 
 Ranked by how much each one stops the owner. "Today" is `feat/dialogs-pane` at 3cbfb6b.
@@ -2013,41 +2030,61 @@ hotkey. §10.10 lists exactly what v2 changes in §3–§7, rule by rule.
 - `theme` (the default) uses Claude Code's theme key names, so the pane follows the owner's theme,
   light themes included.
 - `mocha` uses Catppuccin Mocha's fixed colours and is meant for dark terminals.
+- `mocha256` is `mocha` with five hex values moved so that each lands on a 256-colour cell of its
+  own. It is meant for tmux, where the engine draws at 256 colours (P7).
+- `ansi` uses the 16 colour names, for a terminal without 256 colours (P7).
 
 This is the same shape as flightdeck's `palette` (`theme` and `pastel`). Code names a role, never
 a colour. The role table below is the contract: it replaces `TOKEN` (`ui/model.ts:14`), and every
 task codes against these role names.
 
-| Role | Used for | `theme` (theme key) | `mocha` | 16-colour |
-| --- | --- | --- | --- | --- |
-| `accent` | ▸, the current folder tab, the focused card's border, `TG` in the header | `merged` | mauve `#CBA6F7` | `magenta` |
-| `unread` | the unread count, `N UNREAD`, `0: stop all`, error replies, ✗ | `error` | red `#F38BA8` | `red` |
-| `mention` | `@2`, the FOR YOU card, `N FOR YOU`, the cell for "asked" | `warning` | peach `#FAB387` | `yellow` |
-| `held` | a draft or a hard stop waiting, ✎ in FOR YOU, the cell for "held", a flood wait | `warning` | yellow `#F9E2AF` | `yellowBright` |
-| `ok` | ⚡, the AUTOPILOT card, the cell for "sent", ✓ | `success` | green `#A6E3A1` | `green` |
-| `person` | ○, the CHATS card | `permission` | blue `#89B4FA` | `blue` |
-| `group` | ◇ and ⌗ (forum) | `suggestion` | teal `#94E2D5` | `cyan` |
-| `channel` | ▷ | `text` | sky `#89DCEB` | `cyanBright` |
-| `bot` | ⬡ | `claude` | pink `#F5C2E7` | `magentaBright` |
-| `saved` | ★ | `warning` | yellow `#F9E2AF` | `yellowBright` |
-| `dim` | time, preview, ◌, labels, the legend's words, the key line | `inactive` | overlay `#6C7086` | `gray` |
-| `subtext` | the second tier: `@username` in the chat card's title, the log's text | `inactive` | subtext `#A6ADC8` | `white` |
-| `text` | names and values (bold when unread) | `text` | text `#CDD6F4` | default |
-| `surface` | every card's border while the pane does not hold the keys, the LOG card's border | `subtle` | surface `#45475A` | `gray` |
+| Role | Used for | `theme` (theme key) | `mocha` | `mocha256` (cell) | `ansi` |
+| --- | --- | --- | --- | --- | --- |
+| `accent` | ▸, the current folder tab, the focused card's border, `TG` in the header | `merged` | mauve `#CBA6F7` | = (183) | `magenta` |
+| `unread` | the unread count, `N UNREAD`, `0: stop all`, error replies, ✗ | `error` | red `#F38BA8` | `#F37AA8` (211) | `red` |
+| `mention` | `@2`, the FOR YOU card, `N FOR YOU`, the cell for "asked" | `warning` | peach `#FAB387` | `#FAAF7A` (216) | `yellow` |
+| `held` | a draft or a hard stop waiting, ✎ in FOR YOU, the cell for "held", a flood wait | `warning` | yellow `#F9E2AF` | `#F9E6AF` (229) | `yellow` |
+| `ok` | ⚡, the AUTOPILOT card, the cell for "sent", ✓ | `success` | green `#A6E3A1` | = (151) | `green` |
+| `person` | ○, the CHATS card | `permission` | blue `#89B4FA` | `#7AAFFA` (111) | `blue` |
+| `group` | ◇ and ⌗ (forum) | `planMode` | teal `#94E2D5` | = (152) | `cyan` |
+| `channel` | ▷ | `ide` | sky `#89DCEB` | `#7ADCEB` (117) | `blueBright` |
+| `bot` | ⬡ | `claude` | pink `#F5C2E7` | = (225) | `magentaBright` |
+| `saved` | ★ | `warning` | yellow `#F9E2AF` | `#F9E6AF` (229) | `yellow` |
+| `dim` | time, preview, ◌, labels, the legend's words, the key line | `inactive` | overlay `#6C7086` | = (103) | `gray` |
+| `subtext` | the second tier: `@username` in the chat card's title, the log's text | `inactive` | subtext `#A6ADC8` | = (146) | `white` |
+| `text` | names and values (bold when unread) | `text` | text `#CDD6F4` | = (189) | default |
+| `surface` | every card's border while the pane does not hold the keys, the LOG card's border | `subtle` | surface `#45475A` | = (60) | `gray` |
 
 Sections take their role's colour: FOR YOU `mention`, CHATS `person`, AUTOPILOT `ok`, LOG
 `surface` (its title in `subtext`). The CHAT card takes the open chat's kind role.
 
 Notes:
 
-- `theme` has only the ten keys that flightdeck and statuspane prove the engine accepts: `claude`,
-  `suggestion`, `success`, `permission`, `merged`, `warning`, `error`, `inactive`, `subtle` and
-  `text`. So three pairs share a key: `mention`, `held` and `saved` on `warning`; `dim` and
-  `subtext` on `inactive`; and channels draw as plain `text`. The glyph's shape still tells the
-  kind. Probe P6 (§10.11) checks for more keys. If it finds some, `channel` and `held` get their
-  own.
-- 16-colour: when the terminal has fewer than 256 colours, the engine's colour depth picks the
-  third column, if the engine exposes it (P7). Otherwise `ansi` becomes a third `palette` value.
+- `theme` uses typed `ThemeKey`s only. P6 showed that every typed key resolves, and that
+  `suggestion` and `permission` are one colour in the dark theme. So `group` takes `planMode`
+  (teal) and `channel` takes `ide` (blue) (decision 7). Two groups still share a key: `mention`,
+  `held` and `saved` on `warning`, and `dim` and `subtext` on `inactive`. The glyph's shape still
+  tells the kind. P6 found no typed key for a second yellow; the untyped ones (`chromeYellow`,
+  `fastMode`) are left alone, since the type does not promise them.
+- `mocha256` (decision 8). The engine picks the colour depth, and no plugin can read it (P7). In
+  tmux it draws at 256 even with `COLORTERM=truecolor`, and the downsample is
+  `16 + 36·r + 6·g + b`, each channel `round(v / 51)`. That is not the nearest xterm colour: the
+  exact cube value `#FFAF87` (216) lands on 217. So `mocha`'s peach and yellow both land on 223,
+  blue and sky on 153, and red and maroon on 217. `mocha256` moves five of them by that formula.
+  T11 saw all six on their own cells in tmux: 216, 229, 111, 117, 211 and 217. Every
+  `mocha256` role then has a cell of its own, except `held` and `saved`, which share yellow on
+  purpose. Outside tmux the same hex values draw as written.
+- `ansi` (decision 8). At 16 colours the engine turns hex into near-white (`mocha`'s mauve, red,
+  peach, yellow, blue, sky, pink and text all become `97`) and `#45475A` into `30`, black, so
+  borders vanish. T11 measured the names at 16 colours. Distinct codes: `black`/`blackBright` `30`,
+  `red` `31`, `green`/`greenBright` `32`, `blue` `34`, `magenta` `35`, `cyan`/`cyanBright` `36`,
+  `gray` `37`, `redBright` `91`, `yellow`/`yellowBright` `93`, `magentaBright` `95`, `blueBright`
+  `96`, `white`/`whiteBright` `97`. So the column avoids each pair that merges: `channel` is
+  `blueBright`, not `cyanBright`. `mention`, `held` and `saved` share `yellow`, as `theme` shares
+  `warning`. `surface` and `dim` are `gray` (`37`), never a black. At 256 the same names draw as
+  their own cells (`gray` `145`, `blueBright` `111`).
+- A hex the engine cannot parse (`#zzz`) draws black (P6). So T12 tests that every `mocha` and
+  `mocha256` value is `#RRGGBB`.
 - `mocha` is the owner's list, plus `text #CDD6F4` (Catppuccin Mocha's text), which the list left
   out.
 
@@ -2056,8 +2093,8 @@ palette as follows:
 
 | `icon_color` | Telegram | `mocha` | `theme` |
 | --- | --- | --- | --- |
-| `0x6FB9F0` | blue | blue `#89B4FA` | `permission` |
-| `0xFFD67E` | yellow | yellow `#F9E2AF` | `warning` |
+| `0x6FB9F0` | blue | blue `#89B4FA` (`mocha256` `#7AAFFA`) | `permission` |
+| `0xFFD67E` | yellow | yellow `#F9E2AF` (`mocha256` `#F9E6AF`) | `warning` |
 | `0xCB86DB` | violet | mauve `#CBA6F7` | `merged` |
 | `0x8EEE98` | green | green `#A6E3A1` | `success` |
 | `0xFF93B2` | rose | pink `#F5C2E7` | `claude` |
@@ -2559,16 +2596,32 @@ Kept as is: §7.4's states, which now draw inside the card of their view, and th
 Run by T11 before T12–T16 lean on them, in throwaway probe mods on the lab (Appendix A). Each
 result goes into §1's table.
 
-| # | Probe | Already known | Pass | If it fails |
-| --- | --- | --- | --- | --- |
-| P1 | hex colours in `Text color`, `Box borderColor` | flightdeck's `pastel` draws hex in both (`hooks/core.ts:168`, `register.tsx:588`) | `#CBA6F7` draws mauve on our engine version, in the Pane and AbovePrompt | `mocha` downgrades to the 16-colour column |
-| P2 | rounded borders in the Pane, with a title in the top border | flightdeck draws `borderStyle="round"` in its Pane; our `/tg` cards use it in the transcript (`ui/band.tsx:252`) | a Box with `borderTop={false}` under a Text `╭─ TITLE ───╮` in the same colour joins at both corners | each card draws its sides as Text too (`│ ` … ` │`), or the title moves inside as flightdeck's are (+1 row a card) |
-| P3 | a right-aligned narrow card in AbovePrompt, with statuspane installed | statuspane draws one (`register.tsx:719–727`) and chains `next(e)` | both cards draw, stacked; ours takes ⏎ `j k q` after ctrl+x tab | ours draws left of statuspane's, or above it with a blank row |
-| P4 | dropping the Pane's grey fill | flightdeck's dock shows the same fill | a root `backgroundColor` or a Pane prop removes or matches it | accepted; LOG fills the height (§10.5) |
-| P5 | ⚡ in a 3-cell column | U+26A1 is Wide, emoji presentation | two cells in Terminal.app, iTerm2, Ghostty and tmux, and it takes the `ok` colour | `↯` (§10.3) |
-| P6 | theme keys beyond the ten; an unknown key | the ten work | a list of the keys the engine resolves; an unknown key falls back without throwing | `theme` keeps its collisions (§10.2) |
-| P7 | colour depth | — | the engine reports < 256 colours, or downsamples hex | `palette = ansi` as a third option |
-| P8 | Buttons in the last row beside `ctrl+x tab: keys` text, dim | the action bar does this today | unchanged | — (a regression check for T13) |
+| # | Probe | Already known | Pass | If it fails | Result (2.1.296, §1) |
+| --- | --- | --- | --- | --- | --- |
+| P1 | hex colours in `Text color`, `Box borderColor` | flightdeck's `pastel` draws hex in both (`hooks/core.ts:168`, `register.tsx:588`) | `#CBA6F7` draws mauve on our engine version, in the Pane and AbovePrompt | `mocha` downgrades to the 16-colour column | pass |
+| P2 | rounded borders in the Pane, with a title in the top border | flightdeck draws `borderStyle="round"` in its Pane; our `/tg` cards use it in the transcript (`ui/band.tsx:252`) | a Box with `borderTop={false}` under a Text `╭─ TITLE ───╮` in the same colour joins at both corners | each card draws its sides as Text too (`│ ` … ` │`), or the title moves inside as flightdeck's are (+1 row a card) | pass, by an absolute title over a full border |
+| P3 | a right-aligned narrow card in AbovePrompt, with statuspane installed | statuspane draws one (`register.tsx:719–727`) and chains `next(e)` | both cards draw, stacked; ours takes ⏎ `j k q` after ctrl+x tab | ours draws left of statuspane's, or above it with a blank row | pass |
+| P4 | dropping the Pane's grey fill | flightdeck's dock shows the same fill | a root `backgroundColor` or a Pane prop removes or matches it | accepted; LOG fills the height (§10.5) | fail: accepted |
+| P5 | ⚡ in a 3-cell column | U+26A1 is Wide, emoji presentation | two cells in Terminal.app, iTerm2, Ghostty and tmux, and it takes the `ok` colour | `↯` (§10.3) | partial: widths pass, the colour not seen in a terminal |
+| P6 | theme keys beyond the ten; an unknown key | the ten work | a list of the keys the engine resolves; an unknown key falls back without throwing | `theme` keeps its collisions (§10.2) | pass |
+| P7 | colour depth | — | the engine reports < 256 colours, or downsamples hex | `palette = ansi` as a third option | pass: the engine downsamples; `ansi` and `mocha256` added |
+| P8 | Buttons in the last row beside `ctrl+x tab: keys` text, dim | the action bar does this today | unchanged | — (a regression check for T13) | pass, unchanged |
+
+What the results change for T12–T16:
+
+- **T12** (decisions 7 and 8, §10.2). `Palette` is `'theme' | 'mocha' | 'mocha256' | 'ansi'`. The
+  engine, not the pane, picks the depth (P7). At 16 colours it turns `mocha` into near-white, so
+  `ansi` is a palette of its own. In tmux (256) `mocha` draws `mention` and `held`, `person` and
+  `channel`, and `unread` and the red topic in one colour each, so `mocha256` moves them onto cells
+  of their own. `theme` gives `group` `planMode` and `channel` `ide`, because `suggestion` and
+  `permission` are one colour in the dark theme (P6). A bad hex draws black, so the test that every
+  `Role` has a value also checks each hex is `#RRGGBB`.
+- **T13.** `Card` draws a full round border and lays the title and the corner over its top edge with
+  `position="absolute"` Boxes (P2); `borderTop` is refused. No Text sides, no extra row.
+- **T15.** The card's bottom keys go on the border the same way; the card pads `paddingRight={1}`
+  so its edge meets statuspane's (P3).
+- **Everyone.** A plain Button's hotkey letter stays in the accent colour when `dimColor` is set
+  (P8), so a dim key line still shows bright letters.
 
 ### 10.12 Tasks T11–T16
 
@@ -2600,7 +2653,7 @@ into §1's table and §10.11's "Pass" column, with the engine version. Acceptanc
 
 **T12 — palette and the chat row** (1 day; after T11's P1, P5, P6 and P7).
 
-- `hooks/ui/palette.ts`: `type Palette = 'theme' | 'mocha'` (`| 'ansi'` after P7);
+- `hooks/ui/palette.ts`: `type Palette = 'theme' | 'mocha' | 'mocha256' | 'ansi'` (decision 8);
   `type Role` with §10.2's 14 roles; `PALETTES satisfies Record<Palette, Record<Role, string>>`;
   `TOPIC_COLOR` keyed by `icon_color`. The `palette` option goes in `plugin.json` `userConfig`,
   read once in `register`. The palette reaches components the way the surface's element table
@@ -2617,6 +2670,9 @@ into §1's table and §10.11's "Pass" column, with the engine version. Acceptanc
   (`tests/surfaces.tsx:42`, `tests/pane.test.ts:1365`).
 - Tests:
   - every `Role` has a value in every palette;
+  - every `mocha` and `mocha256` value is `#RRGGBB`, and the `mocha256` values map, by §10.2's
+    formula, to distinct cells (bar `held` and `saved`);
+  - `ansi` uses no name pair that merges at 16 colours (§10.2), and no black;
   - the time column at 14:02 today, 6 days back, 7 days back, and last year;
   - each symbol by priority (mention over unread over ⚡ over muted; a muted unread count dim;
     BotFather `ro`);
@@ -2624,7 +2680,8 @@ into §1's table and §10.11's "Pass" column, with the engine version. Acceptanc
   - no row shows `@username`;
   - `peerArg` is unchanged for a user, a bot and `self`;
   - every glyph of §10.3 is in `NARROW_GLYPHS` except `⚡`.
-- Live: a folder of each kind at 60 and 44 columns, in both palettes, on a dark and a light theme.
+- Live: a folder of each kind at 60 and 44 columns, in every palette (`mocha256` inside tmux,
+  `ansi` with `TERM=xterm` and no `COLORTERM`), on a dark and a light theme.
 
 **T13 — frame, sections, keys** (1½ days; after T12's `palette.ts`).
 
@@ -2740,6 +2797,15 @@ Asked in the first draft of §10 and decided by the owner on 2026-10-11, each as
 6. **The compact card's hide key reads `q: hide`**, not `▾ hide`: the engine draws a Button's
    hotkey before its label (§1), and `q` already means hide (§6).
 
+Decided after T11's probes, by the owner through tg-kit-25 (2026-10-11):
+
+7. **`theme` gives `group` `planMode` and `channel` `ide`.** P6 found `suggestion` and `permission`
+   drawing one colour in the dark theme, so persons and groups would have been the same blue.
+   Both keys are typed `ThemeKey`s.
+8. **`palette` has four values: `theme`, `mocha`, `mocha256` and `ansi`.** The engine downsamples
+   by itself and tells no plugin the depth (P7). `mocha256` keeps `mocha`'s roles apart in tmux's
+   256 colours, and `ansi` keeps borders visible at 16 colours (§10.2).
+
 ## 11. Rejected
 
 - **Engine tabs for views** (several panes): the probe showed the tab strip, but reaching a tab
@@ -2785,6 +2851,9 @@ Asked in the first draft of §10 and decided by the owner on 2026-10-11, each as
   answer). The tg-missing state is a session whose PATH holds `claude` and no `tg` at all: a
   broken link to tg would let the shell find the real one further down PATH.
 - Driving it: `tmux send-keys`, `tmux capture-pane -p` (`-e` shows the ring as inverse).
+- Sizes: with `window-size latest` and another tmux client attached, `new-session -x -y` is
+  ignored and the session takes that client's size (T11 got 180×51 for every lab). Run
+  `tmux resize-window -t <session> -x 100 -y 40` after the start and check `#{window_width}`.
 - After every engine upgrade, with the pane holding the keys and the menu closed: `j` moves the
   cursor, `p` in a bot chat puts `⌁1` in the header (`p` again stops it), `q` hides the pane. If
   one does nothing, the engine no longer presses hidden Buttons (§1, §6).
