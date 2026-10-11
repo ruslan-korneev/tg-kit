@@ -18,6 +18,7 @@ from tg_kit.app import (
     JsonOpt,
     Runtime,
     TimeoutOpt,
+    TopicOpt,
     VerboseOpt,
     YesOpt,
     emit_json,
@@ -33,18 +34,20 @@ from tg_kit.common import (
     parse_wait,
     print_views,
     resolve_spec,
+    resolve_topic_id,
     sent_views,
+    topic_of_reply,
     with_wait,
 )
 from tg_kit.errors import UsageError
-from tg_kit.model import MessageView
+from tg_kit.model import GENERAL_TOPIC, MessageView
 from tg_kit.parsing import read_text
 from tg_kit.peers import Peer, message_id_in
 from tg_kit.plan import Step
 from tg_kit.render import message_json
 from tg_kit.texts import CAPTION_LIMIT, split_text
 
-__all__ = ["register", "sent_output"]
+__all__ = ["raw_topic_reply", "register", "sent_output", "topic_reply"]
 
 TextArg = Annotated[str, typer.Argument(metavar="TEXT|-", help="Message text, or - to read stdin.")]
 WaitOpt = Annotated[
@@ -67,6 +70,28 @@ def _parse_mode(md: bool, html: bool, plain: bool) -> str | None:
     if plain:
         return None
     return "md"
+
+
+def topic_reply(topic: int | None, reply_to: int | None) -> dict[str, object]:
+    """The send params that put a message into forum topic `topic`, replying to `reply_to`.
+
+    A topic's id is its first message's id, so posting into it is replying to
+    that. A reply to another message inside the topic names the topic in
+    `top_msg_id`. General takes neither: a forum's plain messages are General.
+    """
+    if topic is None or topic == GENERAL_TOPIC:
+        return {"reply_to": reply_to}
+    if reply_to is None or reply_to == topic:
+        return {"reply_to": topic}
+    return {"reply_to": reply_to, "top_msg_id": topic}
+
+
+def raw_topic_reply(topic: int | None) -> dict[str, object]:
+    """`topic_reply` for an MTProto step: its `reply_to` as an InputReplyToMessage."""
+    into = topic_reply(topic, None)["reply_to"]
+    if into is None:
+        return {}
+    return {"reply_to": {"_": "InputReplyToMessage", "reply_to_msg_id": into}}
 
 
 def sent_output(
@@ -94,13 +119,20 @@ async def send_plan_and_maybe_wait(
     quiet: float,
     peer_hint: str,
 ) -> int:
-    """Run an authorized plan; with `wait`, subscribe first and collect replies."""
+    """Run an authorized plan; with `wait`, subscribe first and collect replies.
+
+    In a forum topic only that topic's replies count (`plan.topic`)."""
     if wait is None:
         results = await execute_plan(conn, plan)
         sent_output(rt, sent_views(conn, results, target), None, peer_hint)
         return 0
     results, replies = await with_wait(
-        conn, target, lambda: execute_plan(conn, plan), budget=wait, quiet=quiet
+        conn,
+        target,
+        lambda: execute_plan(conn, plan),
+        budget=wait,
+        quiet=quiet,
+        topic=plan.topic.id if plan.topic else None,
     )
     sent_output(rt, sent_views(conn, results, target), replies, peer_hint)
     if not replies:
@@ -122,6 +154,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         html: Annotated[bool, typer.Option("--html", help="HTML formatting.")] = False,
         plain: Annotated[bool, typer.Option("--plain", help="No formatting.")] = False,
         silent: Annotated[bool, typer.Option("--silent", help="No notification sound.")] = False,
+        topic: TopicOpt = None,
         wait: WaitOpt = None,
         quiet: QuietOpt = None,
         yes: YesOpt = False,
@@ -140,6 +173,8 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         async def body(rt: Runtime) -> int:
             async with rt.connect(updates=budget is not None) as conn:
                 target = await resolve_spec(conn, peer, for_write=True)
+                into = await topic_of_reply(conn, target, topic, reply_to)
+                where = await resolve_topic_id(conn, target, into)
                 chunks = split_text(body_text)
                 steps = [
                     Step(
@@ -147,7 +182,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                         {
                             "entity": target,
                             "message": chunk,
-                            "reply_to": reply_to if i == 0 else None,
+                            **topic_reply(into, reply_to if i == 0 else None),
                             "link_preview": not no_preview,
                             "parse_mode": mode,
                             "silent": silent or None,
@@ -155,7 +190,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                     )
                     for i, chunk in enumerate(chunks)
                 ]
-                plan = make_plan(rt, "send", target, steps, yes=yes)
+                plan = make_plan(rt, "send", target, steps, yes=yes, topic=where)
                 if not authorize(plan, dry_run=dry_run):
                     return 0
                 return await send_plan_and_maybe_wait(
@@ -180,6 +215,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         as_doc: Annotated[
             bool, typer.Option("--as-doc", help="Send as a file, not as photo/video.")
         ] = False,
+        topic: TopicOpt = None,
         wait: WaitOpt = None,
         quiet: QuietOpt = None,
         yes: YesOpt = False,
@@ -206,6 +242,8 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         async def body(rt: Runtime) -> int:
             async with rt.connect(updates=budget is not None) as conn:
                 target = await resolve_spec(conn, peer, for_write=True)
+                where = await resolve_topic_id(conn, target, topic)
+                into = topic_reply(topic, None)["reply_to"]
                 step = Step(
                     "send_file",
                     {
@@ -213,9 +251,10 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                         "file": file_ref,
                         "caption": caption,
                         "force_document": as_doc,
+                        **({"reply_to": into} if into is not None else {}),
                     },
                 )
-                plan = make_plan(rt, "send-file", target, [step], yes=yes)
+                plan = make_plan(rt, "send-file", target, [step], yes=yes, topic=where)
                 if not authorize(plan, dry_run=dry_run):
                     return 0
                 return await send_plan_and_maybe_wait(
@@ -321,6 +360,14 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         from_peer: Annotated[str, typer.Argument(metavar="FROM", help="Source chat.")],
         ids: Annotated[list[str], typer.Argument(metavar="ID...", help="Message ids.")],
         to: Annotated[str, typer.Option("--to", help="Destination chat.")],
+        topic: Annotated[
+            int | None,
+            typer.Option(
+                "--topic",
+                help="A topic of the destination forum (1 is General).",
+                show_default=False,
+            ),
+        ] = None,
         yes: YesOpt = False,
         dry_run: DryRunOpt = False,
         account: AccountOpt = None,
@@ -336,10 +383,18 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
             async with rt.connect() as conn:
                 source = await resolve_spec(conn, from_peer)
                 target = await resolve_spec(conn, to, for_write=True)
-                step = Step(
-                    "forward_messages", {"entity": target, "messages": wanted, "from_peer": source}
-                )
-                plan = make_plan(rt, "forward", target, [step], yes=yes)
+                where = await resolve_topic_id(conn, target, topic)
+                if topic is None or topic == GENERAL_TOPIC:
+                    step = Step(
+                        "forward_messages",
+                        {"entity": target, "messages": wanted, "from_peer": source},
+                    )
+                else:  # Telethon's forward_messages cannot name a topic
+                    step = Step(
+                        "messages.ForwardMessages",
+                        {"from_peer": source, "id": wanted, "to_peer": target, "top_msg_id": topic},
+                    )
+                plan = make_plan(rt, "forward", target, [step], yes=yes, topic=where)
                 if not authorize(plan, dry_run=dry_run):
                     return 0
                 results = await execute_plan(conn, plan)
@@ -390,6 +445,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         ctx: typer.Context,
         peer: Annotated[str, typer.Argument(help="The chat.")],
         text: TextArg,
+        topic: TopicOpt = None,
         yes: YesOpt = False,
         dry_run: DryRunOpt = False,
         account: AccountOpt = None,
@@ -397,15 +453,19 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         timeout: TimeoutOpt = None,
         verbose: VerboseOpt = False,
     ) -> None:
-        """Save a draft (plain text) in a chat without sending it."""
+        """Save a draft (plain text) in a chat, or in one forum topic, without sending it."""
         g = globals_from(ctx, account, json_out, timeout, verbose)
         draft_text = read_text(text, sys.stdin)
 
         async def body(rt: Runtime) -> int:
             async with rt.connect() as conn:
                 target = await resolve_spec(conn, peer, for_write=True)
-                step = Step("messages.SaveDraft", {"peer": target, "message": draft_text})
-                plan = make_plan(rt, "draft", target, [step], yes=yes)
+                where = await resolve_topic_id(conn, target, topic)
+                step = Step(
+                    "messages.SaveDraft",
+                    {"peer": target, "message": draft_text, **raw_topic_reply(topic)},
+                )
+                plan = make_plan(rt, "draft", target, [step], yes=yes, topic=where)
                 if not authorize(plan, dry_run=dry_run):
                     return 0
                 await execute_plan(conn, plan)

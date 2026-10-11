@@ -397,6 +397,7 @@ def test_json_schema_is_stable(tl_message: MessageFactory) -> None:
         "out",
         "text",
         "reply_to",
+        "topic_id",
         "forward",
         "edited",
         "edits",
@@ -417,6 +418,7 @@ def test_json_schema_is_stable(tl_message: MessageFactory) -> None:
         "name": "Example",
     }
     assert doc["reply_to"] == 5
+    assert doc["topic_id"] is None
     assert doc["buttons"] == [
         [{"row": 0, "col": 0, "type": "cb", "text": "Go", "data_b64": "Z28="}]
     ]

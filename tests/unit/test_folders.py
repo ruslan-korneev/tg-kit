@@ -329,6 +329,21 @@ def test_a_dialog_converts_its_counts_pin_archive_and_unread_mark() -> None:
     assert (view.id, view.kind, view.username) == (CHANNEL_ID, "channel", "example_news")
     assert (view.unread, view.mentions, view.pinned) == (5, 2, True)
     assert (view.marked_unread, view.archived, view.muted) == (True, True, False)
+    assert view.forum is False
+
+
+def test_a_supergroup_with_topics_converts_as_a_forum() -> None:
+    forum = types.Channel(
+        id=206,
+        title="Example Forum",
+        photo=types.ChatPhotoEmpty(),
+        date=None,
+        megagroup=True,
+        forum=True,
+        access_hash=66,
+    )
+    view = convert(tl_dialog(forum, types.PeerChannel(forum.id)))
+    assert (view.kind, view.forum) == ("supergroup", True)
 
 
 @pytest.mark.parametrize(
@@ -523,6 +538,7 @@ def test_dialog_json_has_the_contract_keys() -> None:
         "last_id": 677791,
         "last_date": "2026-09-29T15:00:00+00:00",
         "last_text": "Choose an option",
+        "forum": False,
     }
 
 
@@ -537,6 +553,7 @@ def test_dialog_json_has_the_contract_keys() -> None:
         ),
         ({"mentions": 2, "last_text": "a\nb"}, "202 user chat 202 [2 mentions] — a ⏎ b"),
         ({"last_text": "x" * 81}, "202 user chat 202 — " + "x" * 80 + "…"),
+        ({"forum": True, "pinned": True}, "202 user chat 202 (forum) 📌 — "),
     ],
 )
 def test_dialog_line_marks_pin_mute_unread_and_mentions(facts: dict[str, Any], line: str) -> None:

@@ -42,6 +42,7 @@ __all__ = [
     "Runtime",
     "TgTyper",
     "TimeoutOpt",
+    "TopicOpt",
     "VerboseOpt",
     "YesOpt",
     "app",
@@ -123,6 +124,12 @@ YesOpt = Annotated[
     bool, typer.Option("--yes", "-y", help="Confirm a write the guard would refuse.")
 ]
 DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Print the exact plan; send nothing.")]
+TopicOpt = Annotated[
+    int | None,
+    typer.Option(
+        "--topic", help="A forum topic's id (tg topics PEER); 1 is General.", show_default=False
+    ),
+]
 
 
 @dataclass(frozen=True)

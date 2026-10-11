@@ -7,7 +7,12 @@ from datetime import datetime
 
 from tg_kit.buttons import ButtonGrid
 
+# Every forum has a "General" topic with this id. Its messages carry no topic
+# in their reply header: they are General because the chat is a forum.
+GENERAL_TOPIC = 1
+
 __all__ = [
+    "GENERAL_TOPIC",
     "DeleteEvent",
     "DialogView",
     "Forward",
@@ -16,6 +21,7 @@ __all__ = [
     "MessageView",
     "Reaction",
     "Sender",
+    "TopicView",
     "TypingEvent",
     "WatchEvent",
     "with_edits",
@@ -68,6 +74,7 @@ class MessageView:
     out: bool
     text: str
     reply_to: int | None = None
+    topic_id: int | None = None  # forum topic; GENERAL_TOPIC for General, None outside forums
     forward: Forward | None = None
     edited: datetime | None = None
     pinned: bool = False
@@ -104,9 +111,27 @@ class DialogView:
     contact: bool = False  # a user in my contacts
     marked_unread: bool = False  # "mark as unread": unread with no unread count
     archived: bool = False
+    forum: bool = False  # a supergroup with topics (tg topics)
 
     def with_pinned(self, *, pinned: bool) -> DialogView:
         return replace(self, pinned=pinned)
+
+
+@dataclass(frozen=True)
+class TopicView:
+    """One forum topic in `tg topics`, and what a write into it checks."""
+
+    id: int
+    title: str
+    icon_color: int | None = None  # RGB as an int, Telegram's palette
+    unread: int = 0
+    mentions: int = 0  # unread mentions of me
+    pinned: bool = False
+    closed: bool = False  # nobody but admins may post
+    hidden: bool = False  # only General can be hidden
+    last_id: int | None = None
+    last_date: datetime | None = None
+    last_text: str = ""
 
 
 # --- `tg watch` events ------------------------------------------------------
@@ -128,6 +153,7 @@ class TypingEvent:
     sender: Sender
     action: str  # typing | cancel | record_audio | upload_photo | … (snake_case TL name)
     date: datetime  # when tg received it (typing updates carry no date)
+    top_msg_id: int | None = None  # Telegram's forum topic; None in General and outside forums
 
 
 @dataclass(frozen=True)

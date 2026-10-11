@@ -8,11 +8,11 @@ from typing import Any
 
 from tg_kit.app import Runtime, emit_json, note, out
 from tg_kit.client import Connected, telegram_errors
-from tg_kit.errors import NoReplyError, RefusedError, UsageError
+from tg_kit.errors import NoReplyError, NotFoundError, RefusedError, UsageError
 from tg_kit.guard import check
-from tg_kit.model import MessageView
+from tg_kit.model import MessageView, TopicView
 from tg_kit.parsing import parse_duration
-from tg_kit.peers import Peer, parse_peer, resolve
+from tg_kit.peers import Peer, parse_peer, resolve, resolve_topic
 from tg_kit.plan import Step, WritePlan, execute_step, target_of
 from tg_kit.render import compact, message_json
 from tg_kit.waiter import DEFAULT_QUIET, TelethonSource, run_and_collect
@@ -26,8 +26,10 @@ __all__ = [
     "parse_wait",
     "print_views",
     "resolve_spec",
+    "resolve_topic_id",
     "self_id",
     "sent_views",
+    "topic_of_reply",
     "view_of",
     "with_wait",
 ]
@@ -48,10 +50,43 @@ async def resolve_spec(conn: Connected, spec: str, *, for_write: bool = False) -
         )
 
 
-def view_of(conn: Connected, msg: Any, *, chat_title: str | None = None) -> MessageView:
+async def resolve_topic_id(conn: Connected, target: Peer, topic: int | None) -> TopicView | None:
+    """`--topic ID` → the topic (None without the flag); a non-forum or missing topic fails."""
+    if topic is None:
+        return None
+    with telegram_errors():
+        return await resolve_topic(conn.client, target, topic)
+
+
+async def topic_of_reply(
+    conn: Connected, target: Peer, topic: int | None, reply_to: int | None
+) -> int | None:
+    """The topic a reply goes into: in a forum, the topic of the message it replies to.
+
+    One get_messages call, and only for a reply in a supergroup (the only kind
+    that can be a forum). An explicit `topic` must agree with the message's.
+    """
+    if reply_to is None or target.kind != "supergroup":
+        return topic
+    with telegram_errors():
+        found = await conn.client.get_messages(target.input, ids=reply_to)
+    if found is None:
+        raise NotFoundError(f"no message {reply_to} in {target.label()} to reply to")
+    view = view_of(conn, found)
+    if view.topic_id is None:  # not a forum; a --topic is refused by resolve_topic_id
+        return topic
+    if topic is not None and topic != view.topic_id:
+        msg = f"message {reply_to} is in topic {view.topic_id}, not in topic {topic}"
+        raise UsageError(msg, hint=f"drop --topic, or pass --topic {view.topic_id}")
+    return view.topic_id
+
+
+def view_of(
+    conn: Connected, msg: Any, *, chat_title: str | None = None, forum: bool | None = None
+) -> MessageView:
     from tg_kit.convert import convert_message
 
-    return convert_message(msg, self_id=self_id(conn), chat_title=chat_title)
+    return convert_message(msg, self_id=self_id(conn), chat_title=chat_title, forum=forum)
 
 
 class MessagePrinter:
@@ -89,7 +124,9 @@ def make_plan(
     *,
     yes: bool,
     always_confirm: bool = False,
+    topic: TopicView | None = None,
 ) -> WritePlan:
+    """`topic`: the forum topic the steps post into; a closed one refuses the plan."""
     verdict = check(
         rt.config,
         allowed_ids=rt.allowlist().ids,
@@ -97,8 +134,9 @@ def make_plan(
         target=target_of(target),
         yes=yes,
         always_confirm=always_confirm,
+        closed_topic=topic.id if topic is not None and topic.closed else None,
     )
-    return WritePlan(action=action, target=target, steps=tuple(steps), verdict=verdict)
+    return WritePlan(action=action, target=target, steps=tuple(steps), verdict=verdict, topic=topic)
 
 
 def authorize(plan: WritePlan, *, dry_run: bool) -> bool:
@@ -106,7 +144,8 @@ def authorize(plan: WritePlan, *, dry_run: bool) -> bool:
     import json
 
     if plan.target is not None:
-        note(plan.target.target_line())
+        topic = f", topic {plan.topic.id} {plan.topic.title!r}" if plan.topic else ""
+        note(plan.target.target_line() + topic)
     if dry_run:
         emit_json(plan.to_json())
         verdict = "would send" if plan.verdict.allowed else "would be REFUSED (exit 7)"
@@ -136,11 +175,23 @@ def parse_wait(wait: str | None, quiet: str | None) -> tuple[float | None, float
 
 
 async def with_wait[T](
-    conn: Connected, chat: Peer, action: Callable[[], Awaitable[T]], *, budget: float, quiet: float
+    conn: Connected,
+    chat: Peer,
+    action: Callable[[], Awaitable[T]],
+    *,
+    budget: float,
+    quiet: float,
+    topic: int | None = None,
 ) -> tuple[T, list[MessageView]]:
-    """Subscribe to `chat`, run `action`, collect replies/edits (see waiter)."""
+    """Subscribe to `chat` (only `topic` in a forum), run `action`, collect replies/edits."""
     chat_id = self_id(conn) if chat.kind == "self" else chat.id
-    source = TelethonSource(conn.client, chat_id or chat.id, convert=lambda msg: view_of(conn, msg))
+    forum = True if topic is not None else None  # resolve_topic_id proved it is a forum
+    source = TelethonSource(
+        conn.client,
+        chat_id or chat.id,
+        convert=lambda msg: view_of(conn, msg, forum=forum),
+        topic=topic,
+    )
     return await run_and_collect(source, action, budget=budget, quiet=quiet, clock=time.monotonic)
 
 

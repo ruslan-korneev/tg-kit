@@ -2,11 +2,15 @@
 
 Order of rules (first match decides):
 1. `readonly = true` in config → refused, whatever the flags.
-2. An always-confirm action (delete, logout, raw write) without `--yes` → refused.
-3. A target found by fuzzy title match without `--yes` → refused.
-4. Target id in the allowlist (`allow.toml`, see `tg_kit.allowlist`) → allowed.
-5. `--yes` → allowed.
-6. Otherwise → refused: the target is not allowlisted.
+2. A post into a closed forum topic → refused, whatever the flags.
+3. An always-confirm action (delete, logout, raw write) without `--yes` → refused.
+4. A target found by fuzzy title match without `--yes` → refused.
+5. Target id in the allowlist (`allow.toml`, see `tg_kit.allowlist`) → allowed.
+6. `--yes` → allowed.
+7. Otherwise → refused: the target is not allowlisted.
+
+A forum topic never changes the target: the allowlist holds chats, and an
+allowlisted forum is allowed in every one of its topics.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ def is_allowlisted(allowed_ids: frozenset[int], target: Target) -> bool:
     return target.id is not None and target.id in allowed_ids
 
 
-def check(
+def check(  # noqa: PLR0911 — one return per rule, in the docstring's order
     config: Config,
     *,
     allowed_ids: frozenset[int],
@@ -45,10 +49,16 @@ def check(
     target: Target | None,
     yes: bool,
     always_confirm: bool = False,
+    closed_topic: int | None = None,
 ) -> Verdict:
+    """`closed_topic`: the id of the closed forum topic the write would post into."""
     if config.readonly:
         return Verdict(
             allowed=False, reason="readonly = true in config.toml: every write is refused"
+        )
+    if closed_topic is not None:
+        return Verdict(
+            allowed=False, reason=f"forum topic {closed_topic} is closed: nobody can post in it"
         )
     if always_confirm and not yes:
         return Verdict(allowed=False, reason=f"{action} always needs --yes")

@@ -29,7 +29,7 @@ from tg_kit.app import (
 )
 from tg_kit.buttons import Button, format_button, select_button
 from tg_kit.client import telegram_errors
-from tg_kit.cmd_write import QuietOpt, WaitOpt, send_plan_and_maybe_wait
+from tg_kit.cmd_write import QuietOpt, WaitOpt, raw_topic_reply, send_plan_and_maybe_wait
 from tg_kit.common import (
     authorize,
     execute_plan,
@@ -38,6 +38,7 @@ from tg_kit.common import (
     parse_wait,
     print_views,
     resolve_spec,
+    resolve_topic_id,
     with_wait,
 )
 from tg_kit.errors import NotFoundError, RefusedError, TgError, UsageError
@@ -140,6 +141,12 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         to: Annotated[
             str | None, typer.Option("--to", help="Chat to send the picked result to.")
         ] = None,
+        topic: Annotated[
+            int | None,
+            typer.Option(
+                "--topic", help="A topic of the --to forum (1 is General).", show_default=False
+            ),
+        ] = None,
         yes: YesOpt = False,
         dry_run: DryRunOpt = False,
         account: AccountOpt = None,
@@ -151,6 +158,8 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
         g = globals_from(ctx, account, json_out, timeout, verbose)
         if (pick is None) != (to is None):
             raise typer.BadParameter("--pick and --to go together")
+        if topic is not None and to is None:
+            raise typer.BadParameter("--topic goes with --to")
 
         async def body(rt: Runtime) -> int:
             async with rt.connect() as conn:
@@ -170,11 +179,17 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                 if not 0 <= pick < len(results):
                     raise NotFoundError(f"no result {pick}; the bot returned {len(results)}")
                 chosen = results[pick]
+                in_topic = await resolve_topic_id(conn, dest, topic)
                 step = Step(
                     "messages.SendInlineBotResult",
-                    {"peer": dest, "query_id": results.query_id, "id": chosen.result.id},
+                    {
+                        "peer": dest,
+                        "query_id": results.query_id,
+                        "id": chosen.result.id,
+                        **raw_topic_reply(topic),
+                    },
                 )
-                plan = make_plan(rt, "inline-send", dest, [step], yes=yes)
+                plan = make_plan(rt, "inline-send", dest, [step], yes=yes, topic=in_topic)
                 if not authorize(plan, dry_run=dry_run):
                     return 0
                 return await send_plan_and_maybe_wait(
