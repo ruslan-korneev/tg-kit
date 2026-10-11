@@ -489,6 +489,50 @@ function runsTg(simple: Simple, depth = 0): boolean {
   return reading.isTooDeep || reading.commands.some(one => runsTg(one, depth + 1))
 }
 
+// --- links: the grant reads paths without following them (paths.ts), so none may lead out ---
+
+/**
+ * The first place an `ln` puts a link or points one that is outside the
+ * worktrees, or cannot be told; null when every one is inside. A symbolic
+ * link's target is read from where the link lies; a hard link's from the cwd.
+ */
+function linkOutside(simple: Simple, cwds: readonly string[], scope: Scope, reading: Reading): string | null {
+  const isSymbolic = simple.some(word => word === '--symbolic' || /^-[A-Za-z]*s/.test(word))
+  // `-t DIR`, `-stDIR`, `--target-directory[=]DIR`: the directory the links go in.
+  const dirs = simple.flatMap((word, i) => {
+    if (/^-[A-Za-z]*t$/.test(word) || word === '--target-directory') return [simple[i + 1] ?? '']
+    if (/^-[A-Za-z]*t./.test(word)) return [word.slice(word.indexOf('t') + 1)]
+    return word.startsWith('--target-directory=') ? [word.slice(19)] : []
+  })
+  const hasDir = dirs.length > 0
+  const names = operands(simple).filter(word => !dirs.includes(word))
+  // With a target directory every operand is a target; without, the last one is the link.
+  const targets = isSymbolic ? (hasDir ? names : names.slice(0, -1)) : []
+  const where = (word: string): string | null => {
+    const expanded = reading.expanded.has(word) ? null : expandWord(word, scope)
+    return expanded === null || /^~[^/]/.test(expanded) ? null : expanded
+  }
+  // Every path word but a symbolic target is read from the cwd: the link names, the directory, a hard link's source.
+  const places: string[] = []
+  for (const word of pathWords(simple)) {
+    if (targets.includes(word)) continue
+    const expanded = where(word)
+    if (expanded === null) return word
+    for (const cwd of cwds) places.push(resolvePath(expanded, cwd, scope.home))
+  }
+  const links = (hasDir ? dirs : names.slice(-1)).flatMap(word => {
+    const expanded = where(word)
+    return expanded === null ? [] : cwds.map(cwd => resolvePath(expanded, cwd, scope.home))
+  })
+  for (const target of targets) {
+    const expanded = where(target)
+    if (expanded === null) return target
+    // The link may be the named path or a file inside it (when it is a directory).
+    for (const link of links) places.push(resolvePath(expanded, link.slice(0, link.lastIndexOf('/')) || '/', scope.home), resolvePath(expanded, link, scope.home))
+  }
+  return places.find(path => !isInside(path, scope.worktrees)) ?? null
+}
+
 /** Variables that make a check run other code (git's config and helpers, preloads); refused under `checks`. */
 const RUNS_ENV = /^(GIT_[A-Z0-9_]*|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|NODE_OPTIONS|BASH_ENV|PAGER|EDITOR|VISUAL)=/
 /** git options that run a command of their own: fetch's upload-pack, push's receive-pack. */
@@ -544,6 +588,11 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
       if (grant.web === 'read' && !isFetch) {
         return refuse(`${simple.join(' ').slice(0, 60)}: web is read-only (fetch pages, nothing sent)`)
       }
+    }
+    // Links in either mode: a link inside the worktree that leads out would pass every later check.
+    if (name === 'ln' || name === 'link') {
+      const outside = linkOutside(simple, cwds[index] ?? [start], scope, reading)
+      if (outside !== null) return refuse(`${name} ${outside}: a link that lies or points outside your worktree, or one the grant cannot resolve; the grant does not follow links`)
     }
     const git = name === 'git' ? gitSub(simple) : null
     for (const dir of git?.dirs ?? []) {

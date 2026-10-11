@@ -239,6 +239,20 @@ describe('the grant', () => {
     }
   })
 
+  // The security review: paths.ts does not follow links, so no link may lie or point outside the worktree, in either mode.
+  test('links: ln outside the worktree is refused in both modes; inside it passes', () => {
+    for (const command of [
+      'ln -s ~/.zshrc x', 'ln -s ../../code/app/f x', 'ln -s ../../../../code/app/f x', 'ln -s /home/me/.ssh/id_ed25519 key', 'ln ~/.zshrc x', 'ln -s ./a /tmp/x', 'ln -st /tmp ./a',
+      'ln -s --target-directory=/tmp ./a', 'ln -sf /etc/hosts sub/x', 'link /home/me/.zshrc x',
+    ]) {
+      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, false])
+    }
+    expect(ok('Bash', { command: 'ln -s $X x' }, grant({ commands: 'any' }))).toBe(false)
+    for (const command of ['ln -s ./a ./b', 'ln -s a sub/b', `ln -s ${WT}/a ${WT}/b`, 'ln a b']) {
+      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+    }
+  })
+
   test("decision 11: the Worker's own worktree under tg-kit's config still passes, in both modes; tg named as data is no run", () => {
     for (const command of [
       `cat ${WT}/README.md`, `echo x > ${WT}/out.txt`, `ls ~/.config/tg-kit/worktrees/app-task-1/src`, `uv run pytest > ${WT}/log.txt 2>&1`,

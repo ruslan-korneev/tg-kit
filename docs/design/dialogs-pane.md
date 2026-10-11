@@ -327,6 +327,8 @@ card that you see in the pane:
     wherever a command names one: an operand, `--out=/p`, `-o/p`, a redirect target attached or
     spaced. What `sh -c`, `eval`, `xargs` (past its options), `find -exec` and `git rebase -x`
     run is read too.
+  - The grant reads paths without following links, so in both modes `ln` is refused when a
+    link would lie or point outside the worktrees.
 - **Duration:** until the task is done, or a deadline (`2h`, `90m`). The kill switch ends either.
 
 **Who decides when to ask you.** The agent decides by default: if it's unsure, if the task grows, or
