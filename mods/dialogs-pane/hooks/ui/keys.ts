@@ -91,7 +91,7 @@ export type KeyFacts = {
   hasNotice: boolean
   marks: number
   isRangeOpen: boolean
-  /** Two bot replies are marked: `f` has a pair. */
+  /** `f` has a pair: two bot replies marked, or, with nothing marked, the cursor reply has an earlier reply to the same message. */
   hasPair: boolean
   /** A message in the open chat has buttons. */
   hasButtons: boolean
@@ -281,7 +281,7 @@ export const KEYS = [
     where: ['chat', 'diff'],
     kinds: ['bot'],
     label: c => (c.where === 'diff' ? 'close diff' : 'diff'),
-    needs: c => (c.where === 'diff' || c.facts.hasPair ? null : 'needs two replies marked (x)'),
+    needs: c => (c.where === 'diff' || c.facts.hasPair ? null : c.facts.marks > 0 ? 'needs two bot replies marked' : 'needs a reply with an earlier pair'),
   },
   { id: 'folder', key: '1-9', hotkey: null, group: 'chats', where: FOLDERS, kinds: 'any', label: () => 'folder', isDigits: true },
   { id: 'foryou', key: 'y', hotkey: 'y', group: 'chats', where: [...LISTS, 'folders', 'foryou'], kinds: 'any', label: () => 'for you' },

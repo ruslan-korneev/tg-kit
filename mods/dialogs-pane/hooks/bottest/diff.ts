@@ -1,6 +1,7 @@
 // Reply diff (docs/design/dialogs-pane.md §5 idea 8): two bot replies, before and
 // after, as a text diff and a keyboard-shape diff. Pure.
 import type { Button, MessageView } from '../packet/types'
+import { findTrigger } from '../packet/replay'
 import { callbackData } from './keyboard'
 
 export type LineOp = { op: 'same' | 'del' | 'add'; text: string }
@@ -37,6 +38,27 @@ export function diffPair(
   }
   const [a, b] = [...ids].sort((x, y) => x - y)
   return a === undefined || b === undefined ? { ok: false, reason: 'select two messages' } : { ok: true, pair: [a, b] }
+}
+
+/**
+ * `f` with nothing marked (dialogs-pane-ux.md §8 T6): the cursor reply and the
+ * last earlier bot reply to the same outgoing message, older first. The same
+ * message is the one the reply answers, found as the packet's replay finds it
+ * (its reply_to, else the last message you sent before it), or one you sent
+ * with the same text (`/settings` twice). Null on anything but a bot reply, or
+ * when nothing earlier answered that message.
+ */
+export function replyPair(message: MessageView, messages: readonly MessageView[]): [number, number] | null {
+  const isBotReply = (one: MessageView) => !one.out && one.sender.kind === 'bot'
+  if (!isBotReply(message)) return null
+  const trigger = findTrigger(message, messages)
+  if (trigger === null) return null
+  const earlier = messages.filter(one => one.id < message.id && isBotReply(one)).reverse()
+  const pair = earlier.find(one => {
+    const asked = findTrigger(one, messages)
+    return asked !== null && (asked.id === trigger.id || (trigger.text !== '' && asked.text === trigger.text))
+  })
+  return pair === undefined ? null : [pair.id, message.id]
 }
 
 export function replyDiff(before: MessageView, after: MessageView): ReplyDiff {

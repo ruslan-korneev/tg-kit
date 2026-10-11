@@ -207,8 +207,8 @@ describe('the frame', () => {
     // In the chat the strip's digits are not live: only the active column's are.
     expect(await ui.find({ key: 'digit:1' })).toBeUndefined()
     expect(await tabsOf(ui)).toEqual(['‹All chats 3›', 'For you', 'Bots'])
-    // A bot chat's bar is §4.6's: no a, which the menu lists (§8 T6).
-    expect(await barKeys(ui)).toEqual(['send', 'write', 'record', 'mark', 'menu'])
+    // The cursor on "Main menu", a second reply to /settings: f has its pair and joins before x (§8 T6).
+    expect(await barKeys(ui)).toEqual(['send', 'write', 'record', 'diff', 'mark', 'menu'])
     await ui.unmount()
   })
 
@@ -317,15 +317,17 @@ describe('keys', () => {
   test('m: the menu lists what this chat can do, pressable; a key it runs closes it', async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
+    // On the first reply to /settings, which has no earlier reply to pair with.
+    await ui.press({ key: 'key:up' })
     await ui.press({ key: 'key:menu' })
     expect((await ui.find({ key: 'header' }))?.text).toContain('tg › menu · @example_bot')
     for (const key of ['menu:mark', 'menu:range', 'menu:record', 'menu:follow', 'menu:watch', 'menu:summary', 'menu:hide']) {
       expect(await ui.find({ key })).toBeDefined()
     }
-    // f waits for two marked replies: listed dim with the step, not as a Button.
+    // f waits for a reply with a pair: listed dim with the step, not as a Button.
     const diff = await ui.find({ key: 'menu:diff' })
     expect(diff?.type).toBe('Box')
-    expect(diff?.text).toContain('needs two replies marked')
+    expect(diff?.text).toContain('needs a reply with an earlier pair')
     // The menu takes the body; its bar is h and m.
     expect(await barKeys(ui)).toEqual(['back', 'menu'])
     await ui.press({ key: 'menu:watch' })
@@ -550,13 +552,15 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
         { name: `a chat from bots ${seat}`, props, steps: ['digit:3', 'dialog:1001'] },
       ]
     }),
-    // T6: the cursor on a message with buttons (its chips carry 1 and 2), BotFather's ro chips.
+    // T6: the cursor on a message with buttons (its chips carry 1 and 2), BotFather's ro chips, the diff.
     ...[DOCK, INLINE].flatMap(props => {
       const seat = props === DOCK ? 'dock' : 'inline'
       return [
         { name: `chips ${seat}`, props, steps: ['dialog:1001', 'key:up'] },
         { name: `chips BotFather ${seat}`, props, steps: ['dialog:1006', 'key:up'] },
         { name: `chips, marked ${seat}`, props, steps: ['dialog:1001', 'key:up', 'key:mark'] },
+        { name: `diff ${seat}`, props, steps: ['dialog:1001', 'key:diff'] },
+        { name: `diff menu ${seat}`, props, steps: ['dialog:1001', 'key:diff', 'key:menu'] },
       ]
     }),
   ]
@@ -624,15 +628,22 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     })
   }
 
-  test('a bot chat has r and n; f joins once two replies are marked', async ($, on) => {
+  test('a bot chat has r and n; f on a reply with a pair, or once two replies are marked', async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
+    // The cursor on "Main menu", the second reply to /settings: f pairs it with the first.
     let drawn = await hotkeys(ui)
     expect(drawn).toContain('r')
     expect(drawn).toContain('n')
+    expect(drawn).toContain('f')
+    // The first reply to /settings has nothing earlier to pair with.
+    await ui.press({ key: 'key:up' })
+    drawn = await hotkeys(ui)
     expect(drawn).not.toContain('f')
     await ui.press({ key: 'key:mark' })
-    await ui.press({ key: 'key:up' })
+    drawn = await hotkeys(ui)
+    expect(drawn).not.toContain('f')
+    await ui.press({ key: 'key:down' })
     await ui.press({ key: 'key:mark' })
     drawn = await hotkeys(ui)
     expect(drawn).toContain('f')

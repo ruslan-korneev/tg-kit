@@ -143,7 +143,7 @@ describe('hidden keys and the menu', () => {
 
   test('the menu lists a key that waits, with its step; one that never works is not there', () => {
     const entries = menu(at('chat', 'bot')).flatMap(section => section.entries)
-    expect(entries.find(entry => entry.def.id === 'diff')?.needs).toBe('needs two replies marked (x)')
+    expect(entries.find(entry => entry.def.id === 'diff')?.needs).toBe('needs a reply with an earlier pair')
     // 0 waits for something to run, but the menu lists it quietly: see the T4 tests below.
     expect(entries.find(entry => entry.def.id === 'stop')?.needs).toBe('nothing runs')
     expect(entries.find(entry => entry.def.id === 'mark')?.needs).toBeNull()
@@ -283,7 +283,8 @@ describe('keys with no meaning here (the T9 review M1)', () => {
   test('a stray key says where it works, the step it waits for, or that it is not a key', () => {
     expect(strayText('x', at('folders', null))).toBe('x: mark works in a chat')
     expect(strayText('r', at('chat', 'person'))).toBe('r: rec works in a bot chat')
-    expect(strayText('f', at('chat', 'bot'))).toBe('f: diff · needs two replies marked (x)')
+    expect(strayText('f', at('chat', 'bot'))).toBe('f: diff · needs a reply with an earlier pair')
+    expect(strayText('f', at('chat', 'bot', { marks: 1 }))).toBe('f: diff · needs two bot replies marked')
     expect(strayText('c', at('chats', 'bot'))).toBe('c: not a key · m lists them')
     expect(strayText('7', at('chat', 'person'))).toBe('7: nothing is numbered 7 here · m lists the keys')
     expect(STRAY_KEYS).toHaveLength(36)

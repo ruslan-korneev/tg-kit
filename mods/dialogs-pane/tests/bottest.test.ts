@@ -355,6 +355,22 @@ describe('reply diff', () => {
     await ui.unmount()
   })
 
+  test('f with nothing marked: the cursor reply against the last reply to the same message; on the first reply, nothing to pair', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openBot($, clock)
+    // "Main menu" came after /settings, as did "⚠ Something went wrong": one key.
+    expect((await ui.find({ key: 'key:diff' }))?.props.hotkey).toBe('f')
+    await ui.press({ key: 'key:diff' })
+    expect((await ui.find({ key: 'bt:diff-view' }))?.text).toContain('diff #677791 → #677792')
+    await ui.press({ key: 'key:diff' })
+    await ui.press({ key: 'key:up' })
+    expect(await ui.find({ key: 'key:diff' })).toBeUndefined()
+    await ui.press({ key: 'key:menu' })
+    expect((await ui.find({ key: 'menu:diff' }))?.text).toBe('f: diff · needs a reply with an earlier pair')
+    await ui.unmount()
+  })
+
   test('with one reply marked f is not drawn; the menu says the step it needs', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     world(on)
@@ -362,7 +378,7 @@ describe('reply diff', () => {
     await ui.press({ key: 'key:mark' })
     expect(await ui.find({ key: 'key:diff' })).toBeUndefined()
     await ui.press({ key: 'key:menu' })
-    expect((await ui.find({ key: 'menu:diff' }))?.text).toBe('f: diff · needs two replies marked (x)')
+    expect((await ui.find({ key: 'menu:diff' }))?.text).toBe('f: diff · needs two bot replies marked')
     await ui.unmount()
   })
 })

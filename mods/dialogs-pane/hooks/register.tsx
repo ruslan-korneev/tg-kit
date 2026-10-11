@@ -725,7 +725,7 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null || (await stopNoticeNow($, Infinity)) !== null,
       marks: chosen.ids.length,
       isRangeOpen: chosen.anchor !== null,
-      hasPair: diffPair(chosen.ids, messages).ok,
+      hasPair: chosen.ids.length > 0 ? diffPair(chosen.ids, messages).ok : atCursor !== undefined && replyPair(atCursor, messages) !== null,
       hasButtons: messages.some(message => message.buttons.length > 0),
       cursorButtons: atCursor === undefined || kind === null || !CHAT_KIND_PRESS.includes(kind) ? 0 : Math.min(MAX_DIGIT_CHIPS, atCursor.buttons.flat().length),
       isRecording: bt.recording !== null,
@@ -2534,7 +2534,7 @@ import type { On } from 'claude-code'
 import type { BotTest, Notice } from '../types'
 import { failureText } from './ui/model'
 import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, type WriteResult } from './bottest/calls'
-import { diffPair, replyDiff } from './bottest/diff'
+import { diffPair, replyDiff, replyPair } from './bottest/diff'
 import { chipAction, isBotFather, readOnlyText } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
@@ -2819,13 +2819,23 @@ async function toggleRecord($: $): Promise<void> {
   else await say($, 'info', `${GLYPH.done} ${recording.steps.length} steps → ${scriptPath(recording)} (in the session's directory)`)
 }
 
-/** `f`: diff the two selected bot replies; again closes the diff. */
+/** `f`: diff the two marked bot replies, or with nothing marked the cursor reply and its pair; again closes the diff. */
 async function toggleDiff($: $): Promise<void> {
   if ((await read($, bottest)).diff !== null) {
     await update($, bottest, value => ({ ...value, diff: null }))
     return
   }
-  const picked = diffPair((await read($, selection)).ids, await threadMessages($))
+  const marked = (await read($, selection)).ids
+  const messages = await threadMessages($)
+  if (marked.length === 0) {
+    // Nothing marked: the cursor reply against the last earlier reply to the same message (§8 T6).
+    const atCursor = await cursorMessage($)
+    const pair = atCursor === undefined ? null : replyPair(atCursor, messages)
+    if (pair === null) return say($, 'info', 'Diff: this reply has no earlier reply to the same message; x x then f compares any two.')
+    await update($, bottest, value => ({ ...value, diff: pair, notice: null }))
+    return
+  }
+  const picked = diffPair(marked, messages)
   if (!picked.ok) return say($, 'info', `Diff: ${picked.reason}.`)
   await update($, bottest, value => ({ ...value, diff: picked.pair, notice: null }))
 }
