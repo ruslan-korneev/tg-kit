@@ -1,6 +1,6 @@
 // Placeholder chats only (repo rule): @example_bot, a made-up group, Saved Messages.
-import type { ProcessRunResult } from 'claude-code'
-import type { ElementQuery, FoundElement } from 'claude-code/testing'
+import type { ProcessRunResult, RenderPropsOf } from 'claude-code'
+import type { ElementQuery, Engine, FoundElement, Mounted } from 'claude-code/testing'
 
 import type { FolderKind, TgDialog, TgMessage, Topic } from '../types'
 
@@ -309,4 +309,21 @@ export function forumRead(argv: readonly string[]): TgMessage[] {
 /** A forum topic's row key as drawn now, `topic:<gen>:<chat>:<id>` (`all` for `≡ all topics`). */
 export async function topicKey(ui: Finder, id: number | 'all', chatId = FORUM.id): Promise<string> {
   return (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').find(key => key.startsWith('topic:') && key.endsWith(`:${chatId}:${id}`)) ?? `topic:none:${chatId}:${id}`
+}
+
+// --- the mock clock with the pane closed ---
+
+/**
+ * Runs `run` (the mock clock moving, mostly) with the pane closed, then draws
+ * the pane again with `props` and returns the new handle; the old one is gone.
+ * A mounted pane redraws on every tick of its 1 s clocks (the AUTOPILOT card's
+ * lanes, a pass's countdown, the undo window): a minute on the clock is sixty
+ * drawings no test reads, and in a loaded whole-suite run those, not the test,
+ * cross the kit's 5000 ms. Where ▸ is lives in the mod's state, not in the
+ * mount, so the pane comes back as it was.
+ */
+export async function paneClosed($: Engine, ui: Mounted<'terminal', 'Pane'>, props: RenderPropsOf['Pane'], run: () => Promise<void>): Promise<Mounted<'terminal', 'Pane'>> {
+  await ui.unmount()
+  await run()
+  return $.ui.mount({ plugin: 'dialogs-pane', surface: 'terminal', component: 'Pane', requestId: 'tg', props })
 }

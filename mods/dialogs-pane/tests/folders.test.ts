@@ -9,7 +9,7 @@ import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-
 
 import { DEFAULT_PALETTE, PALETTES } from '../hooks/ui/palette'
 import type { TgDialog } from '../types'
-import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, chatIds, chatKey, cornerOf, currentTabOf, findChat, folderRun, legendOf, tabsOf, titleOf, type FolderSpec } from './fixtures'
+import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, chatIds, chatKey, cornerOf, currentTabOf, findChat, folderRun, legendOf, paneClosed, tabsOf, titleOf, type FolderSpec } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -403,7 +403,9 @@ describe('passes (§8 T9)', () => {
   })
 
   test('exit 5 keeps the pass, shows the wait counting down, and holds the next pass until it is over', async ($, on) => {
-    const { ui, seen, clock } = await openPane($, on)
+    const opened = await openPane($, on)
+    const { seen, clock } = opened
+    let { ui } = opened
     const shown = await drawnIds(ui)
     seen.pass.answer = failure(5, 'error: FLOOD_WAIT 90s: Telegram asks to wait before retrying')
     await clock.advance(60_000)
@@ -414,10 +416,13 @@ describe('passes (§8 T9)', () => {
     await clock.advance(1_000)
     expect((await legendOf(ui))).toContain('Telegram asks to wait 89 s · retrying')
     seen.pass.answer = undefined
-    await clock.advance(60_000)
-    expect(passes(seen)).toBe(2)
-    await clock.advance(29_000)
-    await clock.settle()
+    // The 89 s left with the pane closed: the countdown would redraw it every second (paneClosed).
+    ui = await paneClosed($, ui, DOCK, async () => {
+      await clock.advance(60_000)
+      expect(passes(seen)).toBe(2)
+      await clock.advance(29_000)
+      await clock.settle()
+    })
     expect(passes(seen)).toBe(3)
     expect(await legendOf(ui)).toBe(LEGEND_TEXT)
     await ui.unmount()

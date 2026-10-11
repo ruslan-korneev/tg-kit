@@ -391,24 +391,28 @@ describe('the agent card (§5.4, §4.6, decisions 2 and 8)', () => {
     return (await ui.findAll({ type: 'Button' })).flatMap(one => (String(one.props.key ?? '').startsWith('ap:level:') ? [String(one.props.key).slice('ap:level:'.length)] : []))
   }
 
-  test('a person lists five rungs, a group four, a bot and a channel two, each on its own digit; Saved Messages and BotFather have no card', async ($, on) => {
-    const { ui } = await openPane($, on)
-    const LADDERS: [number, string[]][] = [
-      [1004, ['follow', 'listen', 'draft', 'auto', 'delegate']],
-      [1002, ['follow', 'listen', 'draft', 'auto']],
-      [1001, ['follow', 'listen']],
-      [1005, ['follow', 'listen']],
-    ]
-    for (const [id, ladder] of LADDERS) {
+  // One test a chat: each opens the pane and its card, a few dozen drawings, inside the kit's 5000 ms under a loaded suite.
+  const LADDERS: [string, number, string[]][] = [
+    ['a person lists five rungs', 1004, ['follow', 'listen', 'draft', 'auto', 'delegate']],
+    ['a group lists four', 1002, ['follow', 'listen', 'draft', 'auto']],
+    ['a bot lists two', 1001, ['follow', 'listen']],
+    ['a channel lists two', 1005, ['follow', 'listen']],
+  ]
+  for (const [who, id, ladder] of LADDERS) {
+    test(`${who}, each on its own digit`, async ($, on) => {
+      const { ui } = await openPane($, on)
       await openChat(ui, id)
       await ui.press({ key: 'key:agent' })
       expect(await rungs(ui)).toEqual(ladder)
       // The digits keep their rungs: 2 is summarize everywhere.
       expect((await ui.find({ key: 'ap:level:listen' }))?.props.hotkey).toBe('2')
       if (ladder.includes('delegate')) expect((await ui.find({ key: 'ap:level:delegate' }))?.props.hotkey).toBe('5')
-      await ui.press({ key: 'key:back' })
-      await ui.press({ key: 'key:back' })
-    }
+      await ui.unmount()
+    })
+  }
+
+  test('Saved Messages and BotFather have no card', async ($, on) => {
+    const { ui } = await openPane($, on)
     for (const id of [1003, 1006]) {
       await openChat(ui, id)
       expect(await ui.find({ key: 'key:agent' })).toBeUndefined()

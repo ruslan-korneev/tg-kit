@@ -11,7 +11,7 @@ import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, Ren
 import { describe, expect, mock, test, type Engine, type MockClock, type Plugin } from 'claude-code/testing'
 
 import type { TgDialog, TgMessage } from '../types'
-import { DIALOGS, STARTED, cornerOf, findChat, folderRun, legendOf, reachChat } from './fixtures'
+import { DIALOGS, STARTED, cornerOf, findChat, folderRun, legendOf, paneClosed, reachChat } from './fixtures'
 import { bandKeyProblems } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
@@ -365,10 +365,13 @@ async function handOver($: Engine, clock: MockClock, seen: World, props = PANE_P
 /** A burst asks for work; the Speaker starts a task; the Worker is spawned. */
 async function startTask($: Engine, clock: MockClock, seen: World) {
   const handed = await handOver($, clock, seen)
-  handed.child?.line({ event: 'message', ...message(500, 'please add a /health endpoint to the app') })
-  await clock.advance(20_000)
-  await clock.settle()
-  return handed
+  // The burst's 20 s with the pane closed (paneClosed): nothing reads it until the task has started.
+  const ui = await paneClosed($, handed.ui, PANE_PROPS, async () => {
+    handed.child?.line({ event: 'message', ...message(500, 'please add a /health endpoint to the app') })
+    await clock.advance(20_000)
+    await clock.settle()
+  })
+  return { ...handed, ui }
 }
 
 const worker = async ($: Engine, command: string): Promise<ToolCallResult> =>
@@ -488,12 +491,9 @@ describe('the handshake with the guard plugin', () => {
   test('a guard gone silent stops every Worker; the Worker’s next call is refused here too', WITH_GUARD, async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { ui, child } = await handOver($, clock, seen)
-    // No pane while the clock runs (startTask's 20 s and the guard's 60 s): every state change would redraw it, and nothing here reads it.
+    const { ui } = await startTask($, clock, seen)
+    // No pane while the guard's 60 s run: every tick would redraw it, and nothing here reads it.
     await ui.unmount()
-    child?.line({ event: 'message', ...message(500, 'please add a /health endpoint to the app') })
-    await clock.advance(20_000)
-    await clock.settle()
     expect((await worker($, 'uv run pytest')).deny).toBeUndefined()
     await guardMode($, 'silent')
     await clock.advance(60_000)
@@ -715,6 +715,8 @@ describe('stopping', () => {
     await ui.select({ key: 'dg:duration', value: '30m' })
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
+    // No pane while half an hour runs: every tick would redraw it, and nothing below reads it.
+    await ui.unmount()
     seen.children.at(-1)?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
     seen.children.at(-1)?.line({ event: 'message', ...message(500, 'please add a /health endpoint') })
     await clock.advance(20_000)
@@ -724,7 +726,6 @@ describe('stopping', () => {
     await clock.settle()
     expect(seen.stopped).toEqual([WORKER])
     expect((await worker($, 'ls')).deny).toContain('This task is over')
-    await ui.unmount()
   })
 })
 describe('what runs: the strip, the kill switch, Activity, the card on top of its chat (T4)', () => {

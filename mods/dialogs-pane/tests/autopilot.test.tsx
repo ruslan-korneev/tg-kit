@@ -226,6 +226,18 @@ async function handOver($: Engine, clock: MockClock, seen: World, level: '1' | '
   return { ui, child }
 }
 
+/**
+ * handOver for a test that reads no pane after it: the pane is closed before
+ * the clock runs. Every autopilot tick and state change (typing, a phase, the
+ * ledger, the card's 1 s clocks) would redraw it, and in a loaded whole-suite
+ * run those drawings, not the test, cross the kit's 5000 ms.
+ */
+async function handOverClosed($: Engine, clock: MockClock, seen: World, level: '1' | '2' | '3') {
+  const { ui, child } = await handOver($, clock, seen, level)
+  await ui.unmount()
+  return { child }
+}
+
 function watchMessage(child: Child | undefined, one: TgMessage) {
   child?.line({ event: 'message', ...one })
 }
@@ -238,9 +250,8 @@ describe('auto', () => {
   test('a burst waits its gap, the Speaker writes, tg send goes through the guard, u undoes it', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { ui: card, child } = await handOver($, clock, seen, '3')
-    // No pane while the clock runs: every state change would redraw it, and nothing here reads it (the band does).
-    await card.unmount()
+    // No pane while the clock runs; the band is read, and the pane again at the end.
+    const { child } = await handOverClosed($, clock, seen, '3')
     expect(child?.argv).toEqual(['tg', 'watch', '1002', '--jsonl'])
     expect(seen.store.get('autopilot.dialogs')).toMatchObject({ [String(GROUP)]: { level: 'auto', perHour: 50, gapS: 20, threshold: 0.8, quiet: null } })
 
@@ -288,7 +299,7 @@ describe('auto', () => {
   test('typing holds the reply until it lapses; messages in one gap are one burst', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'two things:'))
     await clock.advance(10_000)
     watchMessage(child, message(501, 'is it merged? and deployed?'))
@@ -311,9 +322,7 @@ describe('auto', () => {
   test('typing holds 60 s at most', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { ui, child } = await handOver($, clock, seen, '3')
-    // No pane while 90 s of typing run: each event would redraw it, and the test reads only the Speaker's calls.
-    await ui.unmount()
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'hi'))
     for (let s = 0; s < 90; s += 5) {
       child?.line({ event: 'typing', chat_id: GROUP, date: '2026-10-10T12:00:00Z', sender: alice, action: 'typing' })
@@ -335,7 +344,7 @@ describe('auto', () => {
         return answer({ action: 'reply', text: 'Tuesday works', confidence: 0.9, topics: [], reason: '' })
       },
     })
-    await handOver($, clock, seen, '3')
+    await handOverClosed($, clock, seen, '3')
     watchMessage(seen.children.at(-1), message(500, 'call on Tuesday?'))
     await clock.advance(20_000)
     for (let round = 0; round < 3; round++) await clock.advance(20_000)
@@ -361,7 +370,7 @@ describe('auto', () => {
         return answer({ action: 'reply', text: e.prompt.includes('<message id="501"') ? 'Lunch at 1 works' : 'Merged', confidence: 0.95, topics: [], reason: '' })
       },
     })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -374,7 +383,7 @@ describe('auto', () => {
   test('an escalation topic, low confidence or the hourly limit make a draft, never a send', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => answer({ action: 'reply', text: 'Tomorrow at 10 is fine', confidence: 0.95, topics: ['dates'], reason: '' }) })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'call tomorrow at 10?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -484,7 +493,7 @@ describe('auto', () => {
   test("only the card's ⏎ raises the dialog: an auto reply outside allow.toml, a draft sent from the band and /tg stop never ask, and never add", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [GROUP], ask: 'Yes, add it', send: ran => (ran.argv.includes('--yes') ? json({ sent: [message(950, ran.stdin ?? '', { out: true })], replies: [] }) : run(7, '', 'error: 1002 is not in the allowlist; pass --yes\n')) })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     // allow.toml loses Dev Team behind the card's back: auto's send is refused and becomes a draft.
     seen.history.length = 0
     watchMessage(child, message(500, 'is it merged?'))
@@ -593,7 +602,7 @@ describe('auto', () => {
   test('a send the guard refuses keeps the text as a draft with the reason', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { send: () => run(7, '', 'error: 1002 is not in the allowlist; pass --yes\n') })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -606,7 +615,7 @@ describe('auto', () => {
   test('you answer yourself during the gap: the autopilot stands down for that burst', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(5_000)
     watchMessage(child, message(501, 'yes, just now', { out: true }))
@@ -619,7 +628,7 @@ describe('draft and listen', () => {
   test("a 3 ⏎ outside allow.toml starts draft, and its draft sends: the band shows the reply; e edits, ⏎ sends it as the owner's own, with --yes", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: 'Tomorrow is packed, can I write after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
-    const { child } = await handOver($, clock, seen, '2')
+    const { child } = await handOverClosed($, clock, seen, '2')
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -840,7 +849,7 @@ describe('draft and listen', () => {
   test('listen: a summary in the band, nothing written', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => ({ isAnswered: true, text: 'Release moved to Friday.', usage: USAGE }) })
-    const { child } = await handOver($, clock, seen, '1')
+    const { child } = await handOverClosed($, clock, seen, '1')
     watchMessage(child, message(500, 'release moves to Friday'))
     await clock.advance(20_000)
     await clock.settle()
@@ -855,7 +864,7 @@ describe('kill switch', () => {
   test('/tg autopilot off stops every dialog: the watch, the waiting burst, the model call', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(5_000)
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot:\n⟳ Dev Team: auto, 50/h, gathering')
@@ -873,7 +882,7 @@ describe('kill switch', () => {
     const seen = world(on)
     on('turn.start', (_$, e) => ({ turnId: e.turnId }))
     on('turn.complete', (_$, e) => ({ text: e.answer }))
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     expect(seen.commands.find(one => one.name === 'tg')?.immediate).toBe(true)
     await $.turn.start({ text: 'working on something', turnId: 't-0' })
     watchMessage(child, message(500, 'is it merged?'))
