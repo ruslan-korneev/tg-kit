@@ -47,8 +47,9 @@ export function setClass(messages: readonly Pick<TgMessage, 'id' | 'out' | 'send
 export const audienceOf = (sender: SenderClass): Audience => (sender === 'bot' ? 'bot' : 'people')
 
 /** The packet's intent for a sheet's choice: Ask carries the owner's words, Explain its sender's template. */
-export function sheetIntent(intent: RouteIntent, sender: SenderClass, words = ''): Intent {
-  return intent === 'raw' ? { id: 'raw', text: words } : { id: intent, audience: audienceOf(sender) }
+export function sheetIntent(intent: RouteIntent, sender: SenderClass, words = '', hasRecording = false): Intent {
+  if (intent === 'raw') return { id: 'raw', text: words }
+  return hasRecording ? { id: intent, audience: audienceOf(sender), hasRecording: true } : { id: intent, audience: audienceOf(sender) }
 }
 
 export type LastIntents = Record<SenderClass, RouteIntent>

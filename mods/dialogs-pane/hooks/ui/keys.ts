@@ -53,8 +53,9 @@ export const CHAT_KIND_LABEL: Record<ChatKind, string> = {
  * Ask field, a broadcast's legs. `summary` is `t`'s summary, over the lower
  * part; `field` is the send box (`n`) or the search field (`s`) in the bar's
  * row (T4b, §4.3 rule 1). A draft is a row of its chat (§8 T3), not a view.
+ * `recorded` is the recording-stopped sheet in the bar's place (§5.2, §8 T6).
  */
-export const WHERES = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'menu', 'band'] as const
+export const WHERES = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'recorded', 'menu', 'band'] as const
 export type Where = (typeof WHERES)[number]
 
 export type Seat = 'dock' | 'inline'
@@ -91,10 +92,12 @@ export type KeyFacts = {
   hasNotice: boolean
   marks: number
   isRangeOpen: boolean
-  /** Two bot replies are marked: `f` has a pair. */
+  /** `f` has a pair: two bot replies marked, or, with nothing marked, the cursor reply has an earlier reply to the same message. */
   hasPair: boolean
   /** A message in the open chat has buttons. */
   hasButtons: boolean
+  /** Chips on the cursor message the digits press (the first nine), in a chat with presses (§4.6). */
+  cursorButtons: number
   isRecording: boolean
   isWatched: boolean
   isFollowed: boolean
@@ -120,6 +123,7 @@ export const NO_FACTS: KeyFacts = {
   isRangeOpen: false,
   hasPair: false,
   hasButtons: false,
+  cursorButtons: 0,
   isRecording: false,
   isWatched: false,
   isFollowed: false,
@@ -156,7 +160,7 @@ type Def = {
   isDigits?: true
 }
 
-const PANE: readonly Where[] = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary']
+const PANE: readonly Where[] = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'recorded']
 const LISTS: readonly Where[] = ['chats', 'chat']
 /** Where digits pick a folder and `y` opens For you: Chats and the views in their place (§4.7); in a chat digits press buttons. */
 const FOLDERS: readonly Where[] = ['chats', 'folders', 'foryou']
@@ -168,7 +172,9 @@ const WRITE: readonly ChatKind[] = ['bot', 'person', 'group', 'saved']
 export const CHAT_KIND_WRITE = WRITE
 const AGENT: readonly ChatKind[] = ['bot', 'person', 'group', 'channel']
 const WATCH: readonly ChatKind[] = ['bot', 'person', 'group', 'channel']
+/** Where digits press a message's buttons (§4.6 "1–9 press"): a bot, a group's bot messages, a channel's link buttons, BotFather's `ro`. */
 const BUTTONS: readonly ChatKind[] = ['bot', 'group', 'channel', 'botfather']
+export const CHAT_KIND_PRESS = BUTTONS
 
 const SUMMARY_LABEL: Record<KeyFacts['summary'], string> = { none: 'summary', loading: 'cancel summary', ok: 'hide summary', error: 'retry summary' }
 
@@ -240,6 +246,18 @@ export const KEYS = [
     label: () => 'buttons',
     needs: c => (c.facts.hasButtons ? null : 'needs a message with buttons'),
   },
+  // The cursor message's chips carry the digits (§5.2); BotFather's explain instead of pressing.
+  {
+    id: 'press',
+    key: '1-9',
+    hotkey: null,
+    group: 'message',
+    where: ['chat'],
+    kinds: BUTTONS,
+    label: c => (c.kind === 'botfather' ? 'press · ro' : 'press'),
+    needs: c => (c.facts.cursorButtons > 0 ? null : 'needs a message with buttons under the cursor'),
+    isDigits: true,
+  },
   {
     id: 'agent',
     key: 'a',
@@ -264,7 +282,7 @@ export const KEYS = [
     where: ['chat', 'diff'],
     kinds: ['bot'],
     label: c => (c.where === 'diff' ? 'close diff' : 'diff'),
-    needs: c => (c.where === 'diff' || c.facts.hasPair ? null : 'needs two replies marked (x)'),
+    needs: c => (c.where === 'diff' || c.facts.hasPair ? null : c.facts.marks > 0 ? 'needs two bot replies marked' : 'needs a reply with an earlier pair'),
   },
   { id: 'folder', key: '1-9', hotkey: null, group: 'chats', where: FOLDERS, kinds: 'any', label: () => 'folder', isDigits: true },
   { id: 'foryou', key: 'y', hotkey: 'y', group: 'chats', where: [...LISTS, 'folders', 'foryou'], kinds: 'any', label: () => 'for you' },
@@ -284,6 +302,8 @@ export const KEYS = [
     needs: c => (c.where === 'chat' ? onMessage(c) : onIntents(c)),
   },
   { id: 'intents', key: '1-9', hotkey: null, group: 'message', where: ['sheet'], kinds: 'any', label: () => 'send as', needs: onIntents, isDigits: true },
+  // The recording-stopped sheet (§5.2, §8 T6): 1 hands it to an agent as a live test, 2 copies the script's path.
+  { id: 'handoff', key: '1-2', hotkey: null, group: 'chat', where: ['recorded'], kinds: ['bot'], label: () => 'hand to an agent · copy the path', isDigits: true },
   {
     id: 'target',
     key: '1-9',
@@ -312,12 +332,12 @@ export const KEYS = [
     key: 'd',
     hotkey: 'd',
     group: 'pane',
-    where: ['chats', 'chat', 'foryou', 'card', 'activity', 'band'],
+    where: ['chats', 'chat', 'foryou', 'card', 'activity', 'recorded', 'band'],
     kinds: 'any',
     label: c =>
-      c.where === 'activity' ? 'dismiss ended tasks' : (c.where === 'foryou' || c.where === 'chat') && c.facts.row !== 'chat' && c.facts.row !== null ? 'drop' : 'dismiss',
+      c.where === 'recorded' ? 'discard' : c.where === 'activity' ? 'dismiss ended tasks' : (c.where === 'foryou' || c.where === 'chat') && c.facts.row !== 'chat' && c.facts.row !== null ? 'drop' : 'dismiss',
     needs: c =>
-      c.where === 'band'
+      c.where === 'band' || c.where === 'recorded'
         ? null
         : c.where === 'activity'
           ? c.facts.hasFinished
@@ -348,7 +368,7 @@ export const KEYS = [
     group: 'pane',
     // In the Folders list, the top level, h goes back down to the chats it came from: a key with no
     // meaning there would fall through to the prompt and take the keys with it (seen live).
-    where: ['chats', 'foryou', 'folders', 'chat', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'menu'],
+    where: ['chats', 'foryou', 'folders', 'chat', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'recorded', 'menu'],
     kinds: 'any',
     label: c =>
       c.where === 'folders'
@@ -361,7 +381,7 @@ export const KEYS = [
           : 'chats'
         : (c.where === 'sheet' && c.facts.sheet === 'intents') || c.where === 'field'
           ? 'cancel'
-          : c.where === 'summary'
+          : c.where === 'summary' || c.where === 'recorded'
             ? 'close'
             : 'back',
   },
@@ -386,7 +406,7 @@ export type KeyDef = Def & { id: KeyId }
 const TABLE: readonly KeyDef[] = KEYS
 
 /** The ids a press runs: every key but the digit groups, which their options draw. */
-export type RunKey = Exclude<KeyId, 'folder' | 'level' | 'topics' | 'intents' | 'target'>
+export type RunKey = Exclude<KeyId, 'folder' | 'level' | 'topics' | 'intents' | 'target' | 'press'>
 
 export function keyDef(id: KeyId): KeyDef {
   const def = TABLE.find(one => one.id === id)
@@ -427,7 +447,8 @@ export const MAX_BAR = 7
 
 /** §4.6 "the action bar, by context": the verbs after ⏎, in the order the owner reaches for them. */
 const KIND_BAR: Record<ChatKind, readonly KeyId[]> = {
-  bot: ['send', 'write', 'record', 'mark', 'diff', 'agent'],
+  // `1-2: press` follows ⏎ as text (the chips carry the digits); f comes before x, so x leaves first at 64 columns (§5.2).
+  bot: ['send', 'write', 'record', 'diff', 'mark'],
   person: ['send', 'write', 'agent', 'watch', 'mark'],
   group: ['send', 'summary', 'watch', 'agent', 'write'],
   channel: ['send', 'summary', 'watch', 'agent', 'mark'],
@@ -484,6 +505,9 @@ function verbs(c: KeyContext): readonly KeyId[] {
       return []
     case 'diff':
       return ['diff', 'back']
+    case 'recorded':
+      // The sheet draws its own keys in the bar's place, as the send sheet does.
+      return []
     case 'menu':
       return ['back']
     case 'band':
@@ -530,6 +554,18 @@ export function actionBar(c: KeyContext, width = Infinity): ShownKey[] {
         ? { ...shown(keyDef(id), c), isRinged: true as const, ...(step === 'ladder' ? {} : { button: `key:start:${step}` }) }
         : shown(keyDef(id), c),
   )
+}
+
+/**
+ * `1-2: press` after the bar's first key in a chat (§4.6 "a bot chat"): the
+ * cursor message's chips carry the digits, so the bar names them as text, as
+ * the Folders list does. Not while marking: the marked set's keys lead then.
+ */
+export function pressText(c: KeyContext): string | null {
+  const def = keyDef('press')
+  if (!isLive(def, c) || c.facts.marks > 0 || c.facts.isRangeOpen) return null
+  const count = c.facts.cursorButtons
+  return `${count === 1 ? '1' : `1-${count}`}: ${def.label(c)}`
 }
 
 /**
@@ -592,6 +628,7 @@ const WHERE_WORDS: Record<Where, string> = {
   diff: 'a diff',
   summary: 'the summary',
   field: 'a field',
+  recorded: 'a stopped recording',
   menu: 'the menu',
   band: 'the band',
 }

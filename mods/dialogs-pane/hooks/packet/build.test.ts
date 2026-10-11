@@ -183,6 +183,37 @@ describe('buildPacket', () => {
   })
 })
 
+describe('a recording handed over (dialogs-pane-ux.md §8 T6)', () => {
+  const recording = {
+    path: '.tg-recordings/20261010-140000-example_bot.sh',
+    replay: 'sh .tg-recordings/20261010-140000-example_bot.sh',
+    steps: [
+      { kind: 'send', text: 'call +1 555 010 0100 <now>', exit: 0 },
+      { kind: 'press', label: 'Retry', row: 0, col: 1, exit: 6 },
+    ],
+  } as const
+
+  test('its steps ride in <recording>, masked and escaped as the packet is; its replay stays whole; Test runs it live', () => {
+    const p = buildPacket({ messages: [REPLY], context: [SENT], peer: BOT, intent: { id: 'test', audience: 'bot', hasRecording: true }, recording })
+    expect(p.replay).toBe('sh .tg-recordings/20261010-140000-example_bot.sh')
+    expect(p.text).toContain('<replay>sh .tg-recordings/20261010-140000-example_bot.sh</replay>')
+    expect(p.text).toContain('<recording path=".tg-recordings/20261010-140000-example_bot.sh" steps="2">')
+    expect(p.text).toContain('<step n="2" kind="press" row="0" col="1" exit="6">Retry</step>')
+    expect(p.text).not.toContain('555')
+    expect(p.text).toContain('&lt;now&gt;</step>')
+    expect(p.text).toContain('Intent: Test — run the <replay> script, the <recording> of this exchange, as a live test of the bot')
+  })
+
+  test('a script that was not written: the steps alone, no replay', () => {
+    const p = buildPacket({ messages: [REPLY], peer: BOT, intent: { id: 'test', audience: 'bot' }, recording: { ...recording, path: null, replay: null } })
+    expect(p.replay).toBeNull()
+    expect(p.text).not.toContain('<replay>')
+    expect(p.text).toContain('<recording steps="2">')
+    // Without the recording flag, Test reads as ever.
+    expect(p.text).toContain('Intent: Test — write an automated test')
+  })
+})
+
 describe('escaping', () => {
   test('text and attributes', () => {
     expect(escapeText('a & b < c > d')).toBe('a &amp; b &lt; c &gt; d')

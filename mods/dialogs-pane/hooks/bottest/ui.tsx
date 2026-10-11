@@ -5,37 +5,154 @@ import type { RenderElement } from 'claude-code'
 
 import type { Button, MessageView } from '../packet/types'
 import type { Els } from '../ui/components'
-import { TOKEN, oneLine } from '../ui/model'
+import { GLYPH, TOKEN, oneLine } from '../ui/model'
 import { keyboardLines, type ReplyDiff } from './diff'
-import { chipLabel } from './keyboard'
+import { CHIP_GAP, chipsCells } from '../ui/thread'
 
 /** The pane's chip address: `btn:<message>:<row>:<col>`; `b` moves the focus ring here. */
 export function chipKey(messageId: number, button: Pick<Button, 'row' | 'col'>): string {
   return `btn:${messageId}:${button.row}:${button.col}`
 }
 
-/** Inline keyboards as pressable chips; dimmed and marked `ro` where the pane will not write. */
-export function ChipRow(
+/** Digits press the first nine chips of the cursor message (§3: only what is numbered on screen). */
+export const MAX_DIGIT_CHIPS = 9
+
+/**
+ * A message's buttons as chips (§5.2, §8 T6). The cursor message's first nine
+ * carry the digits that press them (`1: Retry  2: Back`); every other chip is
+ * drawn in brackets (`[Settings] [Help]`). Each chip is one Button wherever the
+ * cursor is, so a move changes no ring stop above the cursor row (§4.3 rule 1),
+ * and the brackets are padded to the digit form's width, so the stamp and the id
+ * after them stay put. Dim and marked `ro` where the pane will not press
+ * (BotFather: a press explains). `isPressable` false (a chat with no presses, or
+ * a layer holding the ring, rule 3): text, no stops.
+ */
+export function Chips(
   { Box, Button, Text }: Els,
-  props: { message: MessageView; isReadOnly: boolean; width: number; onChip: (button: Button) => void },
+  props: {
+    message: MessageView
+    labels: readonly (readonly string[])[]
+    isDigits: boolean
+    isPressable: boolean
+    isReadOnly: boolean
+    onChip: (button: Button) => void
+  },
 ): RenderElement {
   const { message } = props
-  const count = message.buttons.flat().length
-  // Indent(8), `ro`(3), and per chip its brackets(4) and gap(1): the labels share the rest.
-  const room = Math.max(6, Math.floor((props.width - 11) / Math.max(1, count)) - 5)
-  const chips = message.buttons.flatMap((row, index) => [
-    ...(index === 0 ? [] : [<Text key={`sep:${message.id}:${index}`} dimColor>·</Text>]),
-    ...row.map(button => (
-      <Button key={chipKey(message.id, button)} dimColor={props.isReadOnly} onPress={() => props.onChip(button)}>
-        {chipLabel(button, room)}
-      </Button>
-    )),
+  const rows = message.buttons.filter(row => row.length > 0)
+  let index = 0
+  const items = rows.flatMap((row, rowIndex) => [
+    ...(rowIndex === 0 ? [] : [<Text key={`sep:${message.id}:${rowIndex}`} dimColor>·</Text>]),
+    ...row.map((button, col) => {
+      const label = props.labels[rowIndex]?.[col] ?? button.text
+      const digit = props.isDigits && index < MAX_DIGIT_CHIPS ? String(index + 1) : null
+      index += 1
+      const text = digit === null ? `[${label}]` : label
+      if (!props.isPressable) {
+        // A Box carries the chip's key, as a Text keeps none.
+        return (
+          <Box key={chipKey(message.id, button)}>
+            <Text dimColor>{text}</Text>
+          </Box>
+        )
+      }
+      return (
+        <Button key={chipKey(message.id, button)} plain hotkey={digit ?? undefined} dimColor={props.isReadOnly} onPress={() => props.onChip(button)}>
+          {text}
+        </Button>
+      )
+    }),
   ])
+  // A bracketed chip is a cell narrower than its digit form: the Box keeps the digit form's width, so what follows stays put.
   return (
-    <Box key={`chips:${message.id}`} flexDirection="row" gap={1}>
-      <Text>{'       '}</Text>
-      {...chips}
-      {props.isReadOnly ? <Text color={TOKEN.warn}>ro</Text> : null}
+    <Box key={`chips:${message.id}`} width={chipsWidth(props.labels, props.isReadOnly)} flexShrink={0}>
+      <Box flexDirection="row" columnGap={props.isDigits ? CHIP_GAP : 1}>
+        {...items}
+        {props.isReadOnly ? <Text color={TOKEN.warn}>ro</Text> : null}
+      </Box>
+    </Box>
+  )
+}
+
+/** Cells Chips takes, whichever form: the digit form's, with `ro` after the chips where it is drawn. */
+export function chipsWidth(labels: readonly (readonly string[])[], isReadOnly: boolean): number {
+  return chipsCells(labels) + (isReadOnly ? 2 + CHIP_GAP : 0)
+}
+
+/**
+ * Recording stopped (§5.2, §8 T6): the recording is a test brief, not just a
+ * file. It takes the action bar's place, four rows in the dock and two inline,
+ * as the send sheet does: `1` hands it to an agent as a live test, `2` copies
+ * the script's path, `d` discards it, ⏎ (its ringed Button) closes it.
+ */
+export function RecordedSheet(
+  { Box, Button, Text }: Els,
+  props: {
+    seat: 'dock' | 'inline'
+    width: number
+    steps: number
+    /** The script as the sheet names it, under the session's directory; null when it could not be written. */
+    shown: string
+    isWritten: boolean
+    isFocused: boolean
+    onHand: () => void
+    onCopy: () => void
+    onDiscard: () => void
+    onOk: () => void
+  },
+): RenderElement {
+  const dim = !props.isFocused
+  const title = `recording stopped · ${props.steps} step${props.steps === 1 ? '' : 's'}`
+  const where = props.isWritten ? `${props.shown} · git-ignored` : `${GLYPH.error} could not write ${props.shown}; 1 sends the steps alone`
+  const discard = (
+    <Button key="rec:discard" plain hotkey="d" dimColor={dim} onPress={props.onDiscard}>
+      discard
+    </Button>
+  )
+  const options = [
+    <Button key="rec:hand" plain hotkey="1" dimColor={dim} onPress={props.onHand}>
+      {props.seat === 'dock' ? 'hand to an agent as a live test' : 'hand to an agent'}
+    </Button>,
+    <Button key="rec:copy" plain hotkey="2" dimColor={dim} onPress={props.onCopy}>
+      copy the path
+    </Button>,
+  ]
+  const ok = (
+    <Button key="rec:ok" plain autoFocus dimColor={dim} onPress={props.onOk}>
+      ⏎ ok
+    </Button>
+  )
+  if (props.seat === 'dock') {
+    const rule = Math.max(1, props.width - title.length - 'd: discard'.length - 6)
+    return (
+      <Box key="rec:sheet" flexDirection="column">
+        <Box flexDirection="row">
+          <Text color={TOKEN.accent} dimColor>{`─ ${title} ${'─'.repeat(rule)} `}</Text>
+          {discard}
+          <Text color={TOKEN.accent} dimColor>
+            {' ─'}
+          </Text>
+        </Box>
+        <Text dimColor={props.isWritten} color={props.isWritten ? undefined : TOKEN.warn} wrap="truncate-end">
+          {where}
+        </Text>
+        <Box flexDirection="row" columnGap={3}>
+          {options}
+        </Box>
+        {ok}
+      </Box>
+    )
+  }
+  return (
+    <Box key="rec:sheet" flexDirection="column">
+      <Box flexDirection="row" columnGap={3}>
+        <Text color={TOKEN.accent} wrap="truncate-end">{`${title} → ${props.isWritten ? props.shown : 'not written'}`}</Text>
+        {discard}
+      </Box>
+      <Box flexDirection="row" columnGap={3}>
+        {options}
+        {ok}
+      </Box>
     </Box>
   )
 }

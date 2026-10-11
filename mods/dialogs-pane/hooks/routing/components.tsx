@@ -44,6 +44,12 @@ export function SendSheet(
     isRedacted: boolean
     isAsking: boolean
     isFocused: boolean
+    /**
+     * A hand-off (§8 T6): what the last row says in place of the ringed one's
+     * hint (the dock's whole row; inline's `⏎ …`), in `warn` when the bot is not
+     * in allow.toml and ⏎ asks first.
+     */
+    note?: { dock: string; inline: string; isWarn: boolean } | null
     onIntent: (intent: RouteIntent) => void
     onAsk: (words: string) => void
     onAgent: () => void
@@ -93,6 +99,8 @@ export function SendSheet(
     )
   const askHint = <Text dimColor wrap="truncate-end">⏎ sends with these words · ⏎ on an empty field goes back</Text>
   const since = props.isRemembered ? `last used for ${props.who}` : `${props.who} start on ${intentText(props.ringed, true).replace('…', '')}`
+  const note = props.note ?? null
+  const noteColor = note?.isWarn === true ? TOKEN.warn : undefined
   if (isDock) {
     const head = ` ${props.title} `
     const tail = ` ${props.target} `
@@ -102,7 +110,11 @@ export function SendSheet(
         <Text color={TOKEN.accent} dimColor wrap="truncate-end">{`─${head}${'─'.repeat(rule)}${tail}─`}</Text>
         {props.isAsking ? ask : intents}
         {props.isAsking ? askHint : <Box flexDirection="row" columnGap={3}>{keys}</Box>}
-        {props.isAsking ? null : <Text dimColor wrap="truncate-end">{`⏎ sends the ringed one (${since})`}</Text>}
+        {props.isAsking ? null : (
+          <Text dimColor={noteColor === undefined} color={noteColor} wrap="truncate-end">
+            {note === null ? `⏎ sends the ringed one (${since})` : note.dock}
+          </Text>
+        )}
       </Box>
     )
   }
@@ -117,7 +129,9 @@ export function SendSheet(
         askHint
       ) : (
         <Box flexDirection="row" columnGap={3}>
-          <Text dimColor>⏎ the ringed one</Text>
+          <Text dimColor={noteColor === undefined} color={noteColor}>
+            {note === null ? '⏎ the ringed one' : note.inline}
+          </Text>
           {keys}
         </Box>
       )}

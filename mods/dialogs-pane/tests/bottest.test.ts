@@ -36,11 +36,29 @@ function world(
     dialogs?: typeof DIALOGS
     messages?: typeof MESSAGES
     writes?: (argv: readonly string[]) => ProcessRunResult
+    /** The engine dialog's answer ($.ui.ask): an option's label, or a dismissal. */
+    ask?: string
   } = {},
 ) {
   const runs: Runs = []
   const files = new Map<string, string>()
-  const saved: { bottest: BotTest | null } = { bottest: null }
+  const saved: { bottest: BotTest | null; autopilot: unknown } = { bottest: null, autopilot: null }
+  const seen: { prompts: string[]; questions: string[]; copied: string[] } = { prompts: [], questions: [], copied: [] }
+  const allow = [...(options.allow ?? [BOT_ID])]
+  on('prompt.submit', (_$, e) => {
+    seen.prompts.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.copy', (_$, e) => {
+    seen.copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('tool.call', { tool: 'AskUserQuestion' }, (_$, e) => {
+    const question = e.tool === 'AskUserQuestion' ? (e.questions[0]?.question ?? '') : ''
+    seen.questions.push(question)
+    if (options.ask === undefined) return { deny: 'dismissed' }
+    return { result: { questions: [], answers: { [question]: options.ask } } as never }
+  })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work/example-bot' }))
   on('store.get', () => ({ value: undefined }))
@@ -52,6 +70,7 @@ function world(
   on('ui.focus', () => ({}))
   on('state.set', async (_$, e, next) => {
     if (e.key === 'bottest') saved.bottest = e.value as BotTest // the contract's type for this key
+    if (e.key === 'autopilot') saved.autopilot = e.value
     return next(e)
   })
   on('ui.status', () => ({ value: undefined }))
@@ -62,14 +81,19 @@ function world(
   })
   on('process.run', (_$, e) => {
     runs.push({ argv: e.argv, ...(e.init?.stdin === undefined ? {} : { stdin: e.init.stdin }) })
-    const [, command, sub] = e.argv
+    const [program, command, sub] = e.argv
+    if (program === 'rm') return { value: out(0, undefined) }
+    if (command === 'allow' && sub === 'add') {
+      allow.push(BOT_ID)
+      return { value: out(0, { added: BOT_ID }) }
+    }
     if (command === 'dialogs') return { value: out(0, options.dialogs ?? DIALOGS) }
     if (command === 'folders') return { value: folderRun(e.argv, out(0, options.dialogs ?? DIALOGS)) }
     if (command === 'read') return { value: out(0, options.messages ?? MESSAGES) }
-    if (command === 'allow' && sub === 'list') return { value: out(0, (options.allow ?? [BOT_ID]).map(id => ({ id, kind: 'bot' }))) }
+    if (command === 'allow' && sub === 'list') return { value: out(0, allow.map(id => ({ id, kind: 'bot' }))) }
     return { value: options.writes?.(e.argv) ?? out(2, undefined, 'error: unexpected call') }
   })
-  return { runs, files, saved }
+  return { runs, files, saved, seen }
 }
 
 async function openBot($: Parameters<TestBody>[0], clock: { settle: () => Promise<void> }) {
@@ -166,6 +190,130 @@ describe('pressable buttons', () => {
   })
 })
 
+describe('digits press the cursor message’s buttons (§5.2, §8 T6)', () => {
+  /** The thread's ring stops, in order: its messages and their chips. */
+  const threadStops = async (ui: Awaited<ReturnType<typeof openBot>>) =>
+    (await ui.findAll({ type: 'Button' })).flatMap(one => (one.key?.startsWith('msg:') === true || one.key?.startsWith('btn:') === true ? [one.key] : []))
+
+  test('the cursor reply’s chips carry 1 and 2, the bar says 1-2: press, and 2 runs tg press on row 0 col 1 with --yes', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const { runs } = world(on, { writes: () => out(0, { button: {}, answer: null, replies: [EDITED] }) })
+    const ui = await openBot($, clock)
+    await ui.press({ key: 'key:up' })
+    expect((await ui.find({ key: 'btn:677791:0:0' }))?.props.hotkey).toBe('1')
+    expect((await ui.find({ key: 'btn:677791:0:1' }))?.props.hotkey).toBe('2')
+    expect((await ui.find({ key: 'bar' }))?.text).toContain('1-2: press')
+    await ui.press({ key: 'btn:677791:0:1' })
+    await clock.settle()
+    expect(writes(runs).map(run => run.argv)).toEqual([['tg', 'press', '@example_bot', '677791', '--row', '0', '--col', '1', '--wait', '5s', '--json', '--yes']])
+    await ui.unmount()
+  })
+
+  test('off the cursor the chips are brackets with no digit, each still one Button: a move changes no stop above the cursor', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openBot($, clock)
+    // The cursor on "Main menu", which has no buttons: no digit anywhere, and the bar names none.
+    const chip = await ui.find({ key: 'btn:677791:0:0' })
+    expect(chip?.props.hotkey).toBeUndefined()
+    expect(chip?.text).toBe('[Retry]')
+    expect((await ui.find({ key: 'bar' }))?.text).not.toContain('press')
+    const before = await threadStops(ui)
+    await ui.press({ key: 'key:up' })
+    expect(await threadStops(ui)).toEqual(before)
+    expect((await ui.find({ key: 'btn:677791:0:0' }))?.text).toBe('Retry')
+    await ui.unmount()
+  })
+
+  test("BotFather's digits explain and run nothing (ro)", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const dialogs = DIALOGS.map(one => (one.id === BOT_ID ? { ...one, username: 'BotFather', title: 'BotFather' } : one))
+    const { runs } = world(on, { dialogs })
+    const ui = await openBot($, clock)
+    await ui.press({ key: 'key:up' })
+    expect((await ui.find({ key: 'btn:677791:0:0' }))?.props.hotkey).toBe('1')
+    expect((await ui.find({ key: 'bar' }))?.text).toContain('1-2: press · ro')
+    await ui.press({ key: 'btn:677791:0:0' })
+    await clock.settle()
+    expect((await ui.find({ key: 'notice' }))?.text).toContain('BotFather is read-only')
+    expect(writes(runs)).toEqual([])
+    await ui.unmount()
+  })
+
+  test("a group's bot message takes the digits; a person's and Saved Messages' chips are text, nothing to press", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const { runs } = world(on, { writes: () => out(0, { button: {}, answer: null, replies: [] }) })
+    const ui = await openBot($, clock)
+    for (const id of [1002, 1003]) {
+      await ui.press({ key: await chatKey(ui, id) })
+      await clock.settle()
+      await ui.press({ key: 'key:up' })
+      const chip = await ui.find({ key: 'btn:677791:0:0' })
+      if (id === 1002) {
+        expect(chip?.type).toBe('Button')
+        expect(chip?.props.hotkey).toBe('1')
+        await ui.press({ key: 'btn:677791:0:0' })
+        await clock.settle()
+      } else {
+        expect(chip?.type).toBe('Box')
+        expect((await ui.find({ key: 'bar' }))?.text).not.toContain('press')
+      }
+    }
+    expect(writes(runs).map(run => run.argv.slice(0, 4))).toEqual([['tg', 'press', '1002', '677791']])
+    await ui.unmount()
+  })
+})
+
+describe('message rows (§7.3, §8 T6)', () => {
+  const member = { id: 2001, kind: 'user' as const, username: null, name: 'Member 1' }
+  // A day apart, so each gets its divider: the 9th, then yesterday (NOW is the 10th; the dates are noon-ish UTC).
+  const GROUP = MESSAGES.slice(0, 2).map((one, index) => ({
+    ...one,
+    chat_id: 1002,
+    id: 499 + index,
+    date: index === 0 ? '2026-10-08T10:44:00Z' : '2026-10-09T10:58:00Z',
+    sender: member,
+    out: false,
+    reply_to: null,
+    keyboard: null,
+    buttons: [],
+    text: index === 0 ? 'anyone looked at the flaky test?' : 'deploy is green',
+  }))
+
+  test("a group's sender column fits Member 1 and a gap; time is the time; a divider per day; the id on the cursor row only", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on, { messages: GROUP })
+    const ui = await openBot($, clock)
+    await ui.press({ key: await chatKey(ui, 1002) })
+    await clock.settle()
+    const older = (await ui.find({ key: 'msg:499' }))?.text ?? ''
+    const newest = (await ui.find({ key: 'msg:500' }))?.text ?? ''
+    expect(older).toMatch(/ \d\d:\d\d Member 1 anyone looked/)
+    expect(older).not.toContain('#499')
+    expect(newest).toContain('#500')
+    expect(newest).not.toContain('yesterday')
+    expect((await ui.find({ key: 'day:500' }))?.text).toContain('── yesterday ──')
+    expect(await ui.find({ key: 'day:499' })).toBeDefined()
+    await ui.press({ key: 'key:up' })
+    expect((await ui.find({ key: 'msg:499' }))?.text).toContain('#499')
+    expect((await ui.find({ key: 'msg:500' }))?.text).not.toContain('#500')
+    await ui.unmount()
+  })
+
+  test('from 90 columns the chips share their message’s row; at 64 they take the row under it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openBot($, clock)
+    expect(await ui.find({ key: 'line:677791' })).toBeDefined()
+    expect(await ui.find({ key: 'under:677791' })).toBeUndefined()
+    await ui.unmount()
+    const narrow = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: { ...PROPS, bodyColumns: 64 } })
+    expect(await narrow.find({ key: 'under:677791' })).toBeDefined()
+    expect(await narrow.find({ key: 'line:677791' })).toBeUndefined()
+    await narrow.unmount()
+  })
+})
+
 describe('recorder', () => {
   test('r, a send from the box, a press, r: a script under .tg-recordings and the steps in state', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
@@ -206,7 +354,109 @@ describe('recorder', () => {
 
     expect(saved.bottest?.recorded?.steps.map(step => step.kind)).toEqual(['send', 'press'])
     expect(saved.bottest?.recorded?.path).toBe(path)
-    expect((await ui.find({ key: 'notice' }))?.text).toContain(`2 steps → .tg-recordings/`)
+    // The recording-stopped sheet (§5.2): in the bar's place, its ⏎ ringed, the chat under it without stops.
+    const sheet = (await ui.find({ key: 'rec:sheet' }))?.text ?? ''
+    expect(sheet).toContain('recording stopped · 2 steps')
+    expect(sheet).toContain('.tg-recordings/')
+    expect((await ui.find({ key: 'rec:ok' }))?.props.autoFocus).toBe(true)
+    expect((await ui.find({ key: 'rec:hand' }))?.props.hotkey).toBe('1')
+    expect((await ui.find({ key: 'rec:copy' }))?.props.hotkey).toBe('2')
+    expect(await ui.find({ key: 'msg:677801' })).toBeUndefined()
+    await ui.press({ key: 'rec:ok' })
+    expect(await ui.find({ key: 'rec:sheet' })).toBeUndefined()
+    expect((await ui.find({ key: 'notice' }))?.text).toContain('2 steps → .tg-recordings/')
+    expect((await ui.find({ key: 'msg:677801' }))?.props.autoFocus).toBe(true)
+    await ui.unmount()
+  })
+
+  /** r, a press of Retry, r: the sheet is up. */
+  async function recordPress($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], options: Parameters<typeof world>[1] = {}) {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { writes: () => out(0, { button: {}, answer: null, replies: [EDITED] }), ...options })
+    const ui = await openBot($, clock)
+    await ui.press({ key: 'key:record' })
+    await ui.press({ key: 'key:up' })
+    await ui.press({ key: 'btn:677791:0:0' })
+    await clock.settle()
+    await ui.press({ key: 'key:record' })
+    await clock.settle()
+    expect(await ui.find({ key: 'rec:sheet' })).toBeDefined()
+    return { ui, clock, ...w }
+  }
+
+  test('2 copies the full path and leaves the sheet up; d discards: the script is removed and the sheet closes', async ($, on) => {
+    const { ui, clock, runs, seen } = await recordPress($, on)
+    await ui.press({ key: 'rec:copy' })
+    await clock.settle()
+    expect(seen.copied).toEqual([expect.stringMatching(/^\/work\/example-bot\/\.tg-recordings\/.+-example_bot\.sh$/)])
+    expect(await ui.find({ key: 'rec:sheet' })).toBeDefined()
+    expect((await ui.find({ key: 'rec:discard' }))?.props.hotkey).toBe('d')
+    await ui.press({ key: 'rec:discard' })
+    await clock.settle()
+    expect(await ui.find({ key: 'rec:sheet' })).toBeUndefined()
+    expect(runs.filter(run => run.argv[0] === 'rm').map(run => run.argv.slice(0, 3))).toEqual([['rm', '-f', '--']])
+    expect((await ui.find({ key: 'notice' }))?.text).toContain('Recording discarded: 1 steps')
+    await ui.unmount()
+  })
+
+  test('1 hands it to an agent: the send sheet on Test, the recording and its script in the packet', async ($, on) => {
+    const { ui, clock, seen } = await recordPress($, on)
+    await ui.press({ key: 'rec:hand' })
+    await clock.settle()
+    expect(await ui.find({ key: 'rec:sheet' })).toBeUndefined()
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('recording · 1 step')
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('⏎ sends the ringed one, the recording with it (1 step)')
+    expect((await ui.find({ key: 'sheet:intent:test' }))?.props.autoFocus).toBe(true)
+    await ui.press({ key: 'sheet:intent:test' })
+    await clock.settle()
+    expect(seen.questions).toEqual([])
+    const packet = seen.prompts.at(-1) ?? ''
+    expect(packet).toContain('<recording path=".tg-recordings/')
+    expect(packet).toContain('<step n="1" kind="press" row="0" col="0" exit="0">Retry</step>')
+    // The replay is the pane's own words: redaction leaves the script's dated name whole.
+    expect(packet).toMatch(/<replay>sh \.tg-recordings\/\d{8}-\d{6}-example_bot\.sh<\/replay>/)
+    expect(packet).toContain('Intent: Test — run the <replay> script, the <recording> of this exchange, as a live test')
+    await ui.unmount()
+  })
+
+  for (const answer of ['No', 'Yes, add it']) {
+    test(`a bot outside allow.toml: the sheet says so, and its ⏎ asks first; ${answer === 'No' ? 'No sends nothing' : 'Yes adds it and sends'} (decision 1)`, async ($, on) => {
+      const { ui, clock, runs, seen, saved } = await recordPress($, on, { allow: [], ask: answer })
+      await ui.press({ key: 'rec:hand' })
+      await clock.settle()
+      expect((await ui.find({ key: 'sheet' }))?.text).toContain('⏎ asks first: @example_bot is not in allow.toml')
+      await ui.press({ key: 'sheet:intent:test' })
+      await clock.settle()
+      expect(seen.questions).toEqual([expect.stringContaining('An agent replaying this recording writes to @example_bot on its own')])
+      expect(seen.questions[0]).toContain('tg allow add @example_bot --yes')
+      const added = runs.filter(run => run.argv[1] === 'allow' && run.argv[2] === 'add')
+      if (answer === 'No') {
+        expect(added).toEqual([])
+        expect(seen.prompts).toEqual([])
+        expect(await ui.find({ key: 'sheet' })).toBeDefined()
+        expect((await ui.find({ key: 'notice' }))?.text).toContain('Not sent: @example_bot stays out of allow.toml')
+      } else {
+        expect(added.map(run => run.argv)).toEqual([['tg', 'allow', 'add', '@example_bot', '--yes']])
+        // Activity keeps the audit trail of who changed allow.toml.
+        expect(JSON.stringify(saved.autopilot)).toContain("allow.toml + @example_bot (@example_bot), your Yes · for a recording's replay")
+        expect(seen.prompts.at(-1)).toContain('<recording')
+      }
+      await ui.unmount()
+    })
+  }
+
+  test("a recording is its bot chat's: a press in a group meanwhile is not a step", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const { saved } = world(on, { writes: () => out(0, { button: {}, answer: null, replies: [] }) })
+    const ui = await openBot($, clock)
+    await ui.press({ key: 'key:record' })
+    await ui.press({ key: await chatKey(ui, 1002) })
+    await clock.settle()
+    await ui.press({ key: 'key:up' })
+    await ui.press({ key: 'btn:677791:0:0' })
+    await clock.settle()
+    expect(saved.bottest?.recording?.steps).toEqual([])
+    expect((await ui.find({ key: 'header' }))?.text).toContain('rec 0')
     await ui.unmount()
   })
 })
@@ -231,6 +481,22 @@ describe('reply diff', () => {
     await ui.unmount()
   })
 
+  test('f with nothing marked: the cursor reply against the last reply to the same message; on the first reply, nothing to pair', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openBot($, clock)
+    // "Main menu" came after /settings, as did "⚠ Something went wrong": one key.
+    expect((await ui.find({ key: 'key:diff' }))?.props.hotkey).toBe('f')
+    await ui.press({ key: 'key:diff' })
+    expect((await ui.find({ key: 'bt:diff-view' }))?.text).toContain('diff #677791 → #677792')
+    await ui.press({ key: 'key:diff' })
+    await ui.press({ key: 'key:up' })
+    expect(await ui.find({ key: 'key:diff' })).toBeUndefined()
+    await ui.press({ key: 'key:menu' })
+    expect((await ui.find({ key: 'menu:diff' }))?.text).toBe('f: diff · needs a reply with an earlier pair')
+    await ui.unmount()
+  })
+
   test('with one reply marked f is not drawn; the menu says the step it needs', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     world(on)
@@ -238,7 +504,7 @@ describe('reply diff', () => {
     await ui.press({ key: 'key:mark' })
     expect(await ui.find({ key: 'key:diff' })).toBeUndefined()
     await ui.press({ key: 'key:menu' })
-    expect((await ui.find({ key: 'menu:diff' }))?.text).toBe('f: diff · needs two replies marked (x)')
+    expect((await ui.find({ key: 'menu:diff' }))?.text).toBe('f: diff · needs two bot replies marked')
     await ui.unmount()
   })
 })
@@ -248,8 +514,8 @@ describe('latency stamps', () => {
     const clock = mock.clock(on, { now: NOW })
     world(on)
     const ui = await openBot($, clock)
-    // 11:01:00 → 11:01:07: over 3 s.
-    expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('⏱7s')
+    // 11:01:00 → 11:01:07: over 3 s. At 100 columns the chips share the row, and the stamp follows them.
+    expect((await ui.find({ key: 'card:677791' }))?.text).toContain('⏱7s')
     await ui.unmount()
   })
 

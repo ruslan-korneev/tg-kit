@@ -20,11 +20,15 @@ import {
   senderLabel,
   shortTime,
 } from './model'
+import { clockOf, fixedCells, type MessageLook } from './thread'
 
 export type Els = ElementTable
 
 const pad = (text: string, width: number) =>
   text.length >= width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width)
+
+/** A column exactly `width` wide: cut with … only when the text is longer (`bot` fills a 3-column sender). */
+const fit = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width))
 
 /**
  * Where a list's window starts so that `cursor` is in it, scrolling at the
@@ -103,17 +107,13 @@ export function DialogRow(
   )
 }
 
-/** Inline keyboards as chips. Display only in this phase: nothing presses them. */
-export function ButtonRow({ Text }: Els, props: { message: TgMessage; isDim: boolean }): RenderElement {
-  const chips = props.message.buttons.map(row => row.map(button => `[ ${button.text} ]`).join(' ')).join('  ')
-  return (
-    <Text dimColor={props.isDim} wrap="truncate-end">
-      {'        '}
-      {chips}
-    </Text>
-  )
-}
-
+/**
+ * A message row of the open chat (§7.3): cursor, mark, time, the sender
+ * column, the text, then the latency stamp and, on the cursor row only, the
+ * id. A day divider above the first message of a day stands for the dates the
+ * time column no longer carries. The message's buttons (bot testing's Chips)
+ * sit on its own row's right where ./thread found room, else on a row under it.
+ */
 export function MessageCard(
   els: Els,
   props: {
@@ -128,48 +128,74 @@ export function MessageCard(
     isSelected: boolean
     isAnchor: boolean
     width: number
-    now: number
+    /** The chat's sender column, and this message's divider and chips placement (./thread). */
+    sender: { width: number; gap: number }
+    look: MessageLook
     onPress: () => void
-    /** Bot testing: the reply's latency stamp, and pressable chips in place of the display row. */
+    /** Bot testing: the reply's latency stamp. */
     stamp?: { text: string; isSlow: boolean } | null
-    buttonRow?: RenderElement | null
+    /** The message's buttons and the cells they take; null without buttons. */
+    chips: { element: RenderElement; cells: number } | null
   },
 ): RenderElement {
   const { Box, Button, Text } = els
-  const { message } = props
-  const sender = senderLabel(message)
-  const id = `#${message.id}`
+  const { message, look } = props
+  const id = props.isCursor ? `#${message.id}` : ''
   const stamp = props.stamp ?? null
+  const chips = props.chips
+  const isOnRow = chips !== null && look.isChipsOnRow
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
-  // cursor(1) mark(1) time(11) sender(6) text, then " ⏱1.4s" and " #id": one column spare so nothing wraps.
-  const textWidth = Math.max(10, props.width - 21 - id.length - (stamp === null ? 0 : stamp.text.length + 1))
+  const tail = (stamp === null ? 0 : stamp.text.length + 1) + (id === '' ? 0 : id.length + 1) + (isOnRow ? chips.cells + 1 : 0)
+  const textWidth = Math.max(10, props.width - fixedCells(props.sender) - tail)
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
   // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.
   const mark = props.isSelected ? GLYPH.marked : props.isAnchor ? 'v' : ' '
-  const cells = [
+  const sender = senderLabel(message)
+  const head = [
     <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
-    <Text dimColor> {shortTime(message.date, props.now).padEnd(9)} </Text>,
-    <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{pad(sender, 6)}</Text>,
-    <Text color={color}>{pad(oneLine(body, textWidth), textWidth)}</Text>,
-    stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>,
-    <Text dimColor> {id}</Text>,
+    <Text dimColor> {clockOf(message.date).padEnd(5)} </Text>,
+    <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{fit(sender, props.sender.width)}</Text>,
+    <Text>{' '.repeat(props.sender.gap)}</Text>,
+    <Text color={color}>{fit(oneLine(body, textWidth), textWidth)}</Text>,
   ]
-  if (props.isStatic === true) {
-    return (
-      <Box key={`card:${message.id}`} flexDirection="column">
-        <Box key={`row:${message.id}`} flexDirection="row">
-          {...cells}
-        </Box>
-        {message.buttons.length > 0 ? ButtonRow(els, { message, isDim: true }) : null}
+  const right = [
+    stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>,
+    id === '' ? null : <Text dimColor> {id}</Text>,
+  ]
+  const line = isOnRow ? head : [...head, ...right]
+  const row =
+    props.isStatic === true ? (
+      <Box key={`row:${message.id}`} flexDirection="row">
+        {...line}
       </Box>
+    ) : (
+      <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onPress}>
+        {...line}
+      </Button>
     )
-  }
   return (
     <Box key={`card:${message.id}`} flexDirection="column">
-      <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onPress}>
-        {...cells}
-      </Button>
-      {props.buttonRow !== undefined ? props.buttonRow : message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
+      {look.divider === null ? null : (
+        <Box key={`day:${message.id}`}>
+          <Text dimColor wrap="truncate-end">{`   ── ${look.divider} ──`}</Text>
+        </Box>
+      )}
+      {isOnRow ? (
+        <Box key={`line:${message.id}`} flexDirection="row">
+          {row}
+          <Text> </Text>
+          {chips.element}
+          {...right}
+        </Box>
+      ) : (
+        row
+      )}
+      {chips === null || isOnRow ? null : (
+        <Box key={`under:${message.id}`} flexDirection="row">
+          <Text>{' '.repeat(fixedCells(props.sender) - 1)}</Text>
+          {chips.element}
+        </Box>
+      )}
     </Box>
   )
 }

@@ -207,7 +207,8 @@ describe('the frame', () => {
     // In the chat the strip's digits are not live: only the active column's are.
     expect(await ui.find({ key: 'digit:1' })).toBeUndefined()
     expect(await tabsOf(ui)).toEqual(['‹All chats 3›', 'For you', 'Bots'])
-    expect(await barKeys(ui)).toEqual(['send', 'write', 'record', 'mark', 'agent', 'menu'])
+    // The cursor on "Main menu", a second reply to /settings: f has its pair and joins before x (§8 T6).
+    expect(await barKeys(ui)).toEqual(['send', 'write', 'record', 'diff', 'mark', 'menu'])
     await ui.unmount()
   })
 
@@ -316,15 +317,17 @@ describe('keys', () => {
   test('m: the menu lists what this chat can do, pressable; a key it runs closes it', async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
+    // On the first reply to /settings, which has no earlier reply to pair with.
+    await ui.press({ key: 'key:up' })
     await ui.press({ key: 'key:menu' })
     expect((await ui.find({ key: 'header' }))?.text).toContain('tg › menu · @example_bot')
     for (const key of ['menu:mark', 'menu:range', 'menu:record', 'menu:follow', 'menu:watch', 'menu:summary', 'menu:hide']) {
       expect(await ui.find({ key })).toBeDefined()
     }
-    // f waits for two marked replies: listed dim with the step, not as a Button.
+    // f waits for a reply with a pair: listed dim with the step, not as a Button.
     const diff = await ui.find({ key: 'menu:diff' })
     expect(diff?.type).toBe('Box')
-    expect(diff?.text).toContain('needs two replies marked')
+    expect(diff?.text).toContain('needs a reply with an earlier pair')
     // The menu takes the body; its bar is h and m.
     expect(await barKeys(ui)).toEqual(['back', 'menu'])
     await ui.press({ key: 'menu:watch' })
@@ -469,8 +472,12 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     expect(letters.filter((key, index) => letters.indexOf(key) !== index)).toEqual([])
   })
 
+  /** A press brings nothing back: enough for a recording to have a step (T6). */
+  const pressing = (argv: readonly string[]) => (argv[1] === 'press' ? json({ button: {}, answer: null, replies: [] }) : happy(argv))
+  const RECORD = ['dialog:1001', 'key:record', 'key:up', 'btn:677791:0:0', 'key:record']
+
   /** Every view the pane draws in T1, by the presses that reach it. */
-  const VIEWS: { name: string; props: RenderPropsOf['Pane']; steps: string[] }[] = [
+  const VIEWS: { name: string; props: RenderPropsOf['Pane']; steps: string[]; tg?: typeof happy }[] = [
     { name: 'chats', props: DOCK, steps: [] },
     { name: 'chats inline', props: INLINE, steps: [] },
     ...[1001, 1002, 1003, 1004, 1005, 1006].flatMap(id => [
@@ -549,12 +556,34 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
         { name: `a chat from bots ${seat}`, props, steps: ['digit:3', 'dialog:1001'] },
       ]
     }),
+    // T6: the cursor on a message with buttons (its chips carry 1 and 2), BotFather's ro chips, the diff, the
+    // recording-stopped sheet and its menu, the hand-off sheet on a bot outside allow.toml.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        { name: `chips ${seat}`, props, steps: ['dialog:1001', 'key:up'] },
+        { name: `chips BotFather ${seat}`, props, steps: ['dialog:1006', 'key:up'] },
+        { name: `chips, marked ${seat}`, props, steps: ['dialog:1001', 'key:up', 'key:mark'] },
+        { name: `diff ${seat}`, props, steps: ['dialog:1001', 'key:diff'] },
+        { name: `diff menu ${seat}`, props, steps: ['dialog:1001', 'key:diff', 'key:menu'] },
+        { name: `recorded ${seat}`, props, steps: RECORD, tg: pressing },
+        { name: `recorded menu ${seat}`, props, steps: [...RECORD, 'key:menu'], tg: pressing },
+        { name: `hand-off ${seat}`, props, steps: [...RECORD, 'rec:hand'], tg: pressing },
+        { name: `hand-off targets ${seat}`, props, steps: [...RECORD, 'rec:hand', 'key:agent'], tg: pressing },
+      ]
+    }),
   ]
 
   for (const view of VIEWS) {
     test(`${view.name}: each of a–z and 0–9 has exactly one Button; the bound ones are the table's; the bar holds ≤ 7`, async ($, on) => {
-      const { ui } = await openPane($, on, view.props)
-      for (const key of view.steps) await ui.press({ key: key.startsWith('dialog:') ? await chatKey(ui, Number(key.slice('dialog:'.length))) : key })
+      const { ui, clock } = await openPane($, on, view.props, view.tg)
+      for (const key of view.steps) {
+        await ui.press({ key: key.startsWith('dialog:') ? await chatKey(ui, Number(key.slice('dialog:'.length))) : key })
+        await clock.settle()
+      }
+      if (/^recorded (dock|inline)$/.test(view.name)) expect(await ui.find({ key: 'rec:sheet' })).toBeDefined()
+      if (/^hand-off (dock|inline)$/.test(view.name)) expect(await ui.find({ key: 'sheet:intent:test' })).toBeDefined()
+      if (view.name.startsWith('chips ')) expect((await ui.find({ key: 'btn:677791:0:1' }))?.props.hotkey).toBe('2')
       const drawn = await hotkeys(ui)
       for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
       // Nothing falls through to the prompt (the T9 review's M1): what the view does not bind, the catch-all does, once.
@@ -610,15 +639,22 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     })
   }
 
-  test('a bot chat has r and n; f joins once two replies are marked', async ($, on) => {
+  test('a bot chat has r and n; f on a reply with a pair, or once two replies are marked', async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
+    // The cursor on "Main menu", the second reply to /settings: f pairs it with the first.
     let drawn = await hotkeys(ui)
     expect(drawn).toContain('r')
     expect(drawn).toContain('n')
+    expect(drawn).toContain('f')
+    // The first reply to /settings has nothing earlier to pair with.
+    await ui.press({ key: 'key:up' })
+    drawn = await hotkeys(ui)
     expect(drawn).not.toContain('f')
     await ui.press({ key: 'key:mark' })
-    await ui.press({ key: 'key:up' })
+    drawn = await hotkeys(ui)
+    expect(drawn).not.toContain('f')
+    await ui.press({ key: 'key:down' })
     await ui.press({ key: 'key:mark' })
     drawn = await hotkeys(ui)
     expect(drawn).toContain('f')
@@ -676,6 +712,21 @@ describe('long lists scroll at the edges (the ring keeps its place among the But
       await ui.unmount()
     })
   }
+})
+
+describe('a chat opens on its own window', () => {
+  test("after a 40-message thread, a two-message chat shows both: the last chat's window start does not carry over", async ($, on) => {
+    const twoAfterLong = (argv: readonly string[]) => (argv[1] === 'read' && argv[2] === '1004' ? json(PERSON_MESSAGES) : long(argv))
+    const { ui } = await openPane($, on, DOCK, twoAfterLong)
+    await openChat(ui, 1001)
+    expect((await rows(ui, 'msg:')).length).toBeGreaterThan(3)
+    // A move keeps the window's start where the drawing put it, deep in the long thread.
+    await ui.press({ key: 'key:up' })
+    await ui.press({ key: 'key:back' })
+    await openChat(ui, 1004)
+    expect(await rows(ui, 'msg:')).toEqual(['msg:91', 'msg:92'])
+    await ui.unmount()
+  })
 })
 
 /**
@@ -986,6 +1037,79 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       expect((await ui.find({ key: 'notice' }))?.text).toBe('■ stopped: Contact A')
       // The list fills its room, so a notice the chrome did not count would push the bar past it.
       expect(rowsOf(await ui.drawn())).toBe(bodyRows)
+      await ui.unmount()
+    })
+  }
+
+  // T6: a bot thread longer than the window, a day divider a quarter of the way in, chips on every fourth message.
+  const KEYBOARD = [
+    [
+      { row: 0, col: 0, type: 'cb', text: 'Retry', data_b64: 'cmV0cnk=' },
+      { row: 0, col: 1, type: 'cb', text: 'Back', data_b64: 'YmFjaw==' },
+    ],
+  ]
+  const CHIPPED: TgMessage[] = LONG.map((message, index) => ({
+    ...message,
+    date: index < 10 ? message.date.replace('2026-10-10', '2026-10-09') : message.date,
+    keyboard: index % 4 === 1 ? ('inline' as const) : null,
+    buttons: index % 4 === 1 ? KEYBOARD : [],
+  }))
+  const chipped = (argv: readonly string[]) =>
+    argv[1] === 'read' ? json(CHIPPED) : argv[1] === 'press' ? json({ button: {}, answer: { alert: null, toast: 'Saved', url: null }, replies: [] }) : stable(argv)
+  /** The thread's ring stops, in order: its messages and their chips. */
+  const threadStops = async (ui: Ui) => (await ui.findAll({ type: 'Button' })).flatMap(one => (one.key?.startsWith('msg:') === true || one.key?.startsWith('btn:') === true ? [one.key] : []))
+
+  for (const seat of SEATS) {
+    test(`${seat.name}, a 40-message bot thread with chips and day dividers: k across the window, a digit's press, f and its diff, r … r and its sheet; the ring stays on ▸ (T6)`, async ($, on) => {
+      const { ui, clock } = await openPane($, on, seat.props, chipped)
+      await openChat(ui, 1001)
+      // k up the thread: a move inside the window changes no stop (every chip is a Button wherever the cursor is), so the
+      // ring the engine keeps by its place lands on ▸; a move past the edge scrolls by the rows it needs.
+      let chipRow: string | null = null
+      for (let move = 0; move < 14; move++) {
+        const before = { first: (await rows(ui, 'msg:'))[0], stops: await threadStops(ui) }
+        await ui.press({ key: 'key:up' })
+        const after = { first: (await rows(ui, 'msg:'))[0], stops: await threadStops(ui) }
+        if (after.first === before.first) expect(after.stops).toEqual(before.stops)
+        const ringed = (await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true && one.key?.startsWith('msg:') === true)?.key ?? ''
+        const id = Number(ringed.slice(4))
+        if (CHIPPED.find(one => one.id === id)?.buttons.length !== 0 && chipRow === null) chipRow = ringed
+        if (chipRow !== null) break
+      }
+      expect(chipRow).not.toBeNull()
+      const id = Number(chipRow?.slice(4))
+      expect((await ui.find({ key: `btn:${id}:0:1` }))?.props.hotkey).toBe('2')
+      const base = await place(ui)
+      // A digit's press: its answer lands in the notice row, which takes no row of the thread.
+      await ui.press({ key: `btn:${id}:0:0` })
+      await clock.settle()
+      expect((await ui.find({ key: 'notice' }))?.text).toBe('toast: Saved')
+      expect(await place(ui)).toEqual(base)
+      // f on two marked replies: the diff is a layer over the lower part; h closes it, h clears the marks.
+      await ui.press({ key: 'key:mark' })
+      await ui.press({ key: 'key:down' })
+      await ui.press({ key: 'key:mark' })
+      const marked = await place(ui)
+      await ui.press({ key: 'key:diff' })
+      expect(await ui.find({ key: 'bt:diff-view' })).toBeDefined()
+      await expectStatic(ui, false)
+      await ui.press({ key: 'key:back' })
+      expect(await ui.find({ key: 'bt:diff-view' })).toBeUndefined()
+      expect(await place(ui)).toEqual(marked)
+      await ui.press({ key: 'key:back' })
+      await ui.press({ key: 'key:up' })
+      expect(await place(ui)).toEqual(base)
+      // r, a press, r: the recording-stopped sheet takes the bar's place, the thread under it static; ⏎ ok closes it.
+      await ui.press({ key: 'key:record' })
+      await ui.press({ key: `btn:${id}:0:1` })
+      await clock.settle()
+      await ui.press({ key: 'key:record' })
+      await clock.settle()
+      expect(await ui.find({ key: 'rec:sheet' })).toBeDefined()
+      await expectStatic(ui, false)
+      await ui.press({ key: 'rec:ok' })
+      expect(await ui.find({ key: 'rec:sheet' })).toBeUndefined()
+      expect(await place(ui)).toEqual(base)
       await ui.unmount()
     })
   }

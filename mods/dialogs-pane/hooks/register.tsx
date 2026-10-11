@@ -25,7 +25,7 @@ import { SUMMARY_LIMIT, SUMMARY_MAX_TOKENS, SUMMARY_SYSTEM, SUMMARY_TIMEOUT_MS, 
 import { MAX_WATCHED, parseWatched } from './triage/watch'
 // ── routing ──
 import type { AgentInfo, HookStream, ProcessRunResult, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
-import type { BroadcastRow, LedgerEntry, Leg, Overlay, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, RouteIntent, SenderClass, SheetStep, TgMessage } from '../types'
+import type { BroadcastRow, Handoff, LedgerEntry, Leg, Overlay, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, RouteIntent, SenderClass, SheetStep, TgMessage } from '../types'
 import { buildPacket, type Packet } from './packet/build'
 import { expandReplyChain } from './packet/expand'
 import { Redactor, redactMessage } from './packet/redact'
@@ -78,11 +78,13 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
+import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, fixedCells, messageLooks, senderColumn, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
+  CHAT_KIND_PRESS,
   STRAY_KEYS,
   strayText,
   actionBar,
@@ -90,6 +92,7 @@ import {
   helpLines,
   hiddenKeys,
   menu as menuSections,
+  pressText,
   type ChatKind,
   type CardFacts,
   type KeyContext,
@@ -451,7 +454,8 @@ async function openThread($: $, dialog: TgDialog): Promise<void> {
   const peer: PeerRef = { id: dialog.id, arg: peerArg(dialog), label: dialogLabel(dialog), kind: dialog.kind }
   await update($, thread, () => ({ peer, load: { status: 'loading' } }))
   await update($, selection, () => NO_SELECTION)
-  await update($, nav, value => ({ ...value, view: 'thread', messageCursor: 0 }))
+  // A chat opens on its own window: the last chat's start would leave only its newest rows in view.
+  await update($, nav, value => ({ ...value, view: 'thread', messageCursor: 0, messageStart: 0 }))
   await bottestThreadOpened($, peer)
   await loadThread($, peer)
   await syncWatches($)
@@ -662,6 +666,7 @@ async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   const shown = (await read($, overlay)).kind // ── routing ──
   if (shown === 'sheet' || shown === 'broadcast') return 'sheet'
   if ((await read($, bottest)).diff !== null) return 'diff'
+  if ((await read($, bottest)).recorded !== null) return 'recorded' // ── bottest ── the recording-stopped sheet (§8 T6)
   // T4b's layers: the summary over the lower part, a field in the bar's row.
   const where = await read($, nav)
   const open = await read($, thread)
@@ -699,10 +704,13 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
   const pilot = await read($, autopilot)
   const view = pilot.view
   const tasks = (await read($, delegate)).tasks
+  const kind = peer === undefined ? null : chatKind(peer.kind, isBotFather(peer.arg))
+  // ── bottest ── f's pair and the digits' chips belong to the chat's cursor message (§8 T6).
+  const atCursor = where === 'chat' ? await cursorMessage($) : undefined
   return {
     where,
     seat,
-    kind: peer === undefined ? null : chatKind(peer.kind, isBotFather(peer.arg)),
+    kind,
     facts: {
       rows:
         where === 'chats' || where === 'foryou'
@@ -719,8 +727,9 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null || (await stopNoticeNow($, Infinity)) !== null,
       marks: chosen.ids.length,
       isRangeOpen: chosen.anchor !== null,
-      hasPair: diffPair(chosen.ids, messages).ok,
+      hasPair: chosen.ids.length > 0 ? diffPair(chosen.ids, messages).ok : atCursor !== undefined && replyPair(atCursor, messages) !== null,
       hasButtons: messages.some(message => message.buttons.length > 0),
+      cursorButtons: atCursor === undefined || kind === null || !CHAT_KIND_PRESS.includes(kind) ? 0 : Math.min(MAX_DIGIT_CHIPS, atCursor.buttons.flat().length),
       isRecording: bt.recording !== null,
       isWatched: peer !== undefined && tri.watched.some(one => one.id === peer.id),
       isFollowed: peer !== undefined && (await read($, pins)).some(pin => pin.peer.id === peer.id),
@@ -801,7 +810,8 @@ async function runKey($: $, id: RunKey): Promise<void> {
     }
     case 'record':
       await toggleRecord($)
-      return ringCursor($)
+      // A stopped recording opens its sheet, whose ⏎ the ring starts on (§6); otherwise the ring stays on the cursor row.
+      return (await read($, bottest)).recorded !== null ? moveRing($, 'rec:ok') : ringCursor($)
     case 'diff':
       await toggleDiff($)
       return ringCursor($)
@@ -817,6 +827,7 @@ async function runKey($: $, id: RunKey): Promise<void> {
       if (where === 'foryou' && (await cursorRow($))?.kind === 'agent') return dropAgentRow($) // ── folders ──
       if (where === 'card') return apNotice($, null)
       if (where === 'activity') return dismissEnded($)
+      if (where === 'recorded') return discardRecorded($) // ── bottest ──
       if (where === 'chat' && (await cursorItem($))?.kind === 'draft') return dropAtCursor($)
       // The notice row's notice: a write's result, or what 0 stopped.
       await update($, bottest, value => ({ ...value, notice: null }))
@@ -864,7 +875,7 @@ async function back($: $): Promise<void> {
     const shown = await read($, overlay)
     // Broadcast came from the targets, and every other step from the intents: back one step.
     if (shown.kind === 'broadcast') {
-      await update($, overlay, () => ({ kind: 'sheet', ids: shown.ids, sender: shown.sender, step: 'targets', to: { kind: 'main' }, isRedacted: shown.isRedacted }))
+      await update($, overlay, () => ({ kind: 'sheet', ids: shown.ids, sender: shown.sender, step: 'targets', to: { kind: 'main' }, isRedacted: shown.isRedacted, handoff: shown.handoff }))
       return setStep($, 'targets')
     }
     if (shown.kind === 'sheet' && shown.step !== 'intents') return setStep($, 'intents')
@@ -873,6 +884,8 @@ async function back($: $): Promise<void> {
     await update($, activity, () => null)
   } else if (where === 'diff') {
     await update($, bottest, value => ({ ...value, diff: null }))
+  } else if (where === 'recorded') {
+    return closeRecorded($) // ── bottest ── it rings the cursor row itself
   } else if (where === 'summary') {
     await hideSummary($)
   } else if (where === 'field') {
@@ -952,7 +965,8 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   // The marks ride the bar's row (T4b): `▪ 3 marked` leads it, and the verbs get what is left.
   const lead = !isMenu && where === 'chat' ? marksLead(chosen.ids.length) : null
   // ── folders ── the Folders list's rows carry the digits: the bar says so after ⏎ (§4.6).
-  const digitsText = !isMenu && where === 'folders' ? await digitsLabel($) : null
+  // ── bottest ── in a chat, the cursor message's chips carry the digits: `1-2: press` (§4.6).
+  const digitsText = isMenu ? null : where === 'folders' ? await digitsLabel($) : where === 'chat' ? pressText(context) : null
   const bar = actionBar(barContext, width - (lead === null ? 0 : lead.length + BAR_GAP) - (digitsText === null ? 0 : digitsText.length + BAR_GAP))
   const isBase = where === 'chats' || where === 'chat'
   // Inline Chats: the strip shares the header row; the dock gives it a row of its own.
@@ -982,8 +996,10 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const shown = await read($, overlay)
   const sheetBar = isMenu || where !== 'sheet' ? null : await drawSheetBar($, els, seat, width, seating.isFocused)
   const fieldBar = isMenu || where !== 'field' ? null : await drawFieldBar($, els)
+  // ── bottest ── the recording-stopped sheet takes the bar's place too: four rows docked, two inline (§5.2).
+  const recordedBar = isMenu || where !== 'recorded' ? null : await drawRecordedBar($, els, seat, width, seating.isFocused)
   const isAsking = shown.kind === 'sheet' && shown.step === 'ask'
-  const sheetRows = sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
+  const sheetRows = recordedBar !== null ? (seat === 'dock' ? 4 : 2) : sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
   const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + runningRows + noticeRows
   const room = Math.max(3, rows - chrome)
   const slot = isMenu
@@ -991,7 +1007,8 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
     : seat === 'dock'
       ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - runningRows))
       : await drawInline($, els, where, width, room)
-  const drawn = new Set(sheetBar === null && fieldBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
+  const drawn = new Set(sheetBar === null && fieldBar === null && recordedBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
+  if (recordedBar !== null) drawn.add('d')
   if (strip !== null && search === 'key') drawn.add('s')
   // Views that draw a key of the table themselves: the sheet's a, i and h.
   if (sheetBar !== null && !isAsking) for (const key of ['a', 'i', 'h']) drawn.add(key)
@@ -1010,7 +1027,7 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
     chips: await chipsOf($),
     isFocused: seating.isFocused,
   })
-  const barRow = sheetBar ?? fieldBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey })
+  const barRow = sheetBar ?? fieldBar ?? recordedBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey })
   const hidden = HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey })
   const digits = isDigitsLive ? await drawDigitKeys($, els) : null
   // Every other letter and digit is caught, so none falls through to the prompt and takes the keys (the T9 review's M1).
@@ -1054,6 +1071,8 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
     }
     case 'diff':
       return `tg › diff · ${label}`
+    case 'recorded':
+      return `tg › ${label}`
     case 'activity':
       return 'tg › activity'
     case 'summary':
@@ -1181,6 +1200,9 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
       const diff = await drawBottestDiff($, els, width, rows)
       return diff === null ? [] : [diff]
     }
+    case 'recorded':
+      // The sheet holds the ring in the bar's place: the chat under it has no stops (§4.3 rule 3).
+      return drawThread($, els, width, rows, 'static')
     case 'summary': {
       const summary = await drawSummary($, els, width) // ── triage ──
       return summary === null ? [] : [summary]
@@ -1282,7 +1304,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
   windowRows.messages = rows
   threadHeights = layout.heights
   lastThread = { width, rows } // ── footer ──
-  const bt = await bottestCards($, open.peer, messages, width)
+  const bt = await bottestCards($, open.peer, messages, layout.look, width, mode)
   return layout.shown.map((item, index) => {
     const row = layout.start + index
     const isCursor = mode !== 'idle' && row === layout.cursor
@@ -1306,14 +1328,15 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
     }
     const { message } = item
     return MessageCard(els, {
-      ...bt(els, message),
+      ...bt(els, message, isCursor),
       message,
       isCursor,
       isStatic: mode === 'static',
       isSelected: chosen.ids.includes(message.id),
       isAnchor: chosen.anchor === message.id,
       width,
-      now: at,
+      sender: layout.look.sender,
+      look: layout.look.looks.get(message.id) ?? { divider: null, isChipsOnRow: false },
       // ⏎ (or a click) on a message: the send sheet for it (§5.1).
       onPress: async () => {
         await toRow()
@@ -1328,13 +1351,25 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
  * holds whole, from where it starts. The drawing and the band (which leaves
  * out a draft the pane draws) read the same answer.
  */
-async function threadLayout($: $, width: number, rows: number): Promise<{ shown: ThreadRow[]; start: number; cursor: number; heights: number[] }> {
+async function threadLayout($: $, width: number, rows: number): Promise<{ shown: ThreadRow[]; start: number; cursor: number; heights: number[]; look: ThreadLook }> {
   const items = await threadItems($)
   const where = await read($, nav)
-  const heights = items.map(item => rowHeight(item, width))
+  const look = await threadLook($, width)
+  const heights = items.map(item => rowHeight(item, width, look.looks))
   const cursor = clamp(where.messageCursor, items.length)
   const start = windowStart(where.messageStart, cursor, heights, rows)
-  return { shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights }
+  return { shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights, look }
+}
+
+type ThreadLook = { sender: { width: number; gap: number }; looks: Map<number, MessageLook> }
+
+/** How the open chat draws its message rows at `width` (§7.3, ./ui/thread): the sender column, each message's divider and chips. */
+async function threadLook($: $, width: number): Promise<ThreadLook> {
+  const open = await read($, thread)
+  const messages = await threadMessages($)
+  const kind = open === null ? null : openChatKind(open)
+  const sender = senderColumn(messages, kind)
+  return { sender, looks: messageLooks(messages, width, await read($, now), sender, kind === 'botfather') }
 }
 
 // ── triage ──
@@ -1871,7 +1906,8 @@ const draft = atom({ plugin: 'dialogs-pane', key: 'draft' } as const, null)
  */
 async function startRouting($: $): Promise<void> {
   // The packet ledger was an overlay before Activity (T4): a reload across that change may still hold it.
-  await update($, overlay, value => (value.kind === 'sheet' || value.kind === 'broadcast' ? value : { kind: 'none' }))
+  // A sheet kept from before hand-offs (T6) has no `handoff` field: it is a sheet opened on a message.
+  await update($, overlay, value => (value.kind === 'sheet' || value.kind === 'broadcast' ? { ...value, handoff: value.handoff ?? null } : { kind: 'none' }))
   const kept = await update($, pins, value => value.map(pin => ({ ...pin, watch: { status: 'starting' } })))
   await Promise.all(kept.map((pin: Pin) => startPinWatch($, pin)))
   $.clock.every(RADAR_MS, () => {
@@ -1932,9 +1968,14 @@ async function rememberIntent($: $, sender: SenderClass, intent: RouteIntent): P
   await $.store.set(STORE_INTENTS, rememberedWith(await $.store.get(STORE_INTENTS), sender, intent))
 }
 
-/** The ring on the sheet's intent ⏎ sends: the last one used for this kind of sender. */
-async function ringIntent($: $, sender: SenderClass): Promise<void> {
-  await moveRing($, `sheet:intent:${ringedIntent((await lastIntents($)).last, sender)}`)
+/** The intent ⏎ sends: Test on a hand-off (§8 T6), else the last one used for this kind of sender. */
+function sheetRinged(last: LastIntents, shown: { sender: SenderClass; handoff: Handoff | null }): RouteIntent {
+  return shown.handoff !== null ? 'test' : ringedIntent(last, shown.sender)
+}
+
+/** The ring on the sheet's intent ⏎ sends. */
+async function ringIntent($: $, shown: { sender: SenderClass; handoff: Handoff | null }): Promise<void> {
+  await moveRing($, `sheet:intent:${sheetRinged((await lastIntents($)).last, shown)}`)
 }
 
 /** The chat kind of the open thread, as §4.6 tells them apart. */
@@ -1956,16 +1997,16 @@ async function openSheet($: $, step: SheetStep = 'intents'): Promise<void> {
   const sender = setClass(selectedMessages(await threadMessages($), ids), openChatKind(open))
   // Each sheet starts from the pane's redaction; inspect turns it off for this packet alone.
   const redact = await read($, isRedacted)
-  await update($, overlay, () => ({ kind: 'sheet', ids, sender, step, to: { kind: 'main' }, isRedacted: redact }))
+  await update($, overlay, () => ({ kind: 'sheet', ids, sender, step, to: { kind: 'main' }, isRedacted: redact, handoff: null }))
   await refreshRadar($)
   if (step === 'inspect') await moveRing($, 'sheet:redact')
-  else await ringIntent($, sender)
+  else await ringIntent($, { sender, handoff: null })
 }
 
 async function setStep($: $, step: SheetStep): Promise<void> {
   const shown = await update($, overlay, value => (value.kind === 'sheet' ? { ...value, step } : value))
   if (shown.kind !== 'sheet') return
-  if (step === 'intents') await ringIntent($, shown.sender)
+  if (step === 'intents') await ringIntent($, shown)
   else if (step === 'ask') await moveRing($, 'sheet:ask')
   else if (step === 'inspect') await moveRing($, 'sheet:redact')
   else await moveRing($, shown.to.kind === 'main' ? 'route:main' : shown.to.kind === 'new' ? 'route:new' : `route:agent:${shown.to.agentId}`)
@@ -1988,11 +2029,14 @@ async function submitAsk($: $, words: string): Promise<void> {
 }
 
 async function sendSheet($: $, shown: Extract<Overlay, { kind: 'sheet' }>, chosen: RouteIntent, words: string): Promise<void> {
-  await rememberIntent($, shown.sender, chosen)
+  // ── bottest ── a hand-off goes only to an agent that may replay it: allow.toml, on the owner's Yes (§8 T6).
+  if (shown.handoff !== null && !(await allowReplay($, shown.handoff.peer))) return
+  // A hand-off's Test is not the owner's pick: ⏎ goes back to the last intent they chose for bots.
+  if (shown.handoff === null) await rememberIntent($, shown.sender, chosen)
   const chosenRoute = { kind: 'one', to: shown.to } as const
   await update($, route, () => chosenRoute)
   await closeOverlay($)
-  await sendIds($, shown.ids, legsOf(chosenRoute, chosen), { sender: shown.sender, isRedacted: shown.isRedacted, words })
+  await sendIds($, shown.ids, legsOf(chosenRoute, chosen), { sender: shown.sender, isRedacted: shown.isRedacted, words, handoff: shown.handoff })
 }
 
 /** A target from `a`: the sheet goes back to its intents, sending there now. */
@@ -2006,7 +2050,7 @@ async function openBroadcast($: $): Promise<void> {
   if (shown.kind !== 'sheet') return
   const { last } = await lastIntents($)
   const rows = broadcastRows(await read($, radar), mainLegIntent(last, shown.sender), legSplit(shown.sender))
-  await update($, overlay, () => ({ kind: 'broadcast', rows, ids: shown.ids, sender: shown.sender, isRedacted: shown.isRedacted }))
+  await update($, overlay, () => ({ kind: 'broadcast', rows, ids: shown.ids, sender: shown.sender, isRedacted: shown.isRedacted, handoff: shown.handoff }))
   await moveRing($, 'leg:0:on')
 }
 
@@ -2022,9 +2066,10 @@ async function finishBroadcast($: $): Promise<void> {
     $.ui.toast('tg: turn on at least one leg (its digit) first.')
     return
   }
+  if (shown.handoff !== null && !(await allowReplay($, shown.handoff.peer))) return // ── bottest ──
   await update($, route, () => chosen)
   await closeOverlay($)
-  await sendIds($, shown.ids, chosen.legs, { sender: shown.sender, isRedacted: shown.isRedacted, words: '' })
+  await sendIds($, shown.ids, chosen.legs, { sender: shown.sender, isRedacted: shown.isRedacted, words: '', handoff: shown.handoff })
 }
 
 /** What the sheet is about: its messages, the parents at hand, and the packet they make now. */
@@ -2039,7 +2084,14 @@ async function sheetFacts($: $, shown: Extract<Overlay, { kind: 'sheet' }>, inte
   const packet =
     peer === null || selected.length === 0
       ? null
-      : previewPacket({ selected, context: known, peer, intent: sheetIntent(intentNow, shown.sender), redact: redactor ?? false })
+      : previewPacket({
+          selected,
+          context: known,
+          peer,
+          intent: sheetIntent(intentNow, shown.sender, '', shown.handoff !== null),
+          redact: redactor ?? false,
+          ...(shown.handoff === null ? {} : { handoff: handoffInput(shown.handoff) }),
+        })
   return { open, selected, known, toFetch, redactor, packet }
 }
 
@@ -2051,14 +2103,24 @@ async function drawSheetBar($: $, els: Els, seat: Seat, width: number, isFocused
   const shown = await read($, overlay)
   if (shown.kind !== 'sheet' || (shown.step !== 'intents' && shown.step !== 'ask')) return null
   const { last, stored } = await lastIntents($)
-  const ringed = ringedIntent(last, shown.sender)
+  const ringed = sheetRinged(last, shown)
   const facts = await sheetFacts($, shown, ringed)
   const agent = shown.to.kind === 'agent' ? shown.to.agentId : null
   const state = shown.to.kind === 'main' ? ((await read($, isMainBusy)) ? 'running' : 'idle') : ((await read($, radar)).find(one => one.agentId === agent)?.state ?? 'idle')
+  // ── bottest ── a hand-off names the recording, and says when ⏎ asks allow.toml first (§8 T6).
+  const handoff = shown.handoff
+  const isAllowed = handoff === null || (await isReplayAllowed($, handoff.peer))
+  const steps = handoff === null ? '' : `${handoff.steps.length} step${handoff.steps.length === 1 ? '' : 's'}`
   return SendSheet(els, {
     seat,
     width,
-    title: sheetTitle(facts.selected, facts.known.length + facts.toFetch.length),
+    title: handoff === null ? sheetTitle(facts.selected, facts.known.length + facts.toFetch.length) : `recording · ${steps}`,
+    note:
+      handoff === null
+        ? null
+        : isAllowed
+          ? { dock: `⏎ sends the ringed one, the recording with it (${steps})`, inline: '⏎ the ringed one', isWarn: false }
+          : { dock: `⏎ asks first: ${handoff.peer.label} is not in allow.toml`, inline: '⏎ asks allow.toml first', isWarn: true },
     target: targetText(shown.to, state),
     intents: SHEET_INTENTS[shown.sender],
     ringed,
@@ -2085,7 +2147,7 @@ async function drawOverlay($: $, els: Els, width: number, rows: number): Promise
     case 'sheet': {
       if (shown.step === 'intents' || shown.step === 'ask') return null
       const { last } = await lastIntents($)
-      const ringed = ringedIntent(last, shown.sender)
+      const ringed = sheetRinged(last, shown)
       const facts = await sheetFacts($, shown, ringed)
       const title = sheetTitle(facts.selected, facts.known.length + facts.toFetch.length)
       if (shown.step === 'targets') {
@@ -2236,7 +2298,7 @@ async function sendPacket(
     { known: input.known },
   )
   const peer = peerOf(input.peer, await knownDialogs($))
-  const { sender, isRedacted: redact, words } = input.how
+  const { sender, isRedacted: redact, words, handoff } = input.how
   const before = (await read($, ledger)).length
   await Promise.all(
     input.legs.map(async leg => {
@@ -2244,8 +2306,9 @@ async function sendPacket(
         messages: expanded.messages,
         context: expanded.context,
         peer,
-        intent: sheetIntent(leg.intent, sender, words),
+        intent: sheetIntent(leg.intent, sender, words, handoff !== null),
         redact,
+        ...(handoff === null ? {} : handoffInput(handoff)), // ── bottest ── the recording rides along (§8 T6)
       })
       const base: Base = {
         peer: input.peer,
@@ -2269,8 +2332,8 @@ async function sendPacket(
   return { failed: added.filter(entry => entry.state.kind === 'failed').length, fetchFailure }
 }
 
-/** How a sheet sends: whose intents, this packet's redaction, the Ask field's words. */
-type SendHow = { sender: SenderClass; isRedacted: boolean; words: string }
+/** How a sheet sends: whose intents, this packet's redaction, the Ask field's words, a recording handed over. */
+type SendHow = { sender: SenderClass; isRedacted: boolean; words: string; handoff: Handoff | null }
 
 /** The sheet's send: these messages, along the legs; the marks clear once every leg went. */
 async function sendIds($: $, ids: readonly number[], legs: readonly Leg[], how: SendHow): Promise<void> {
@@ -2315,7 +2378,7 @@ async function bandToMain($: $): Promise<void> {
     selected: found.value,
     known: [],
     legs: [{ to: { kind: 'main' }, intent }],
-    how: { sender, isRedacted: await read($, isRedacted), words: '' },
+    how: { sender, isRedacted: await read($, isRedacted), words: '', handoff: null },
   })
   if (sent.failed === 0) await update($, band, () => null)
   await refreshStatus($)
@@ -2513,11 +2576,11 @@ import type { On } from 'claude-code'
 import type { BotTest, Notice } from '../types'
 import { failureText } from './ui/model'
 import { calls, decodeAllow, mergeMessages, PRESS_WAIT_S, SEND_WAIT_S, settleWrite, type WriteResult } from './bottest/calls'
-import { diffPair, replyDiff } from './bottest/diff'
+import { diffPair, replyDiff, replyPair } from './bottest/diff'
 import { chipAction, isBotFather, readOnlyText } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
-import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
-import { ChipRow, DiffView, SendBox, chipKey } from './bottest/ui'
+import { addStep, handoffInput, outcomeOf, recordedIds, replayAllowQuestion, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
+import { Chips, DiffView, MAX_DIGIT_CHIPS, RecordedSheet, SendBox, chipKey, chipsWidth } from './bottest/ui'
 import type { Button as KeyButton, MessageView } from './packet/types'
 
 const NO_BOTTEST: BotTest = {
@@ -2684,7 +2747,8 @@ async function finishWrite($: $, peer: PeerRef, pending: Pending, startedAt: num
 async function recordStep($: $, peer: PeerRef, pending: Pending, at: number, result: WriteResult & { ok: true }): Promise<void> {
   const state = await read($, bottest)
   const recording = state.recording
-  if (recording === null) return
+  // A recording is its bot chat's (§4.6): a press in a group meanwhile is not a step of it.
+  if (recording === null || recording.peer.id !== peer.id) return
   const history = await threadMessages($)
   const firstReply = result.replies.find(one => !one.out)
   const stamp = firstReply === undefined ? null : stampFor(firstReply, history, state.timing)
@@ -2762,70 +2826,213 @@ async function toggleCompose($: $): Promise<void> {
   await moveRing($, 'bt:send')
 }
 
-/** `r`: starts a recording; again stops it and writes the script. */
+/**
+ * `r`: starts a recording of this bot chat; again stops it, writes the script
+ * and opens the recording-stopped sheet (§5.2, §8 T6). A recording is its
+ * chat's (§4.6), so `r` in another bot chat says where it runs.
+ */
 async function toggleRecord($: $): Promise<void> {
   const at = await $.clock.now()
   const state = await read($, bottest)
+  const open = await read($, thread)
+  if (open === null) return
   if (state.recording === null) {
-    await update($, bottest, value => ({ ...value, recording: startRecording(at) }))
+    await update($, bottest, value => ({ ...value, recording: startRecording(at, open.peer) }))
     await say($, 'info', 'Recording: sends and presses from the pane become steps. r stops.')
     return
   }
   const recording = state.recording
+  if (recording.peer.id !== open.peer.id) return say($, 'info', `r: the recording runs in ${recording.peer.label}; r there stops it.`)
   if (recording.steps.length === 0) {
     await update($, bottest, value => ({ ...value, recording: null }))
     await say($, 'info', 'Recording stopped: no steps, nothing written.')
     return
   }
   const script = toScript(recording, at)
+  const shown = scriptPath(recording)
   let written: string | null = null
   try {
-    // Under the session's directory (the bot's repo, as a rule), named in full in the notice.
-    const path = `${await $.session.cwd()}/${scriptPath(recording)}`
+    // Under the session's directory (the bot's repo, as a rule), named in full in the sheet.
+    const path = `${await $.session.cwd()}/${shown}`
     // The folder ignores itself, so a recording never lands in the repo's history.
     await $.fs.write(path.replace(/[^/]+$/, '.gitignore'), '*\n')
     await $.fs.write(path, script)
     written = path
   } catch {
-    // The steps stay in state either way; the notice says the file is missing.
+    // The steps stay in the sheet either way; it says the file is missing.
   }
-  await update($, bottest, value => ({
-    ...value,
-    recording: null,
-    recorded: { ...recording, stoppedAt: at, script, path: written },
-  }))
-  if (written === null) await say($, 'danger', `${GLYPH.error} could not write ${scriptPath(recording)}; the steps are kept in the pane's state.`)
-  else await say($, 'info', `${GLYPH.done} ${recording.steps.length} steps → ${scriptPath(recording)} (in the session's directory)`)
+  await update($, bottest, value => ({ ...value, notice: null, recording: null, recorded: { ...recording, stoppedAt: at, script, path: written, shown } }))
 }
 
-/** `f`: diff the two selected bot replies; again closes the diff. */
+/** The recording-stopped sheet's ⏎ ok, h: it closes; the script stays where the sheet said. */
+async function closeRecorded($: $): Promise<void> {
+  const recorded = (await read($, bottest)).recorded
+  await update($, bottest, value => ({ ...value, recorded: null }))
+  if (recorded?.path !== null && recorded !== null) await say($, 'info', `${GLYPH.done} ${recorded.steps.length} steps → ${recorded.shown} (in the session's directory)`)
+  await ringCursor($)
+}
+
+/** `d` on the sheet: the recording goes, and so does its script (the pane wrote it; tg-kit has no other way to remove a file). */
+async function discardRecorded($: $): Promise<void> {
+  const recorded = (await read($, bottest)).recorded
+  if (recorded === null) return
+  await update($, bottest, value => ({ ...value, recorded: null }))
+  if (recorded.path !== null) {
+    let ran: ProcessRunResult | null = null
+    try {
+      ran = await $.process.run(['rm', '-f', '--', recorded.path], { timeoutMs: TG_TIMEOUT_MS })
+    } catch {
+      // rm did not run: the notice says the script stays.
+    }
+    if (ran === null || ran.exitCode !== 0) {
+      await say($, 'warn', `${GLYPH.error} recording discarded, but ${recorded.shown} could not be removed.`)
+      return ringCursor($)
+    }
+  }
+  await say($, 'info', `Recording discarded: ${recorded.steps.length} steps, ${recorded.path === null ? 'no script was written' : `${recorded.shown} removed`}.`)
+  await ringCursor($)
+}
+
+/** `2` on the sheet: the script's full path to the clipboard; the sheet stays for 1 or ⏎. */
+async function copyRecordedPath($: $): Promise<void> {
+  const recorded = (await read($, bottest)).recorded
+  if (recorded === null) return
+  if (recorded.path === null) return say($, 'warn', `${GLYPH.error} ${recorded.shown} was not written: nothing to copy.`)
+  let copied: Awaited<ReturnType<typeof $.ui.copy>>
+  try {
+    copied = await $.ui.copy({ text: recorded.path })
+  } catch (error) {
+    return say($, 'warn', `${GLYPH.error} not copied: ${reasonOf(error)}`)
+  }
+  await say($, copied.isCopied ? 'info' : 'warn', copied.isCopied ? `${GLYPH.done} copied ${recorded.path}` : `${GLYPH.error} not copied: ${copied.reason}`)
+}
+
+/**
+ * `1` on the sheet: T2's send sheet for the messages the recording printed,
+ * Test ringed, the recording riding along in its packet (§8 T6). When the bot
+ * is not in allow.toml the sheet says so, and its send asks first (decision 1):
+ * the owner's presses passed --yes, an agent's replay is the agent's own write.
+ */
+async function handOffRecorded($: $): Promise<void> {
+  const recorded = (await read($, bottest)).recorded
+  const open = await read($, thread)
+  if (recorded === null || open === null) return
+  const loaded = new Set((await threadMessages($)).map(one => one.id))
+  const ids = recordedIds(recorded.steps).filter(id => loaded.has(id))
+  if (open.peer.id !== recorded.peer.id || ids.length === 0) return say($, 'warn', `The recording's messages are no longer loaded; ${recorded.shown} still holds the steps.`)
+  await update($, bottest, value => ({ ...value, recorded: null }))
+  const redact = await read($, isRedacted) // ── routing ──
+  const handoff = { peer: recorded.peer, shown: recorded.path === null ? null : recorded.shown, steps: recorded.steps }
+  await update($, overlay, () => ({ kind: 'sheet', ids, sender: 'bot', step: 'intents', to: { kind: 'main' }, isRedacted: redact, handoff }))
+  await refreshRadar($)
+  await moveRing($, 'sheet:intent:test')
+}
+
+/** The bot is in allow.toml as last read: an agent may replay the recording there. */
+async function isReplayAllowed($: $, peer: PeerRef): Promise<boolean> {
+  const allow = (await read($, bottest)).allow
+  return allow.status === 'ok' && allow.value.includes(peer.id)
+}
+
+/**
+ * Before a hand-off leaves (§8 T6, §9 decisions 1 and 9): allow.toml is read
+ * again; a bot still outside it is added only on the owner's Yes in the
+ * engine's dialog, No first, the exact command shown and run as shown. Answers
+ * whether the packet may go.
+ */
+async function allowReplay($: $, peer: PeerRef): Promise<boolean> {
+  await loadAllow($)
+  if (await isReplayAllowed($, peer)) return true
+  const argv = allowArgv(peer.arg)
+  let answer: string | null
+  try {
+    answer = await $.ui.ask(replayAllowQuestion(peer.label, argv), { options: [ALLOW_NO, ALLOW_YES], header: 'allow.toml' })
+  } catch {
+    // Dismissed, timed out, or a -p run: no answer is a no.
+    answer = null
+  }
+  await takeKeysBack($) // ── autopilot ──
+  if (answer !== ALLOW_YES) {
+    await say($, 'warn', `Not sent: ${peer.label} stays out of allow.toml.`)
+    return false
+  }
+  let ran: ProcessRunResult
+  try {
+    ran = await $.process.run(argv, { timeoutMs: TG_TIMEOUT_MS })
+  } catch (error) {
+    await say($, 'danger', `${GLYPH.error} tg allow add did not run: ${reasonOf(error)}`)
+    return false
+  }
+  if (ran.exitCode !== 0) {
+    await say($, 'danger', `${GLYPH.error} ${failureText(failureOf(ran.exitCode, ran.stderr), await $.clock.now())}`)
+    return false
+  }
+  // Activity's audit trail of who changed allow.toml, as the card's add keeps it (§9 decision 1).
+  await apLog($, { at: await $.clock.now(), peer, level: 'auto', incoming: [], reply: argv.join(' '), confidence: null, topics: [], checks: [], outcome: { kind: 'allowed', line: `${allowedLine(peer.label, peer.arg)} · for a recording's replay` }, undo: null })
+  await loadAllow($)
+  if (await isReplayAllowed($, peer)) return true
+  await say($, 'danger', `tg allow add ran, but tg allow list does not show ${peer.arg}: nothing sent.`)
+  return false
+}
+
+/** `f`: diff the two marked bot replies, or with nothing marked the cursor reply and its pair; again closes the diff. */
 async function toggleDiff($: $): Promise<void> {
   if ((await read($, bottest)).diff !== null) {
     await update($, bottest, value => ({ ...value, diff: null }))
     return
   }
-  const picked = diffPair((await read($, selection)).ids, await threadMessages($))
+  const marked = (await read($, selection)).ids
+  const messages = await threadMessages($)
+  if (marked.length === 0) {
+    // Nothing marked: the cursor reply against the last earlier reply to the same message (§8 T6).
+    const atCursor = await cursorMessage($)
+    const pair = atCursor === undefined ? null : replyPair(atCursor, messages)
+    if (pair === null) return say($, 'info', 'Diff: this reply has no earlier reply to the same message; x x then f compares any two.')
+    await update($, bottest, value => ({ ...value, diff: pair, notice: null }))
+    return
+  }
+  const picked = diffPair(marked, messages)
   if (!picked.ok) return say($, 'info', `Diff: ${picked.reason}.`)
   await update($, bottest, value => ({ ...value, diff: picked.pair, notice: null }))
 }
 
 // --- drawing ---
 
-/** MessageCard's bot-testing props: the latency stamp and pressable chips. */
-async function bottestCards($: $, peer: PeerRef, messages: readonly MessageView[], width: number) {
+/**
+ * MessageCard's bot-testing props: the latency stamp, and the chips, pressable
+ * in the chats §4.6 gives presses (a bot, a group's bot messages, a channel's
+ * link buttons, BotFather's `ro`), with digits on the cursor row while the
+ * thread holds the cursor; as text under a layer that holds the ring (rule 3).
+ */
+async function bottestCards($: $, peer: PeerRef, messages: readonly MessageView[], look: ThreadLook, width: number, mode: 'active' | 'idle' | 'static') {
   const state = await read($, bottest)
+  const kind = chatKind(peer.kind, isBotFather(peer.arg))
   // A press is the owner's own write (--yes): only BotFather's chips are read-only.
-  const isReadOnly = isBotFather(peer.arg)
-  return (els: Els, message: MessageView) => {
-    const stamp = stampFor(message, messages, state.timing)
-    return {
-      stamp: stamp === null ? null : { text: stamp.text, isSlow: stamp.isSlow },
-      buttonRow:
-        message.buttons.length === 0
-          ? null
-          : ChipRow(els, { message, isReadOnly, width, onChip: button => pressChip($, message, button) }),
-    }
+  const isReadOnly = kind === 'botfather'
+  const hasPresses = CHAT_KIND_PRESS.includes(kind)
+  return (els: Els, message: MessageView, isCursor: boolean) => {
+    const found = stampFor(message, messages, state.timing)
+    const stamp = found === null ? null : { text: found.text, isSlow: found.isSlow }
+    if (message.buttons.length === 0) return { stamp, chips: null }
+    const isOnRow = look.looks.get(message.id)?.isChipsOnRow === true
+    const labels = chipLabels(message.buttons, isOnRow ? CHIP_LABEL_MAX : underRowMax(message, width, look.sender, isReadOnly))
+    const element = Chips(els, {
+      message,
+      labels,
+      isDigits: hasPresses && isCursor && mode === 'active',
+      isPressable: hasPresses && mode !== 'static',
+      isReadOnly,
+      onChip: button => pressChip($, message, button),
+    })
+    return { stamp, chips: { element, cells: chipsWidth(labels, isReadOnly) } }
   }
+}
+
+/** A chip's label on the row under its message: the row shared out, between 4 and 40 characters (a URL chip carries its URL). */
+function underRowMax(message: MessageView, width: number, sender: { width: number; gap: number }, isReadOnly: boolean): number {
+  const count = Math.max(1, message.buttons.flat().length)
+  const room = width - fixedCells(sender) - (isReadOnly ? 2 + CHIP_GAP : 0) - CHIP_GAP * count - message.buttons.length
+  return Math.min(40, Math.max(4, Math.floor(room / count) - 3))
 }
 
 /** The diff in place of the thread, while one is open and both messages are still loaded. */
@@ -2837,6 +3044,24 @@ async function drawBottestDiff($: $, els: Els, width: number, rows: number): Pro
   const after = messages.find(one => one.id === pair[1])
   if (before === undefined || after === undefined) return null
   return DiffView(els, { diff: replyDiff(before, after), width, rows })
+}
+
+/** The recording-stopped sheet in the bar's place, while it is up (§5.2, §8 T6). */
+async function drawRecordedBar($: $, els: Els, seat: Seat, width: number, isFocused: boolean): Promise<RenderElement | null> {
+  const recorded = (await read($, bottest)).recorded
+  if (recorded === null) return null
+  return RecordedSheet(els, {
+    seat,
+    width,
+    steps: recorded.steps.length,
+    shown: recorded.shown,
+    isWritten: recorded.path !== null,
+    isFocused,
+    onHand: () => handOffRecorded($),
+    onCopy: () => copyRecordedPath($),
+    onDiscard: () => discardRecorded($),
+    onOk: () => closeRecorded($),
+  })
 }
 
 // ── autopilot ──

@@ -5,6 +5,7 @@
 // For you and the band read the same views. Pure.
 import type { ApDraft, DraftCheck, PeerRef, ReplyDraft, TgMessage } from '../../types'
 import { GLYPH, cells, oneLine } from './model'
+import { messageRows, type MessageLook } from './thread'
 
 /** Which draft: autopilot's, by its ledger seq, or routing's one drafted reply. */
 export type DraftRef = { kind: 'autopilot'; seq: number } | { kind: 'reply' }
@@ -157,13 +158,9 @@ export function draftHeight(draft: DraftView, width: number): number {
   return 1 + (draft.isEditing ? 1 : wrapRows(draft.text, width - DRAFT_INDENT)) + 1
 }
 
-/** A message row: its line, and its buttons' row under it when it has buttons. */
-export function messageHeight(message: TgMessage): number {
-  return message.buttons.length > 0 ? 2 : 1
-}
-
-export function rowHeight(row: ThreadRow, width: number): number {
-  return row.kind === 'message' ? messageHeight(row.message) : draftHeight(row.draft, width)
+/** A row's terminal rows: a message's as ./thread lays it out (`looks`), a draft's whole text. */
+export function rowHeight(row: ThreadRow, width: number, looks: ReadonlyMap<number, MessageLook>): number {
+  return row.kind === 'message' ? messageRows(row.message, looks.get(row.message.id)) : draftHeight(row.draft, width)
 }
 
 /**

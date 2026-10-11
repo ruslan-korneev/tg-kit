@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { BotStep } from '../../types'
+import type { BotStep, PeerRef } from '../../types'
 import { msg, REPLY, SENT } from '../packet/fixtures'
 import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './recorder'
 
 const START = Date.parse('2026-10-10T14:00:00Z')
+const PEER: PeerRef = { id: 1001, arg: '@example_bot', label: '@example_bot', kind: 'bot' }
 const send: BotStep = {
   kind: 'send',
   peer: '@example_bot',
@@ -16,14 +17,14 @@ const send: BotStep = {
 
 describe('targetOf', () => {
   test('a message an earlier step printed is found by step and position', () => {
-    const recording = addStep(startRecording(START), send)
+    const recording = addStep(startRecording(START, PEER), send)
     expect(targetOf(recording, REPLY.id)).toEqual({ id: REPLY.id, from: { step: 0, position: 2 } })
     expect(targetOf(recording, 5)).toEqual({ id: 5, from: null })
   })
 })
 
 test('the script replays send, then press on the reply read back from the output', () => {
-  const recording = addStep(startRecording(START), send)
+  const recording = addStep(startRecording(START, PEER), send)
   const press: BotStep = {
     kind: 'press',
     peer: '@example_bot',
@@ -47,7 +48,7 @@ test('the script replays send, then press on the reply read back from the output
 
 test('quoting: spaces, quotes and a leading dash', () => {
   const step = (text: string): BotStep => ({ ...send, text, outcome: outcomeOf({ exit: 0, sent: [], replies: [], answer: null }, null) })
-  const script = toScript(addStep(addStep(startRecording(START), step("it's on")), step('-5')), START)
+  const script = toScript(addStep(addStep(startRecording(START, PEER), step("it's on")), step('-5')), START)
   expect(script).toContain("tg send @example_bot 'it'\\''s on' --plain --wait 10s")
   expect(script).toContain("printf '%s' -5 | tg send @example_bot - --plain --wait 10s")
 })
@@ -64,11 +65,11 @@ test('a press on a message from before the recording keeps its id and says so', 
     at: START,
     outcome: outcomeOf({ exit: 0, sent: [], replies: [msg({ id: 677801, text: 'Help text' })], answer: null }, null),
   }
-  const script = toScript(addStep(startRecording(START), press), START)
+  const script = toScript(addStep(startRecording(START, PEER), press), START)
   expect(script).toContain('#677700, a message from before the recording: its id is fixed')
   expect(script).toContain('out1=$(tg press @example_bot 677700 --row 1 --col 0 --wait 5s)')
 })
 
 test('scriptPath: start time and first peer under .tg-recordings', () => {
-  expect(scriptPath(addStep(startRecording(START), send))).toMatch(/^\.tg-recordings\/20261010-\d{6}-example_bot\.sh$/)
+  expect(scriptPath(addStep(startRecording(START, PEER), send))).toMatch(/^\.tg-recordings\/20261010-\d{6}-example_bot\.sh$/)
 })
