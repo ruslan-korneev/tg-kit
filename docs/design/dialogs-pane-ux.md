@@ -40,8 +40,8 @@ above the prompt.
   anything. §2.2 and §4.6–4.7 have the counts.
 - Throwaway probe mods checked the engine surfaces this design leans on. The first five are this
   design's own probe; its `UserMessage` row was drawn by the probe, a plugin of another name. The
-  last four are behaviours the builds found: T1's and T2's, which a probe confirmed and the engine's
-  docs do not state, and T9's and T5's, seen live:
+  last six are behaviours the builds found: T1's and T2's, which a probe confirmed and the engine's
+  docs do not state, and T9's, T5's and T3's, seen live:
 
 | Surface | Result |
 | --- | --- |
@@ -54,6 +54,8 @@ above the prompt.
 | The focus ring across a redraw | keeps its position among the pane's ring stops (Buttons, Inputs, Selects), not its key; a `$.ui.focus` on a key the old drawing still has lands on the old drawing, and `ok` comes back all the same. In a 40-row list centred on the cursor, `k` put ▸ on row 32 and the ring on 31; a 3-row sheet closing left ▸ on 39 and the ring on 36. Scrolling at the edges and rows without ring stops under the sheet kept the ring on ▸ at every step. §4.3's ring rules lean on it, Appendix A checks it |
 | A printable key with no hotkey in a focused pane | the keys go back to the prompt and the key is typed there; every key after it lands in the prompt too (T9, live: an unbound `h` on the Folders list). The Pane doc's Escape note says as much ("once the prompt has the keys again (the person typed…)"). §6 binds a–z and 0–9 in every view for it |
 | A plugin's own `$.prompt.submit` row | neither its `UserMessage` hook nor that hook's `.catch` is asked (T5, live, three variants; a later redraw does not ask them either); another plugin's hook is. So this plugin cannot fold its own packets: decision 10 keeps them whole |
+| `$.prompt.fill` and the prompt's mode | a filled `! …` is plain text; the box does not switch to shell mode, so ⏎ sends it to the model (T3, live). A `!` typed at the start does switch it. So the pane never fills a command for the owner to run: decision 1 asks in a dialog instead |
+| A plain `Button`'s label | the engine draws the hotkey before the label (`3: …`) and does not cut the label: a long one wraps. A row that must stay one line cuts its own text, and a mark like `▸` sits outside the Button (T3, live) |
 
 ## 2. Audit of today's UX
 
@@ -524,7 +526,7 @@ ring (the engine draws it inverse), `‹…›` the current folder (accent), and
 | Diff two replies | `x`, move, `x f` · 3 + moves | `f` · 1 (pairs with the last reply to the same message) |
 | Watch · summary | `w` · `t` · 1 each; `t` only inside a chat | the same keys, on a chat's row too; in the bar of groups and channels |
 | Autopilot `draft` on | find `q`, then `q s` · 2 | `a ⏎` · 2, every level shown |
-| `auto` on a chat not in allow.toml | `q 3 Esc` type 25 chars `⏎ ctrl+x tab q q 3 s` · 9 + typing | `a 4 ⏎ Esc ⏎ ctrl+x tab ⏎` · 7, nothing typed |
+| `auto` on a chat not in allow.toml | `q 3 Esc` type 25 chars `⏎ ctrl+x tab q q 3 s` · 9 + typing | `a 4 ⏎`, then Yes in the engine's dialog · 5, nothing typed (decision 1) |
 | Send a waiting draft | `ctrl+x tab ⏎` · 2 | the same from Hidden; `⏎` on the draft row in the pane · 1 |
 | `delegate` on, working in this repo | `q 4 4`, Tab or Shift+Tab to the repos field, type the path, `⏎ s` · 6 + Tabs + typing | `a 5 ⏎ ⏎` · 4 (the repo is filled in) |
 | Stop everything | Tab to "stop all" ⏎, or `/tg autopilot off` after main's turn | `0` · 1; `/tg stop` runs at once |
@@ -979,9 +981,10 @@ Flow 4 · Wide · a: the agent card for a chat (it takes the thread's place; the
 ```
 
 When a level needs allow.toml (auto and delegate: they send on their own), the card says so and ⏎
-puts the command in the prompt (`$.prompt.fill`); the human still runs it. The card re-reads the
-allowlist after any `!` command (the stale cache of §2.4 is fixed). `draft` never needs it: the
-owner sends each draft with their own key (decision 9).
+asks in the engine's dialog, No first, naming the exact command. On Yes the card runs it, reads the
+allowlist again and starts the level; No runs nothing (decision 1). The card also re-reads the
+allowlist on every open and after any `!` command (the stale cache of §2.4 is fixed). `draft`
+never needs it: the owner sends each draft with their own key (decision 9).
 
 ```text
 Flow 4 · Wide · 4: auto on a chat that is not in allow.toml
@@ -989,8 +992,8 @@ Flow 4 · Wide · 4: auto on a chat that is not in allow.toml
 │▸ 4: ⟳ auto       replies alone within limits; unsure → draft   │
 │limits 50/h · one per burst · gap 20 s · conf ≥ 0.80   o: change│
 │writes ✗ Contact A is not in allow.toml, and auto sends alone   │
-│       ⏎ puts  ! tg allow add 1004 --yes  in your prompt        │
-│       (Esc, then Enter runs it; this card notices)             │
+│       ⏎ asks: run  tg allow add 1004 --yes ?   No / Yes        │
+│       (the engine's dialog, No first; Yes adds it and starts)  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1276,9 +1279,11 @@ letter, every key after it lands in the prompt, and a ⏎ sends it to main. So e
 and 0–9: to the key's action where it works, and otherwise to a one-line notice that says where it
 does (`r: recording works in a bot chat`, `c: not a key · m lists them`) and keeps the keys in the
 pane. These Buttons live in the hidden Box. They are never drawn and never in the menu, so §4.6's
-never-here keys stay unseen. A field that holds the ring (the send box, search, Ask) takes printable
-keys itself, as the engine has it. The test: in every view of the sweep, each of a–z and 0–9 has
-exactly one Button.
+never-here keys stay unseen. A field or a Select that holds the ring (the send box, search, Ask, an
+option) takes printable keys itself, as the engine has it, so no letter is a hotkey there. A view's
+ring therefore starts on a Button: its ⏎ target, drawn `autoFocus` (the options' `⏎ done`). A view
+without one leaves ⏎ doing nothing when the pane takes the keys (T3, live). The test: in every view
+of the sweep, each of a–z and 0–9 has exactly one Button.
 
 Band (after ctrl+x tab): ⏎ the item's action · `e` edit · `d` drop or dismiss · `o` open in the
 pane · `u` undo · `j` `k` next and previous item.
@@ -1481,8 +1486,10 @@ BotFather runs nothing.
   Selects or fields, quiet hours, topics on digits, the danger zone (skip stops, typed name).
 - Delegate: the warning step; the grant as Selects (web, commands, until) and a repos field filled
   with the session's repo when `git rev-parse --show-toplevel` answers in `$.session.cwd()`.
-- allow.toml: ⏎ fills `! tg allow add PEER --yes` (`$.prompt.fill`); the allowlist is re-read after
-  each `!` prompt and on every card open (fixes the stale cache).
+- allow.toml (decision 1): ⏎ asks in the engine's dialog (`$.ui.ask`), No first, naming the exact
+  command. On Yes the card runs `tg allow add PEER --yes`, reads the allowlist again and starts
+  the level; No, a dismissed dialog or a session with no one to ask runs nothing. The allowlist is
+  also re-read after each `!` prompt and on every card open (fixes the stale cache).
 - Drafts (autopilot's and routing's "Draft reply") as rows of their chat: ⏎ send, `e`, `d`, with
   the guard's verdict shown first; ⏎ sends with `--yes` (T0d), so `draft` never asks for
   allow.toml, while `auto` and `delegate` do (decision 9). A draft row always shows its whole
@@ -1584,8 +1591,8 @@ dock, `x` on the newest message moved the first row shown, and the cursor's stop
 - `f` with nothing marked diffs the cursor reply with the last reply to the same outgoing message.
 - Recording stopped: `1` hands it to an agent as a live test (T2's sheet, intent Test, the steps
   and script path in the packet), `2` copies the path (`$.ui.copy`), `d` discards. The agent's
-  replay is an agent's write: when the bot is not in allow.toml, the sheet says so and ⏎ fills
-  `! tg allow add`.
+  replay is an agent's write: when the bot is not in allow.toml, the sheet says so and ⏎ asks the
+  card's dialog (decision 1).
 - Tests: a digit runs `tg press` with its row and col; `ro` runs nothing; `f` pairs; the hand-off
   builds a Test packet; a person, group and channel thread draws neither `r` nor `f`.
 
@@ -1745,9 +1752,17 @@ slots (T1 makes them), `types/index.d.ts` (marked blocks, as today).
 
 Made with the owner (2026-10-10):
 
-1. **allow.toml from the card goes through the prompt.** ⏎ fills `! tg allow add PEER --yes` and the
-   owner runs it (7 keys, nothing typed). Rejected: the card running it after the engine's dialog
-   (5 keys), which would change who writes allow.toml.
+1. **allow.toml changes only on the owner's explicit Yes.** On a level that needs it, the card's ⏎
+   asks in the engine's dialog (`$.ui.ask`), No first, naming the exact command
+   (`tg allow add 1004 --yes`). On Yes the card runs that command, reads the allowlist again and
+   starts the level. No, a dismissed dialog, or a session with no one to ask (`-p`) runs nothing.
+   Only the owner's key in the pane raises the dialog: never a band item, an event, or anything an
+   agent's output can reach. No agent ever changes allow.toml. `a 4 ⏎` and Yes: 5 keys.
+   Amended by the owner on 2026-10-11, after T3's live run. The first way had ⏎ fill
+   `! tg allow add PEER --yes` for the owner to run (7 keys). `$.prompt.fill` cannot put the box
+   in shell mode, so the filled line went to the model as a prompt. Typing `!` by hand made it 9
+   keys, and the owner chose the dialog, on which the click is still theirs. What changes, as the
+   first choice noted, is who writes allow.toml: the pane does, on that Yes.
 2. **Pin becomes ladder level 1, follow.** One level per chat, so a chat that follows main is not
    also on auto; today both can run at once.
 
