@@ -3,14 +3,12 @@ import { describe, expect, test } from 'claude-code/testing'
 import { failureOf, settle, tg } from '../hooks/tg/tg'
 import {
   NO_SELECTION,
-  emptyLensText,
   grownDialog,
   peerArg,
   rangeSelect,
   stateSummary,
   statusText,
   toggleSelected,
-  visibleDialogs,
 } from '../hooks/ui/model'
 import { DIALOGS, MESSAGES } from './fixtures'
 
@@ -62,19 +60,7 @@ describe('tg adapter', () => {
   })
 })
 
-describe('lenses', () => {
-  test('All, Bots, Unread and search', () => {
-    expect(visibleDialogs(DIALOGS, { lens: 'all', query: '' })).toHaveLength(3)
-    expect(visibleDialogs(DIALOGS, { lens: 'bots', query: '' }).map(d => d.id)).toEqual([1001])
-    expect(visibleDialogs(DIALOGS, { lens: 'unread', query: '' }).map(d => d.id)).toEqual([1001, 1002])
-    expect(visibleDialogs(DIALOGS, { lens: 'all', query: 'EXAMPLE' }).map(d => d.id)).toEqual([1001])
-  })
-
-  test('the empty line says what the lens filters and how to change it', () => {
-    expect(emptyLensText('bots', '')).toContain('Press 1 for All')
-    expect(emptyLensText('all', 'zzz')).toContain('matching "zzz"')
-  })
-
+describe('labels', () => {
   test('peer arguments: me, @username, else the id', () => {
     expect(DIALOGS.map(peerArg)).toEqual(['@example_bot', '1002', 'me'])
   })

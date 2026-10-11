@@ -1,19 +1,15 @@
-// Pure rules of the pane: tokens and glyphs (design §4), lenses, labels,
+// Pure rules of the pane: tokens and glyphs (design §4), labels,
 // selection, the state summary. No `$` here, so tests call these directly.
 // The keys are in ./keys.
 import type {
   BandEvent,
-  Lens,
   Load,
-  Nav,
   Selection,
   TgDialog,
   TgFailure,
   TgMessage,
   TgPeerKind,
 } from '../../types'
-
-export const LENSES = ['all', 'bots', 'unread'] as const satisfies readonly Lens[]
 
 /** Terminal palette names, so the pane follows the person's theme. */
 export const TOKEN = {
@@ -40,30 +36,6 @@ export const GLYPH = {
   working: '…',
   error: '⚠',
 } as const
-
-export const LENS_LABEL: Record<Lens, string> = { all: 'All', bots: 'Bots', unread: 'Unread' }
-
-/** The empty-lens line: what the lens filters, and how to change it. */
-export function emptyLensText(lens: Lens, query: string): string {
-  const search = query === '' ? '' : ` matching "${query}"`
-  const what: Record<Lens, string> = {
-    all: `No dialogs${search}.`,
-    bots: `No chats with bots${search}: the Bots lens hides people, groups and channels.`,
-    unread: `Nothing unread${search}: the Unread lens shows only chats with unread messages.`,
-  }
-  const how = query === '' ? (lens === 'all' ? '' : ' Press 1 for All.') : ' Press s and submit an empty search to clear it.'
-  return what[lens] + how
-}
-
-export function visibleDialogs(dialogs: readonly TgDialog[], nav: Pick<Nav, 'lens' | 'query'>): TgDialog[] {
-  const query = nav.query.trim().toLowerCase()
-  return dialogs.filter(dialog => {
-    if (nav.lens === 'bots' && dialog.kind !== 'bot') return false
-    if (nav.lens === 'unread' && dialog.unread === 0) return false
-    if (query === '') return true
-    return `${dialog.title} ${dialog.username ?? ''}`.toLowerCase().includes(query)
-  })
-}
 
 const GROUP_KINDS: readonly TgPeerKind[] = ['group', 'supergroup', 'channel']
 

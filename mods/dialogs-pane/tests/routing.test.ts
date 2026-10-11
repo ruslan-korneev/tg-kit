@@ -5,7 +5,7 @@
 import type { AgentInfo, On, ProcessRunResult, RenderPropsOf, SessionSendInput } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
-import { DIALOGS, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, messagesFor } from './fixtures'
+import { DIALOGS, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, chatKey, findChat, folderRun, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 
@@ -55,6 +55,7 @@ const ALL_DIALOGS = [...DIALOGS, ...MORE_DIALOGS]
 /** tg answers: dialogs, each chat's thread, `tg msg` from them (exit 4 when one is missing). */
 function tgAnswer(argv: readonly string[]): ProcessRunResult {
   if (argv[1] === 'dialogs') return json(ALL_DIALOGS)
+  if (argv[1] === 'folders') return folderRun(argv, json(ALL_DIALOGS))
   if (argv[1] === 'read') return json(messagesFor(argv[2]))
   if (argv[1] === 'msg') {
     const ids = argv.slice(3, -1).map(Number)
@@ -89,8 +90,10 @@ function world(
   on('process.run', async (_$, e) => {
     const ran: Ran = { argv: e.argv, stdin: e.init?.stdin }
     seen.runs.push(ran)
-    if (options.tgAsync !== undefined) return { value: await options.tgAsync(ran) }
-    return { value: (options.tg ?? (one => tgAnswer(one.argv)))(ran) }
+    const answer = options.tgAsync ?? (async (one: Ran) => (options.tg ?? (two => tgAnswer(two.argv)))(one))
+    // `tg folders`: the chats this world's `tg dialogs` answers, as one All chats folder.
+    if (e.argv[1] === 'folders') return { value: folderRun(e.argv, await answer({ argv: ['tg', 'dialogs', '--limit', '50', '--json'], stdin: undefined })) }
+    return { value: await answer(ran) }
   })
   on('process.spawn', async function* (_$, e) {
     seen.spawns.push(e.argv)
@@ -147,7 +150,7 @@ async function openAndSelect($: Engine, clock: MockClock) {
   await $.command.run(WIDE)
   await clock.settle()
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-  await ui.press({ key: 'dialog:1001' })
+  await ui.press({ key: await chatKey(ui, 1001) })
   await ui.press({ key: 'key:up' })
   await ui.press({ key: 'key:mark' })
   return ui
@@ -197,7 +200,7 @@ async function openChatAt($: Engine, clock: MockClock, id: number, message: numb
   await $.command.run(WIDE)
   await clock.settle()
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-  await ui.press({ key: `dialog:${id}` })
+  await ui.press({ key: await chatKey(ui, id) })
   for (let i = 0; i < 5 && !((await ui.find({ key: `msg:${message}` }))?.text ?? '').includes('▸'); i++) await ui.press({ key: 'key:up' })
   return ui
 }
@@ -662,13 +665,13 @@ describe('live pin', () => {
     const seen = world(on, { gate: new Promise<void>(() => {}) })
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:follow' })
-    expect((await ui.find({ key: 'dialog:1001' }))?.text).toContain('⌁')
+    expect((await findChat(ui, 1001))?.text).toContain('⌁')
     await ui.press({ key: 'key:follow' })
     expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
     expect((await ui.find({ key: 'key:follow' }))?.text).toBe('follow → main')
     // Two children in all (bot testing's, then the shared restart): unpinning started none.
     expect(seen.spawns).toHaveLength(2)
-    expect((await ui.find({ key: 'dialog:1001' }))?.text).not.toContain('⌁')
+    expect((await findChat(ui, 1001))?.text).not.toContain('⌁')
     await ui.unmount()
   })
 
@@ -844,7 +847,7 @@ describe('drafted reply', () => {
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer: 'First draft.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
     // The cursor lands on the newest message, #92 again: the second packet is about it.
-    if (second !== 1004) await ui.press({ key: `dialog:${second}` })
+    if (second !== 1004) await ui.press({ key: await chatKey(ui, second) })
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-2' })
     // The first draft waits behind its notice (T4b); e opens it.

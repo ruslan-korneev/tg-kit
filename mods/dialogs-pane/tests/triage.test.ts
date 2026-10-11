@@ -1,11 +1,11 @@
 // Triage through the engine: tg watch children (live thread, watched bots in
-// Hidden, restarts, kills), saved lenses, the summary and needs-you ranking.
+// Hidden, restarts, kills), the summary and For you's needs-you ranking.
 // tg is answered by process.run / process.spawn hooks beneath the plugin and
 // the model by a model.complete hook, so nothing real runs.
 import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DIALOGS, MESSAGES } from './fixtures'
+import { DIALOGS, MESSAGES, chatIds, chatKey, findChat, folderRun } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -65,6 +65,7 @@ function world(
   on('process.run', (_$, e) => {
     seen.runs.push(e.argv)
     if (e.argv[1] === 'dialogs') return { value: json(options.dialogs ?? DIALOGS) }
+    if (e.argv[1] === 'folders') return { value: folderRun(e.argv, json(options.dialogs ?? DIALOGS)) }
     if (e.argv[1] === 'whoami') return { value: json({ account: 'default', id: 1003, username: 'owner_handle', name: 'Owner Example' }) }
     return { value: json(MESSAGES) }
   })
@@ -237,7 +238,7 @@ describe('the open thread is live', () => {
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     // Dev Team: no bot, so triage is the thread watch's only listener.
-    await ui.press({ key: 'dialog:1002' })
+    await ui.press({ key: await chatKey(ui, 1002) })
     await clock.settle()
     const child = seen.children[0]
     // It replays from the newest message the thread already shows, and may idle out.
@@ -265,7 +266,7 @@ describe('the open thread is live', () => {
     await $.command.run(tgCommand('compact'))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'dialog:1001' })
+    await ui.press({ key: await chatKey(ui, 1001) })
     await clock.settle()
     expect(seen.children.map(child => child.argv)).toEqual([['tg', 'watch', '@example_bot', '--jsonl', '--idle-exit', '15m']])
     await ui.press({ key: 'key:watch' })
@@ -292,43 +293,12 @@ describe('the open thread is live', () => {
     expect(seen.children[0]?.argv.slice(0, 3)).toEqual(['tg', 'watch', '@example_bot'])
     seen.children[0]?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
     await clock.settle()
-    expect((await ui.find({ key: 'dialog:1001' }))?.text).toContain('◎')
+    expect((await findChat(ui, 1001))?.text).toContain('◎')
     expect((await ui.find({ key: 'key:watch' }))?.text).toBe('unwatch')
     await ui.press({ key: 'key:watch' })
     await clock.settle()
     expect(seen.children[0]?.isKilled).toBe(true)
     expect(seen.store.get('triage.watched')).toEqual([])
-    await ui.unmount()
-  })
-})
-
-describe('saved lenses', () => {
-  test('z saves the view as a lens tab on 4; editing kinds filters; delete removes it', async ($, on) => {
-    const clock = mock.clock(on, { now: NOW })
-    const seen = world(on)
-    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('compact'))
-    await clock.settle()
-    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'key:lenses' })
-    expect(await ui.find({ type: 'Text', text: 'lens · new · every kind' })).toBeDefined()
-    await ui.input({ key: 'lens:name', text: 'Work' })
-    await ui.press({ key: 'lens:kind:groups' })
-    await ui.press({ key: 'pick:1002' })
-    await ui.press({ key: 'lens:save' })
-    const tab = await ui.find({ key: `lens:saved:${(seen.store.get('triage.lenses') as { id: string }[])[0]?.id}` })
-    expect(tab?.text).toBe('‹Work›')
-    expect(await ui.find({ key: 'dialog:1002' })).toBeDefined()
-    expect(await ui.find({ key: 'dialog:1001' })).toBeUndefined()
-
-    // 1 goes back to All; the saved tab stays.
-    await ui.press({ key: 'lens:all' })
-    expect(await ui.find({ key: 'dialog:1001' })).toBeDefined()
-    await ui.press({ key: tab?.key ?? '' })
-    await ui.press({ key: 'key:lenses' })
-    await ui.press({ key: 'lens:delete' })
-    expect(seen.store.get('triage.lenses')).toEqual([])
-    expect(await ui.find({ key: 'dialog:1001' })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -341,7 +311,7 @@ describe('summary', () => {
     await $.command.run(tgCommand('compact'))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'dialog:1001' })
+    await ui.press({ key: await chatKey(ui, 1001) })
     await ui.press({ key: 'key:summary' })
     const call = seen.asked[0]
     expect(call?.model).toBe('claude-haiku-5-5')
@@ -362,7 +332,7 @@ describe('summary', () => {
     await $.command.run(tgCommand('compact'))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'dialog:1001' })
+    await ui.press({ key: await chatKey(ui, 1001) })
     await ui.press({ key: 'key:summary' })
     expect(await ui.find({ type: 'Text', text: 'the model call failed (overloaded)' })).toBeDefined()
     expect((await ui.find({ key: 'key:summary' }))?.text).toBe('retry summary')
@@ -372,33 +342,36 @@ describe('summary', () => {
 
 describe('needs-you ranking', () => {
   const list = [
-    { id: 2001, kind: 'channel', title: 'News', username: null, unread: 9, last_id: 1, last_date: '2026-10-10T11:59:00Z', last_text: 'digest' },
-    { id: 2002, kind: 'user', title: 'Contact A', username: null, unread: 1, last_id: 7, last_date: '2026-10-10T11:58:00Z', last_text: 'hm' },
-    { id: 2003, kind: 'user', title: 'Contact B', username: null, unread: 1, last_id: 3, last_date: '2026-10-10T11:57:00Z', last_text: 'free tomorrow?' },
+    { id: 2001, kind: 'channel', title: 'News', username: null, unread: 9, mentions: 0, pinned: false, muted: false, last_id: 1, last_date: '2026-10-10T11:59:00Z', last_text: 'digest' },
+    { id: 2002, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T11:58:00Z', last_text: 'hm' },
+    { id: 2003, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 3, last_date: '2026-10-10T11:57:00Z', last_text: 'free tomorrow?' },
   ]
 
-  test('y puts who needs you first and noise last, asking the model once per top message', async ($, on) => {
+  test('y opens For you: who asks first, noise left out; the model is asked there only, once per top message', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { dialogs: list, model: () => ({ isAnswered: true, text: '1 noise', usage: USAGE }) })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await $.command.run(tgCommand('compact'))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    const order = async () => (await ui.findAll({ type: 'Button' })).flatMap(one => (one.key?.startsWith('dialog:') ? [one.key] : []))
-    expect(await order()).toEqual(['dialog:2001', 'dialog:2002', 'dialog:2003'])
+    const order = async () => chatIds((await ui.findAll({ type: 'Button' })).map(one => one.key))
+    // A folder keeps Telegram's order, and nothing is ranked outside For you.
+    expect(await order()).toEqual([2001, 2002, 2003])
+    expect(seen.asked).toHaveLength(0)
     await ui.press({ key: 'key:foryou' })
     await clock.settle()
-    // Contact B asks a question; the model calls Contact A noise; the channel is noise by rule.
-    expect(await order()).toEqual(['dialog:2003', 'dialog:2001', 'dialog:2002'])
+    // Contact B asks a question; the model calls Contact A noise; an unread channel without a mention is not a person waiting.
+    expect(await order()).toEqual([2003])
+    expect((await findChat(ui, 2003))?.text).toContain('asks you')
     expect(seen.asked).toHaveLength(1)
     expect(seen.asked[0]?.prompt).toContain('<chat n="1" kind="private chat with a person" unread="1">hm</chat>')
-    expect(seen.store.get('triage.ranked')).toBe(true)
 
-    // Off and on again: the same top messages are not asked about twice.
-    await ui.press({ key: 'key:foryou' })
+    // Away and back: the same top messages are not asked about twice.
+    await ui.press({ key: 'key:back' })
     await ui.press({ key: 'key:foryou' })
     await clock.settle()
     expect(seen.asked).toHaveLength(1)
     await ui.unmount()
   })
+
 })

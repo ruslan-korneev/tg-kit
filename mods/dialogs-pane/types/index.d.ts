@@ -90,10 +90,28 @@ export type Dialog = {
   title: string
   username: string | null
   unread: number
+  /** Telegram's count of unread mentions of the owner. */
+  mentions: number
+  /** Pinned in the list asked for: the chat list, the Archive, or the folder (`--folder`). */
+  pinned: boolean
+  /** The chat's own mute, or the account's default for its kind. */
+  muted: boolean
   last_id: number | null
   last_date: string | null
   last_text: string
 }
+
+/** `tg folders --json` `kind`: All chats (always id 0), a folder, or one shared by an invite link. */
+export type FolderKind = 'all' | 'folder' | 'shared'
+
+/** One entry of `tg folders --json`; `unread` (unread chats that are not muted) only with `--counts`, else null. */
+export type Folder = { id: number; title: string; kind: FolderKind; unread: number | null }
+
+/** One folder of `tg folders --chats --json` (README "Dialogs and folders"): its pins and every member, ids only, in its order. */
+export type FolderChats = { id: number; title: string; kind: FolderKind; unread: number; pinned: number[]; chats: number[] }
+
+/** `tg folders --chats --json`, the pass: every folder's chats, and each chat's row once. */
+export type FolderPass = { at: string; scan: number; folders: FolderChats[]; dialogs: Dialog[] }
 
 // The pane's names for the same shapes.
 export type TgPeerKind = SenderKind
@@ -120,24 +138,27 @@ export type Load<T> =
 
 /** Open: the pane is up, laid out for where the engine seats it (dock or inline). Hidden: closed. */
 export type Mode = 'open' | 'hidden'
-export type Lens = 'all' | 'bots' | 'unread'
 
 /** The peer a thread is open on: `arg` is what tg is given (`@name` or the id). */
 export type PeerRef = { id: number; arg: string; label: string; kind: TgPeerKind }
 
 export type Nav = {
-  /** The column the cursor is in; inline shows only that one. */
-  view: 'dialogs' | 'thread'
-  lens: Lens
+  /** Where the cursor is: the Folders list (`h` from Chats), Chats, or the open chat; inline shows only that one. */
+  view: 'folders' | 'dialogs' | 'thread'
+  /** What Chats show: a Telegram folder, the Archive, or a pane view (── folders ──). */
+  list: ListView
+  /** `s`: a search of every chat in place of the list; '' shows the list. */
   query: string
   dialogCursor: number
   messageCursor: number
+  folderCursor: number
   /**
    * The first row of each list's window, as last drawn: it moves only when the
    * cursor leaves the window (hooks/ui/components.tsx `edgeStart`).
    */
   dialogStart: number
   messageStart: number
+  folderStart: number
   /** `m`: the menu over the view. */
   isMenuOpen: boolean
   /** `s`: the search field is up, in the bar's row. */
@@ -155,27 +176,11 @@ export type Selection = { ids: number[]; anchor: number | null }
 export type BandEvent = { dialogId: number; label: string; kind: TgPeerKind; text: string }
 
 // ── triage ──
-// Live updates, watched dialogs, saved lenses, summaries and needs-you ranking
-// (design §5 ideas 11–14). Pure rules in hooks/triage/.
+// Live updates, watched dialogs, summaries and needs-you ranking (design §5
+// ideas 11–14; the ranking serves For you, ── folders ──). Pure rules in hooks/triage/.
 
 /** How one `tg watch` child is doing: starting, past `ready`, waiting to restart, or given up. */
 export type WatchHealth = 'connecting' | 'live' | 'retrying' | 'failed'
-
-/** A saved lens: an extra LensBar tab. Every filter that is set must match. */
-export type SavedLens = {
-  id: string
-  name: string
-  /** Peer kinds shown; empty shows every kind. */
-  kinds: TgPeerKind[]
-  isUnreadOnly: boolean
-  /** Title or username contains it; '' matches all. */
-  query: string
-  /** Dialog ids picked by hand; empty matches any dialog. */
-  dialogs: number[]
-}
-
-/** The lens editor while it is open: a new lens, or a saved one being changed. */
-export type LensDraft = { lens: SavedLens; isNew: boolean }
 
 /** Needs-you ranking: who asks you something, what is just news, what is noise. */
 export type Verdict = 'needs-you' | 'fyi' | 'noise'
@@ -202,11 +207,6 @@ export type Triage = {
   watched: PeerRef[]
   /** Each running watch, by dialog id. */
   health: Record<string, WatchHealth>
-  /** The active saved lens's id; null: the built-in lens in `nav.lens`. */
-  lens: string | null
-  lenses: SavedLens[]
-  editor: LensDraft | null
-  isRanked: boolean
   /** Model verdicts, by `dialogId:last_id`, so a dialog is asked about once per new message. */
   verdicts: Record<string, Verdict>
   /** Dialog id → the id of a live message that replied to one of yours. */
@@ -596,6 +596,49 @@ export type StopNotice = { names: string[]; failed: number; until: number }
 
 // ── /running ──
 
+// ── folders ──
+// dialogs-pane-ux.md §4.7 and §8 T9: Telegram's folders, For you and Bots in
+// Chats, all from one pass (`tg folders --chats --json`). The pass's rows stay
+// in the module; $.state holds only what is drawn. Pure rules in hooks/folders/.
+
+/** What Chats show: a Telegram folder (All chats is folder 0), the Archive, or one of the pane's views. */
+export type ListView = { kind: 'folder'; id: number } | { kind: 'archive' } | { kind: 'foryou' } | { kind: 'bots' }
+
+/** Why a person's chat is in For you (§5.3); noise is left out. */
+export type ForYouWhy = 'asks you' | 'mentions you' | 'fyi'
+
+/** One of For you's agent rows: autopilot's draft (by seq), routing's drafted reply, the auto reply's undo window. */
+export type AgentItem = { kind: 'draft'; seq: number } | { kind: 'reply' } | { kind: 'undo'; seq: number }
+
+/** When passes run (§8 T9): one at a time, never within 60 s of the last one's start. */
+export type PassState = {
+  /** The last pass's start (ms): kept here, so a hot reload keeps the 60 s. */
+  startedAt: number | null
+  isRunning: boolean
+  /** `g` inside the 60 s: the one pass queued, and when it runs. */
+  queuedFor: number | null
+  /** Exit 5: no pass before this time (ms). */
+  floodUntil: number | null
+  /** The last pass's failure other than a flood: one red line, `g: retry`. */
+  error: string | null
+  /** The pane was opened in this session: passes go on every 5 min while it is hidden. */
+  hasOpened: boolean
+}
+
+export type Folders = {
+  /** The folder list as drawn (the strip, the Folders list); counts change in place. null: none held yet. */
+  list: Folder[] | null
+  /** The list's generation, part of each row key (`dialog:<gen>:<id>`): up whenever the list reshapes. */
+  gen: number
+  /** For you as drawn: its agent rows, and why each person's row is there; `isRanking` while the model ranks them. */
+  agents: AgentItem[]
+  why: Record<string, ForYouWhy>
+  isRanking: boolean
+  pass: PassState
+}
+
+// ── /folders ──
+
 declare module 'claude-code' {
   interface PluginState {
     'dialogs-pane': {
@@ -624,6 +667,8 @@ declare module 'claude-code' {
       // ── running ──
       activity: ActivityView | null
       lastStop: StopNotice | null
+      // ── folders ──
+      folders: Folders
     }
   }
 }

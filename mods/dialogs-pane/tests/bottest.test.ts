@@ -4,7 +4,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import type { BotTest } from '../types'
-import { DIALOGS, MESSAGES } from './fixtures'
+import { DIALOGS, MESSAGES, chatKey, folderRun } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const PROPS: RenderPropsOf['Pane'] = {
@@ -64,6 +64,7 @@ function world(
     runs.push({ argv: e.argv, ...(e.init?.stdin === undefined ? {} : { stdin: e.init.stdin }) })
     const [, command, sub] = e.argv
     if (command === 'dialogs') return { value: out(0, options.dialogs ?? DIALOGS) }
+    if (command === 'folders') return { value: folderRun(e.argv, out(0, options.dialogs ?? DIALOGS)) }
     if (command === 'read') return { value: out(0, options.messages ?? MESSAGES) }
     if (command === 'allow' && sub === 'list') return { value: out(0, (options.allow ?? [BOT_ID]).map(id => ({ id, kind: 'bot' }))) }
     return { value: options.writes?.(e.argv) ?? out(2, undefined, 'error: unexpected call') }
@@ -76,7 +77,7 @@ async function openBot($: Parameters<TestBody>[0], clock: { settle: () => Promis
   await $.command.run({ command: 'tg', args: 'wide', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
   await clock.settle()
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PROPS })
-  await ui.press({ key: 'dialog:1001' })
+  await ui.press({ key: await chatKey(ui, 1001) })
   await clock.settle()
   return ui
 }

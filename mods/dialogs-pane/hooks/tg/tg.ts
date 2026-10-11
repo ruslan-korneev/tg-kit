@@ -4,8 +4,8 @@
 // $.process.run (`$` never crosses an import) and hands the run to `settle`.
 import type { ProcessRunResult } from 'claude-code'
 
-import type { TgDialog, TgFailure, TgMessage } from '../../types'
-import { TgJsonError, parseDialogs, parseMessageViews } from '../packet/types'
+import type { Folder, FolderPass, TgDialog, TgFailure, TgMessage } from '../../types'
+import { TgJsonError, parseDialogs, parseFolderPass, parseFolders, parseMessageViews } from '../packet/types'
 
 /** `partial` is set when tg found only some of what was asked (`tg msg`, exit 4). */
 export type TgResult<T> = { ok: true; value: T; partial?: string } | { ok: false; failure: TgFailure }
@@ -37,8 +37,24 @@ const request = <T>(args: readonly string[], decode: (data: unknown) => T | unde
 })
 
 export const tg = {
-  dialogs: (options: { limit?: number } = {}): TgRequest<TgDialog[]> =>
-    request(['dialogs', '--limit', String(options.limit ?? 50)], checked(parseDialogs)),
+  /** The latest chats; `query` searches every chat's title and @name, `isArchived` lists the Archive. */
+  dialogs: (options: { limit?: number; query?: string; isArchived?: boolean } = {}): TgRequest<TgDialog[]> =>
+    request(
+      [
+        'dialogs',
+        '--limit',
+        String(options.limit ?? 50),
+        ...(options.query === undefined ? [] : ['--query', options.query]),
+        ...(options.isArchived === true ? ['--archived'] : []),
+      ],
+      checked(parseDialogs),
+    ),
+
+  /** The owner's folders in Telegram's order, without counts: what the strip paints first (§4.7). */
+  folders: (): TgRequest<Folder[]> => request(['folders'], checked(parseFolders)),
+
+  /** The pass (§8 T8b): every folder's chats and every chat's row, in one call. */
+  pass: (): TgRequest<FolderPass> => request(['folders', '--chats'], checked(parseFolderPass)),
 
   /** The last `limit` messages of a chat, oldest first. */
   read: (peer: string, options: { limit?: number } = {}): TgRequest<TgMessage[]> =>

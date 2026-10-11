@@ -2,7 +2,7 @@
 // (types/index.d.ts), which must be self-contained; this module re-exports
 // them and holds the parsers. A change in tg lands in both in one commit.
 
-import type { Button, Dialog, Media, MessageView, Sender, SenderKind } from '../../types'
+import type { Button, Dialog, Folder, FolderChats, FolderKind, FolderPass, Media, MessageView, Sender, SenderKind } from '../../types'
 
 export type {
   Button,
@@ -194,6 +194,9 @@ export function parseDialog(v: unknown, path = 'dialog'): Dialog {
     title: str(o.title, `${path}.title`),
     username: nullable(o.username, `${path}.username`, str),
     unread: int(o.unread, `${path}.unread`),
+    mentions: int(o.mentions, `${path}.mentions`),
+    pinned: bool(o.pinned, `${path}.pinned`),
+    muted: bool(o.muted, `${path}.muted`),
     last_id: nullable(o.last_id, `${path}.last_id`, int),
     last_date: nullable(o.last_date, `${path}.last_date`, str),
     last_text: str(o.last_text, `${path}.last_text`),
@@ -203,6 +206,53 @@ export function parseDialog(v: unknown, path = 'dialog'): Dialog {
 /** The list `tg dialogs --json` prints. */
 export function parseDialogs(v: unknown): Dialog[] {
   return arr(v, 'dialogs').map((d, i) => parseDialog(d, `dialogs[${i}]`))
+}
+
+export const FOLDER_KINDS = ['all', 'folder', 'shared'] as const satisfies readonly FolderKind[]
+
+function folderKind(v: unknown, path: string): FolderKind {
+  const s = str(v, path)
+  const known = FOLDER_KINDS.find(k => k === s)
+  if (known === undefined) throw new TgJsonError(path, `one of ${FOLDER_KINDS.join(' ')}`)
+  return known
+}
+
+/** The list `tg folders [--counts] --json` prints, in Telegram's order; `unread` only with `--counts`. */
+export function parseFolders(v: unknown): Folder[] {
+  return arr(v, 'folders').map((x, i) => {
+    const path = `folders[${i}]`
+    const o = obj(x, path)
+    return {
+      id: int(o.id, `${path}.id`),
+      title: str(o.title, `${path}.title`),
+      kind: folderKind(o.kind, `${path}.kind`),
+      unread: optional(o, 'unread', path, int) ?? null,
+    }
+  })
+}
+
+/** The document `tg folders --chats --json` prints (README "Dialogs and folders"). */
+export function parseFolderPass(v: unknown): FolderPass {
+  const o = obj(v, 'pass')
+  const ids = (x: unknown, path: string) => arr(x, path).map((id, i) => int(id, `${path}[${i}]`))
+  const folders: FolderChats[] = arr(o.folders, 'pass.folders').map((x, i) => {
+    const path = `pass.folders[${i}]`
+    const f = obj(x, path)
+    return {
+      id: int(f.id, `${path}.id`),
+      title: str(f.title, `${path}.title`),
+      kind: folderKind(f.kind, `${path}.kind`),
+      unread: int(f.unread, `${path}.unread`),
+      pinned: ids(f.pinned, `${path}.pinned`),
+      chats: ids(f.chats, `${path}.chats`),
+    }
+  })
+  return {
+    at: str(o.at, 'pass.at'),
+    scan: int(o.scan, 'pass.scan'),
+    folders,
+    dialogs: arr(o.dialogs, 'pass.dialogs').map((d, i) => parseDialog(d, `pass.dialogs[${i}]`)),
+  }
 }
 
 /** `tg resolve --json`, or one `tg dialogs --json` row. */

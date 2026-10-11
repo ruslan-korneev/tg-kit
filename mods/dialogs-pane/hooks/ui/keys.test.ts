@@ -91,8 +91,13 @@ describe('the action bar', () => {
     expect(ids(actionBar(at('chat', 'group')))).toEqual(['send', 'summary', 'watch', 'agent', 'write', 'menu'])
     expect(ids(actionBar(at('chat', 'channel')))).toEqual(['send', 'summary', 'watch', 'agent', 'mark', 'menu'])
     expect(ids(actionBar(at('chat', 'saved')))).toEqual(['send', 'write', 'mark', 'menu'])
-    expect(ids(actionBar(at('chats', 'bot')))).toEqual(['open', 'summary', 'watch', 'agent', 'menu'])
-    expect(ids(actionBar(at('chats', 'bot', {}, 'inline')))).toEqual(['open', 'search', 'summary', 'watch', 'agent', 'menu'])
+    expect(ids(actionBar(at('chats', 'bot')))).toEqual(['open', 'back', 'summary', 'watch', 'agent', 'menu'])
+    expect(ids(actionBar(at('chats', 'bot', {}, 'inline')))).toEqual(['open', 'back', 'search', 'summary', 'watch', 'agent', 'menu'])
+    // T9: the Folders list, and For you by its cursor row (§4.6).
+    expect(ids(actionBar(at('folders', null)))).toEqual(['open', 'foryou', 'back', 'menu'])
+    expect(ids(actionBar(at('foryou', 'person', { row: 'chat' })))).toEqual(['open', 'summary', 'back', 'menu'])
+    expect(ids(actionBar(at('foryou', 'person', { row: 'draft' })))).toEqual(['senddraft', 'edit', 'dismiss', 'back', 'menu'])
+    expect(ids(actionBar(at('foryou', 'person', { row: 'undo', undoLeft: 20 })))).toEqual(['open', 'back', 'undo', 'menu'])
   })
 
   test('f joins on a pair; 0 and u join while they work; back joins inline', () => {

@@ -13,6 +13,8 @@ export const BATCH = 12
 /** Who "you" is, from `tg whoami --json`; null fields when unknown. */
 export type Me = { username: string | null; name: string | null }
 
+export const NO_ME: Me = { username: null, name: null }
+
 export const verdictKey = (dialog: Pick<TgDialog, 'id' | 'last_id'>): string => `${dialog.id}:${dialog.last_id ?? 0}`
 
 function mentions(text: string, me: Me): boolean {
