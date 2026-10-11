@@ -472,8 +472,12 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     expect(letters.filter((key, index) => letters.indexOf(key) !== index)).toEqual([])
   })
 
+  /** A press brings nothing back: enough for a recording to have a step (T6). */
+  const pressing = (argv: readonly string[]) => (argv[1] === 'press' ? json({ button: {}, answer: null, replies: [] }) : happy(argv))
+  const RECORD = ['dialog:1001', 'key:record', 'key:up', 'btn:677791:0:0', 'key:record']
+
   /** Every view the pane draws in T1, by the presses that reach it. */
-  const VIEWS: { name: string; props: RenderPropsOf['Pane']; steps: string[] }[] = [
+  const VIEWS: { name: string; props: RenderPropsOf['Pane']; steps: string[]; tg?: typeof happy }[] = [
     { name: 'chats', props: DOCK, steps: [] },
     { name: 'chats inline', props: INLINE, steps: [] },
     ...[1001, 1002, 1003, 1004, 1005, 1006].flatMap(id => [
@@ -552,7 +556,8 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
         { name: `a chat from bots ${seat}`, props, steps: ['digit:3', 'dialog:1001'] },
       ]
     }),
-    // T6: the cursor on a message with buttons (its chips carry 1 and 2), BotFather's ro chips, the diff.
+    // T6: the cursor on a message with buttons (its chips carry 1 and 2), BotFather's ro chips, the diff, the
+    // recording-stopped sheet and its menu, the hand-off sheet on a bot outside allow.toml.
     ...[DOCK, INLINE].flatMap(props => {
       const seat = props === DOCK ? 'dock' : 'inline'
       return [
@@ -561,17 +566,23 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
         { name: `chips, marked ${seat}`, props, steps: ['dialog:1001', 'key:up', 'key:mark'] },
         { name: `diff ${seat}`, props, steps: ['dialog:1001', 'key:diff'] },
         { name: `diff menu ${seat}`, props, steps: ['dialog:1001', 'key:diff', 'key:menu'] },
+        { name: `recorded ${seat}`, props, steps: RECORD, tg: pressing },
+        { name: `recorded menu ${seat}`, props, steps: [...RECORD, 'key:menu'], tg: pressing },
+        { name: `hand-off ${seat}`, props, steps: [...RECORD, 'rec:hand'], tg: pressing },
+        { name: `hand-off targets ${seat}`, props, steps: [...RECORD, 'rec:hand', 'key:agent'], tg: pressing },
       ]
     }),
   ]
 
   for (const view of VIEWS) {
     test(`${view.name}: each of a–z and 0–9 has exactly one Button; the bound ones are the table's; the bar holds ≤ 7`, async ($, on) => {
-      const { ui, clock } = await openPane($, on, view.props)
+      const { ui, clock } = await openPane($, on, view.props, view.tg)
       for (const key of view.steps) {
         await ui.press({ key: key.startsWith('dialog:') ? await chatKey(ui, Number(key.slice('dialog:'.length))) : key })
         await clock.settle()
       }
+      if (/^recorded (dock|inline)$/.test(view.name)) expect(await ui.find({ key: 'rec:sheet' })).toBeDefined()
+      if (/^hand-off (dock|inline)$/.test(view.name)) expect(await ui.find({ key: 'sheet:intent:test' })).toBeDefined()
       if (view.name.startsWith('chips ')) expect((await ui.find({ key: 'btn:677791:0:1' }))?.props.hotkey).toBe('2')
       const drawn = await hotkeys(ui)
       for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
@@ -1034,7 +1045,7 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
   const threadStops = async (ui: Ui) => (await ui.findAll({ type: 'Button' })).flatMap(one => (one.key?.startsWith('msg:') === true || one.key?.startsWith('btn:') === true ? [one.key] : []))
 
   for (const seat of SEATS) {
-    test(`${seat.name}, a 40-message bot thread with chips and day dividers: k across the window, a digit's press, and f and its diff; the ring stays on ▸ (T6)`, async ($, on) => {
+    test(`${seat.name}, a 40-message bot thread with chips and day dividers: k across the window, a digit's press, f and its diff, r … r and its sheet; the ring stays on ▸ (T6)`, async ($, on) => {
       const { ui, clock } = await openPane($, on, seat.props, chipped)
       await openChat(ui, 1001)
       // k up the thread: a move inside the window changes no stop (every chip is a Button wherever the cursor is), so the
@@ -1072,6 +1083,17 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       expect(await place(ui)).toEqual(marked)
       await ui.press({ key: 'key:back' })
       await ui.press({ key: 'key:up' })
+      expect(await place(ui)).toEqual(base)
+      // r, a press, r: the recording-stopped sheet takes the bar's place, the thread under it static; ⏎ ok closes it.
+      await ui.press({ key: 'key:record' })
+      await ui.press({ key: `btn:${id}:0:1` })
+      await clock.settle()
+      await ui.press({ key: 'key:record' })
+      await clock.settle()
+      expect(await ui.find({ key: 'rec:sheet' })).toBeDefined()
+      await expectStatic(ui, false)
+      await ui.press({ key: 'rec:ok' })
+      expect(await ui.find({ key: 'rec:sheet' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
       await ui.unmount()
     })

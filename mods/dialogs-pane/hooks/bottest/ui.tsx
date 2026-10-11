@@ -5,7 +5,7 @@ import type { RenderElement } from 'claude-code'
 
 import type { Button, MessageView } from '../packet/types'
 import type { Els } from '../ui/components'
-import { TOKEN, oneLine } from '../ui/model'
+import { GLYPH, TOKEN, oneLine } from '../ui/model'
 import { keyboardLines, type ReplyDiff } from './diff'
 import { CHIP_GAP, chipsCells } from '../ui/thread'
 
@@ -77,6 +77,84 @@ export function Chips(
 /** Cells Chips takes, whichever form: the digit form's, with `ro` after the chips where it is drawn. */
 export function chipsWidth(labels: readonly (readonly string[])[], isReadOnly: boolean): number {
   return chipsCells(labels) + (isReadOnly ? 2 + CHIP_GAP : 0)
+}
+
+/**
+ * Recording stopped (§5.2, §8 T6): the recording is a test brief, not just a
+ * file. It takes the action bar's place, four rows in the dock and two inline,
+ * as the send sheet does: `1` hands it to an agent as a live test, `2` copies
+ * the script's path, `d` discards it, ⏎ (its ringed Button) closes it.
+ */
+export function RecordedSheet(
+  { Box, Button, Text }: Els,
+  props: {
+    seat: 'dock' | 'inline'
+    width: number
+    steps: number
+    /** The script as the sheet names it, under the session's directory; null when it could not be written. */
+    shown: string
+    isWritten: boolean
+    isFocused: boolean
+    onHand: () => void
+    onCopy: () => void
+    onDiscard: () => void
+    onOk: () => void
+  },
+): RenderElement {
+  const dim = !props.isFocused
+  const title = `recording stopped · ${props.steps} step${props.steps === 1 ? '' : 's'}`
+  const where = props.isWritten ? `${props.shown} · git-ignored` : `${GLYPH.error} could not write ${props.shown}; 1 sends the steps alone`
+  const discard = (
+    <Button key="rec:discard" plain hotkey="d" dimColor={dim} onPress={props.onDiscard}>
+      discard
+    </Button>
+  )
+  const options = [
+    <Button key="rec:hand" plain hotkey="1" dimColor={dim} onPress={props.onHand}>
+      {props.seat === 'dock' ? 'hand to an agent as a live test' : 'hand to an agent'}
+    </Button>,
+    <Button key="rec:copy" plain hotkey="2" dimColor={dim} onPress={props.onCopy}>
+      copy the path
+    </Button>,
+  ]
+  const ok = (
+    <Button key="rec:ok" plain autoFocus dimColor={dim} onPress={props.onOk}>
+      ⏎ ok
+    </Button>
+  )
+  if (props.seat === 'dock') {
+    const rule = Math.max(1, props.width - title.length - 'd: discard'.length - 6)
+    return (
+      <Box key="rec:sheet" flexDirection="column">
+        <Box flexDirection="row">
+          <Text color={TOKEN.accent} dimColor>{`─ ${title} ${'─'.repeat(rule)} `}</Text>
+          {discard}
+          <Text color={TOKEN.accent} dimColor>
+            {' ─'}
+          </Text>
+        </Box>
+        <Text dimColor={props.isWritten} color={props.isWritten ? undefined : TOKEN.warn} wrap="truncate-end">
+          {where}
+        </Text>
+        <Box flexDirection="row" columnGap={3}>
+          {options}
+        </Box>
+        {ok}
+      </Box>
+    )
+  }
+  return (
+    <Box key="rec:sheet" flexDirection="column">
+      <Box flexDirection="row" columnGap={3}>
+        <Text color={TOKEN.accent} wrap="truncate-end">{`${title} → ${props.isWritten ? props.shown : 'not written'}`}</Text>
+        {discard}
+      </Box>
+      <Box flexDirection="row" columnGap={3}>
+        {options}
+        {ok}
+      </Box>
+    </Box>
+  )
 }
 
 /** The one-line send box; null on a surface without an Input. */

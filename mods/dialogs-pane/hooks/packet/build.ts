@@ -36,7 +36,19 @@ export type PacketInput = {
   annotations?: Readonly<Record<number, Annotation>>
   /** Replay `--wait`, in seconds. */
   waitSeconds?: number
+  /** A stopped recording handed over with the packet (dialogs-pane-ux.md §8 T6); its replay takes the replay's place. */
+  recording?: RecordingInput
 }
+
+/** One recorded step as the packet lists it: what was sent, or the label of the button pressed. */
+export type RecordingStep = { kind: 'send'; text: string; exit: number } | { kind: 'press'; label: string; row: number; col: number; exit: number }
+
+/**
+ * The recording: where its script is (relative to the session's directory; null when it was not written), the
+ * command that runs it, and its steps. The command is the pane's own words, not chat content, so redaction leaves
+ * it whole: a script named by its date would read as a phone number to the redactor.
+ */
+export type RecordingInput = { path: string | null; replay: string | null; steps: readonly RecordingStep[] }
 
 export type Packet = {
   /** The `<tg-packet>` block and, after it, the intent line. */
@@ -62,13 +74,15 @@ export function buildPacket(input: PacketInput): Packet {
 
   const last = messages.at(-1)
   const replay =
-    input.replay === false
-      ? null
-      : input.replay !== undefined
-        ? redactor ? redactor.text(input.replay) : input.replay
-        : last === undefined
-          ? null
-          : buildReplay(last, all, input.peer, { waitSeconds: input.waitSeconds, redactor: redactor ?? undefined })
+    input.recording !== undefined
+      ? input.recording.replay
+      : input.replay === false
+        ? null
+        : input.replay !== undefined
+          ? redactor ? redactor.text(input.replay) : input.replay
+          : last === undefined
+            ? null
+            : buildReplay(last, all, input.peer, { waitSeconds: input.waitSeconds, redactor: redactor ?? undefined })
 
   const ids = (n: number): string => (redactor ? redactor.id(n) : String(n))
   const peer = redactor ? redactPeer(input.peer, redactor) : input.peer
@@ -98,6 +112,7 @@ export function buildPacket(input: PacketInput): Packet {
       ...messages.map(render),
       ...(context.length > 0 ? [{ name: 'context', children: context.map(render) }] : []),
       ...(replay !== null ? [{ name: 'replay', text: replay }] : []),
+      ...(input.recording === undefined ? [] : [recordingNode(input.recording, redactor)]),
     ],
   }
 
@@ -110,6 +125,23 @@ export function buildPacket(input: PacketInput): Packet {
 }
 
 const byId = (a: MessageView, b: MessageView): number => a.id - b.id
+
+/** `<recording path=… steps=…>` with a `<step>` per send (its text) or press (its button's label), masked as the packet is. */
+function recordingNode(recording: RecordingInput, redactor: Redactor | null): Node {
+  const said = (text: string) => (redactor ? redactor.text(text) : text)
+  return {
+    name: 'recording',
+    attrs: [
+      ['path', recording.path],
+      ['steps', recording.steps.length],
+    ],
+    children: recording.steps.map((step, index) =>
+      step.kind === 'send'
+        ? { name: 'step', attrs: [['n', index + 1], ['kind', 'send'], ['exit', step.exit]], text: said(step.text) }
+        : { name: 'step', attrs: [['n', index + 1], ['kind', 'press'], ['row', step.row], ['col', step.col], ['exit', step.exit]], text: said(step.label) },
+    ),
+  }
+}
 
 /** A masked username is its placeholder; a readable one gets its `@`. */
 function at(username: string): string {

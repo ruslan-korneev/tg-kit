@@ -4,7 +4,8 @@
 // A replay cannot reuse message ids: they differ on every run. So a press names the
 // message by where it appeared, the Nth message in an earlier step's output, and the
 // script reads its id back out of that output (`#ID` starts each message line).
-import type { BotStep, Recording, StepMessage, StepOutcome, StepTarget } from '../../types'
+import type { BotStep, Handoff, PeerRef, Recording, StepMessage, StepOutcome, StepTarget } from '../../types'
+import type { RecordingInput, RecordingStep } from '../packet/build'
 import { shellQuote } from '../packet/replay'
 import type { MessageView } from '../packet/types'
 import { latencyText } from './latency'
@@ -39,8 +40,9 @@ export function targetOf(recording: Recording, id: number): StepTarget {
   return { id, from: null }
 }
 
-export function startRecording(at: number): Recording {
-  return { startedAt: at, steps: [] }
+/** A recording of the bot chat `peer`: only its sends and presses become steps (§4.6). */
+export function startRecording(at: number, peer: PeerRef): Recording {
+  return { peer, startedAt: at, steps: [] }
 }
 
 export function addStep(recording: Recording, step: BotStep): Recording {
@@ -133,4 +135,35 @@ export function toScript(recording: Recording, stoppedAt: number): string {
     ]
   })
   return [...head, ...body, ''].join('\n')
+}
+
+// --- the hand-off (dialogs-pane-ux.md §8 T6): a stopped recording as a test brief ---
+
+/** The steps as the packet lists them: what was sent, or which button was pressed, and tg's exit. */
+export function recordingSteps(steps: readonly BotStep[]): RecordingStep[] {
+  return steps.map(step =>
+    step.kind === 'send'
+      ? { kind: 'send', text: step.text, exit: step.outcome.exit }
+      : { kind: 'press', label: step.label, row: step.row, col: step.col, exit: step.outcome.exit },
+  )
+}
+
+/** What a hand-off adds to its packet: the recording, with the replay that runs its script (none when it was not written). */
+export function handoffInput(handoff: Handoff): { recording: RecordingInput } {
+  return { recording: { path: handoff.shown, replay: handoff.shown === null ? null : `sh ${shellQuote(handoff.shown)}`, steps: recordingSteps(handoff.steps) } }
+}
+
+/** Every message the recording printed or pressed, once, oldest first: what the hand-off's packet carries. */
+export function recordedIds(steps: readonly BotStep[]): number[] {
+  const ids = steps.flatMap(step => [...(step.kind === 'press' ? [step.target.id] : []), ...step.outcome.messages.map(one => one.id)])
+  return [...new Set(ids)].sort((a, b) => a - b)
+}
+
+/**
+ * The engine dialog's question before a hand-off to a bot outside allow.toml
+ * (§9 decisions 1 and 9): the owner's presses passed --yes, but an agent's
+ * replay is the agent's own write, which allow.toml gates.
+ */
+export function replayAllowQuestion(label: string, argv: readonly string[]): string {
+  return `An agent replaying this recording writes to ${label} on its own, so ${label} must be in allow.toml. Run  ${argv.join(' ')}  ?`
 }

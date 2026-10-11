@@ -12,7 +12,8 @@ export type IntentId = (typeof INTENT_IDS)[number]
  */
 export type Audience = 'bot' | 'people'
 
-export type Intent = { id: Exclude<IntentId, 'raw'>; audience?: Audience } | { id: 'raw'; text: string }
+/** `hasRecording`: a stopped recording rides along (dialogs-pane-ux.md §8 T6), and the packet's replay runs its script. */
+export type Intent = { id: Exclude<IntentId, 'raw'>; audience?: Audience; hasRecording?: true } | { id: 'raw'; text: string }
 
 type Template = { label: string; instruction: string }
 
@@ -57,8 +58,16 @@ export const PEOPLE_INTENTS = {
   },
 } as const satisfies Partial<Record<IntentId, Template>>
 
-function template(id: Exclude<IntentId, 'raw'>, audience: Audience | undefined): Template {
+/** Test with a recording handed over (§8 T6 "hand to an agent as a live test"): run it live first, then pin it in a test. */
+export const RECORDING_TEST = {
+  label: 'Test',
+  instruction:
+    'run the <replay> script, the <recording> of this exchange, as a live test of the bot, and report every step whose reply differs from what its comments expect; then write an automated test that reproduces the exchange and asserts the replies: text, buttons and callback data.',
+} as const satisfies Template
+
+function template(id: Exclude<IntentId, 'raw'>, audience: Audience | undefined, hasRecording: boolean): Template {
   if (audience === 'people' && id === 'explain') return PEOPLE_INTENTS.explain
+  if (hasRecording && id === 'test') return RECORDING_TEST
   return INTENTS[id]
 }
 
@@ -73,7 +82,7 @@ export function intentLine(intent: Intent): string {
     case 'test':
     case 'do_it':
     case 'draft_reply': {
-      const t = template(intent.id, intent.audience)
+      const t = template(intent.id, intent.audience, intent.hasRecording === true)
       return `Intent: ${t.label} — ${t.instruction}`
     }
   }

@@ -53,8 +53,9 @@ export const CHAT_KIND_LABEL: Record<ChatKind, string> = {
  * Ask field, a broadcast's legs. `summary` is `t`'s summary, over the lower
  * part; `field` is the send box (`n`) or the search field (`s`) in the bar's
  * row (T4b, §4.3 rule 1). A draft is a row of its chat (§8 T3), not a view.
+ * `recorded` is the recording-stopped sheet in the bar's place (§5.2, §8 T6).
  */
-export const WHERES = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'menu', 'band'] as const
+export const WHERES = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'recorded', 'menu', 'band'] as const
 export type Where = (typeof WHERES)[number]
 
 export type Seat = 'dock' | 'inline'
@@ -159,7 +160,7 @@ type Def = {
   isDigits?: true
 }
 
-const PANE: readonly Where[] = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary']
+const PANE: readonly Where[] = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'recorded']
 const LISTS: readonly Where[] = ['chats', 'chat']
 /** Where digits pick a folder and `y` opens For you: Chats and the views in their place (§4.7); in a chat digits press buttons. */
 const FOLDERS: readonly Where[] = ['chats', 'folders', 'foryou']
@@ -301,6 +302,8 @@ export const KEYS = [
     needs: c => (c.where === 'chat' ? onMessage(c) : onIntents(c)),
   },
   { id: 'intents', key: '1-9', hotkey: null, group: 'message', where: ['sheet'], kinds: 'any', label: () => 'send as', needs: onIntents, isDigits: true },
+  // The recording-stopped sheet (§5.2, §8 T6): 1 hands it to an agent as a live test, 2 copies the script's path.
+  { id: 'handoff', key: '1-2', hotkey: null, group: 'chat', where: ['recorded'], kinds: ['bot'], label: () => 'hand to an agent · copy the path', isDigits: true },
   {
     id: 'target',
     key: '1-9',
@@ -329,12 +332,12 @@ export const KEYS = [
     key: 'd',
     hotkey: 'd',
     group: 'pane',
-    where: ['chats', 'chat', 'foryou', 'card', 'activity', 'band'],
+    where: ['chats', 'chat', 'foryou', 'card', 'activity', 'recorded', 'band'],
     kinds: 'any',
     label: c =>
-      c.where === 'activity' ? 'dismiss ended tasks' : (c.where === 'foryou' || c.where === 'chat') && c.facts.row !== 'chat' && c.facts.row !== null ? 'drop' : 'dismiss',
+      c.where === 'recorded' ? 'discard' : c.where === 'activity' ? 'dismiss ended tasks' : (c.where === 'foryou' || c.where === 'chat') && c.facts.row !== 'chat' && c.facts.row !== null ? 'drop' : 'dismiss',
     needs: c =>
-      c.where === 'band'
+      c.where === 'band' || c.where === 'recorded'
         ? null
         : c.where === 'activity'
           ? c.facts.hasFinished
@@ -365,7 +368,7 @@ export const KEYS = [
     group: 'pane',
     // In the Folders list, the top level, h goes back down to the chats it came from: a key with no
     // meaning there would fall through to the prompt and take the keys with it (seen live).
-    where: ['chats', 'foryou', 'folders', 'chat', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'menu'],
+    where: ['chats', 'foryou', 'folders', 'chat', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'recorded', 'menu'],
     kinds: 'any',
     label: c =>
       c.where === 'folders'
@@ -378,7 +381,7 @@ export const KEYS = [
           : 'chats'
         : (c.where === 'sheet' && c.facts.sheet === 'intents') || c.where === 'field'
           ? 'cancel'
-          : c.where === 'summary'
+          : c.where === 'summary' || c.where === 'recorded'
             ? 'close'
             : 'back',
   },
@@ -502,6 +505,9 @@ function verbs(c: KeyContext): readonly KeyId[] {
       return []
     case 'diff':
       return ['diff', 'back']
+    case 'recorded':
+      // The sheet draws its own keys in the bar's place, as the send sheet does.
+      return []
     case 'menu':
       return ['back']
     case 'band':
@@ -622,6 +628,7 @@ const WHERE_WORDS: Record<Where, string> = {
   diff: 'a diff',
   summary: 'the summary',
   field: 'a field',
+  recorded: 'a stopped recording',
   menu: 'the menu',
   band: 'the band',
 }

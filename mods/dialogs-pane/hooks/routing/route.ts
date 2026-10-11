@@ -19,7 +19,7 @@ import type {
   TgDialog,
   TgMessage,
 } from '../../types'
-import { buildPacket, type Packet } from '../packet/build'
+import { buildPacket, type Packet, type RecordingInput } from '../packet/build'
 import { INTENTS, type Intent, type IntentId } from '../packet/intents'
 import type { Redactor } from '../packet/redact'
 import type { Peer } from '../packet/types'
@@ -175,6 +175,8 @@ export function previewPacket(input: {
   peer: Peer
   intent: Intent
   redact: boolean | Redactor
+  /** A hand-off's recording, with the replay that runs its script (§8 T6). */
+  handoff?: { recording: RecordingInput }
 }): Packet {
   return buildPacket({
     messages: input.selected,
@@ -182,6 +184,7 @@ export function previewPacket(input: {
     peer: input.peer,
     intent: input.intent,
     redact: input.redact,
+    ...(input.handoff === undefined ? {} : input.handoff),
   })
 }
 

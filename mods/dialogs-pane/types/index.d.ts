@@ -276,9 +276,11 @@ export type Overlay =
    * ⏎ on a message: the send sheet for `ids` (the marked set, or the cursor's
    * message), with the intents of `sender`, sending to `to`. `isRedacted` is this
    * packet's alone (inspect toggles it); the next sheet starts redacted again.
+   * `handoff`: a stopped recording rides along in every packet the sheet sends
+   * (dialogs-pane-ux.md §8 T6); null for a sheet opened on a message.
    */
-  | { kind: 'sheet'; ids: number[]; sender: SenderClass; step: SheetStep; to: Recipient; isRedacted: boolean }
-  | { kind: 'broadcast'; rows: BroadcastRow[]; ids: number[]; sender: SenderClass; isRedacted: boolean }
+  | { kind: 'sheet'; ids: number[]; sender: SenderClass; step: SheetStep; to: Recipient; isRedacted: boolean; handoff: Handoff | null }
+  | { kind: 'broadcast'; rows: BroadcastRow[]; ids: number[]; sender: SenderClass; isRedacted: boolean; handoff: Handoff | null }
 
 /** Who a ledger entry went to; a spawned agent is known once it started. */
 export type Delivered = { kind: 'main' } | ({ kind: 'agent'; isNew: boolean } & AgentRef)
@@ -369,10 +371,22 @@ export type BotStep =
       outcome: StepOutcome
     }
 
-export type Recording = { startedAt: number; steps: BotStep[] }
+/** A recording belongs to the bot chat it started in (§4.6: `r` only with a bot); steps elsewhere are not its. */
+export type Recording = { peer: PeerRef; startedAt: number; steps: BotStep[] }
 
-/** A stopped recording: its steps, the shell script, and where the script was written. */
-export type Recorded = Recording & { stoppedAt: number; script: string; path: string | null }
+/**
+ * A stopped recording: its steps, the shell script, and where the script was
+ * written (`path` absolute, null when the write failed; `shown` as the sheet
+ * names it, under the session's directory).
+ */
+export type Recorded = Recording & { stoppedAt: number; script: string; path: string | null; shown: string }
+
+/**
+ * A stopped recording handed to an agent as a live test (dialogs-pane-ux.md
+ * §8 T6): the script the packet's replay runs (`sh <shown>`, null when it was
+ * not written), and its steps.
+ */
+export type Handoff = { peer: PeerRef; shown: string | null; steps: BotStep[] }
 
 /**
  * Reply timing. `measured` (ms, by message id) is local timing from `tg watch`;
@@ -397,6 +411,7 @@ export type BotTest = {
   notice: Notice | null
   composing: boolean
   recording: Recording | null
+  /** The stopped recording while its sheet is up (§5.2 "recording stopped"); null once it closes. */
   recorded: Recorded | null
   /** The two message ids being compared, older first. */
   diff: [number, number] | null
