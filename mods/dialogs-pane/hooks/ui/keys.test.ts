@@ -238,4 +238,21 @@ describe('rows that come and go (T4b)', () => {
     expect(actionBar(at('chat', 'bot', { isRangeOpen: true, marks: 1 })).find(one => one.id === 'range')?.label).toBe('range end')
     expect(ids(hiddenKeys(at('chats', null, { hasNotice: true }), new Set()))).toContain('dismiss')
   })
+
+  test('docked, marks put h: clear on the bar, within seven keys', () => {
+    expect(ids(actionBar(at('chat', 'bot')))).not.toContain('back')
+    const marked = actionBar(at('chat', 'bot', { marks: 2, isRunning: true, undoLeft: 9 }))
+    expect(marked.find(one => one.id === 'back')?.label).toBe('clear')
+    expect(marked.length).toBeLessThanOrEqual(MAX_BAR)
+    const ranging = actionBar(at('chat', 'bot', { marks: 1, isRangeOpen: true, isRunning: true, undoLeft: 9 }))
+    expect(ids(ranging)).toEqual(expect.arrayContaining(['send', 'range', 'back', 'undo', 'menu']))
+    expect(ranging.length).toBeLessThanOrEqual(MAX_BAR)
+  })
+
+  test('docked at 64 columns, two replies marked: ⏎, x, f and h: clear stay beside the marks count', () => {
+    // The bar gets what `▪ 2 marked` leaves of the row.
+    const bar = ids(actionBar(at('chat', 'bot', { marks: 2, hasPair: true }), 64 - '▪ 2 marked'.length - 2))
+    expect(bar.slice(0, 3)).toEqual(['send', 'mark', 'diff'])
+    expect(bar).toContain('back')
+  })
 })
