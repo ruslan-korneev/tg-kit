@@ -46,6 +46,7 @@ function grantLines(grant: DgGrant, worktrees: readonly DgWorktree[], deadline: 
     "  The owner's own checkouts (the paths after \"from\") are off limits, even to read.",
     `- Web: ${WEB_LABEL[grant.web]}${grant.web === 'read' ? ' (fetch pages and search; send nothing)' : ''}.`,
     `- Commands: ${COMMANDS_LABEL[grant.commands]}${grant.commands === 'checks' ? `: ${worktrees.flatMap(one => one.checks).join(', ') || 'none found'}, local git, and local read-only commands` : ''}.`,
+    "- Never tg, and nothing in tg-kit's config directory (TG_KIT_CONFIG_DIR, ~/.config/tg-kit by default) outside your worktrees: not even to read.",
     `- Time: ${deadline === null ? 'until the task is done' : `until ${clock(deadline)}; past it you are stopped`}.`,
   ]
 }

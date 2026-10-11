@@ -22,6 +22,7 @@ import type { Delegate, DgTask } from 'dialogs-pane'
 
 import type { GuardArmedValue, GuardEventValue, GuardHoldValue, GuardWorkValue } from '../types'
 import { checkGrant, type Scope } from './delegate/grant'
+import { resolvePath } from './delegate/paths'
 import { skippedStops } from './delegate/skip'
 import { callHits, partition, stopQuestion, type StopHit, type ToolUse } from './delegate/stops'
 import { addStep, isLive, stepOf } from './delegate/task'
@@ -44,6 +45,8 @@ const events = atom({ plugin: 'dialogs-pane-guard', key: 'events' } as const, []
 
 // Module state: a reload starts these over; the tasks are dialogs-pane's.
 let home = '/'
+/** tg-kit's config directory, where dialogs-pane puts the worktrees; the Worker never reaches the rest of it. */
+let configDir = '/.config/tg-kit'
 let holdSeq = 0
 /** Subagents placed: a Worker's agent id → its task id; and the ones that are no Worker. */
 const workers = new Map<string, number>()
@@ -53,6 +56,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     home = (await $.env.get('HOME')) ?? '/'
+    // The same root dialogs-pane's worktrees are made under.
+    configDir = resolvePath((await $.env.get('TG_KIT_CONFIG_DIR')) ?? `${home}/.config/tg-kit`, '/', home)
     await beat($)
     $.clock.every(HEARTBEAT_MS, () => {
       beat($).catch(() => {
@@ -186,6 +191,7 @@ async function guard($: $, task: DgTask, state: Delegate | null, e: ToolCallInpu
     home,
     checkouts: task.worktrees.flatMap(tree => (tree.repo === '' ? [] : [tree.repo])),
     checks: task.worktrees.flatMap(tree => tree.checks),
+    configDir,
   }
   const step = stepOf(use, task.worktrees, home)
   const granted = checkGrant(use, task.grant, scope)

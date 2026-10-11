@@ -75,10 +75,10 @@ const guardValue = async ($: Engine, key: 'armed' | 'holds' | 'events' | 'work')
 type Dialog = 'Yes, allow it' | 'No' | 'dismiss'
 type World = { ran: string[]; questions: string[]; dialog: Dialog; list: { id: string; type: string }[] }
 
-function world(on: On, options: { whileAsked?: () => Promise<void> } = {}): World {
+function world(on: On, options: { whileAsked?: () => Promise<void>; configDir?: string } = {}): World {
   const seen: World = { ran: [], questions: [], dialog: 'Yes, allow it', list: [] }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
-  on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? HOME : undefined }))
+  on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? HOME : e.name === 'TG_KIT_CONFIG_DIR' ? options.configDir : undefined }))
   on('agent.list', () => ({ value: seen.list.map(one => ({ ...one, description: '', status: 'running' as const })) }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
@@ -148,6 +148,39 @@ describe('the grant', () => {
         current: null,
       },
     ])
+  })
+
+  test('a path attached to a redirect or an option is read too (X3); the same inside the worktree runs', WITH_PANE, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const seen = world(on)
+    await start($)
+    expect((await worker($, `echo 'alias ls=true' >>${HOME}/.zshrc`)).deny).toContain('outside your worktree')
+    expect((await worker($, `uv run pytest >${REPO}/out.txt`)).deny).toContain("the owner's own checkout")
+    expect((await worker($, `sort --output=${HOME}/.zshrc README.md`)).deny).toContain('outside your worktree')
+    expect((await worker($, `awk 'BEGIN { print 1 > "${HOME}/.zshrc" }'`)).deny).toContain('a program that writes or runs commands')
+    expect((await worker($, 'uv run pytest -q > ./out.txt 2>&1')).deny).toBeUndefined()
+    expect(seen.ran).toEqual(['uv run pytest -q > ./out.txt 2>&1'])
+  })
+
+  test("decision 11: under `any` too, tg and tg-kit's config are refused, and nothing runs", WITH_PANE, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const seen = world(on)
+    await start($, { ...DELEGATE, tasks: [{ ...TASK, grant: { ...TASK.grant, commands: 'any' } }] })
+    for (const command of ['tg send @example_bot hi --yes', 'uv run tg allow add 1004 --yes', `${HOME}/.local/bin/tg me`, 'python3 -m tg_kit me']) {
+      expect((await worker($, command)).deny).toContain("tg is never the Worker's to run")
+    }
+    expect((await worker($, "printf '[[peer]]' >>~/.config/tg-kit/allow.toml")).deny).toContain("tg-kit's config directory")
+    expect((await worker($, `cat ${WT}/README.md`)).deny).toBeUndefined()
+    expect(seen.ran).toEqual([`cat ${WT}/README.md`])
+  })
+
+  test("decision 11: TG_KIT_CONFIG_DIR moves tg-kit's config, and the rule with it", WITH_PANE, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const seen = world(on, { configDir: `${HOME}/tg-state` })
+    await start($, { ...DELEGATE, tasks: [{ ...TASK, grant: { ...TASK.grant, commands: 'any' } }] })
+    expect((await worker($, `cat ${HOME}/tg-state/allow.toml`)).deny).toContain(`tg-kit's config directory (${HOME}/tg-state)`)
+    expect((await worker($, 'cat $TG_KIT_CONFIG_DIR/allow.toml')).deny).toContain("tg-kit's config directory")
+    expect(seen.ran).toEqual([])
   })
 
   test("a subagent that is no Worker is not the guard's", WITH_PANE, async ($, on) => {
