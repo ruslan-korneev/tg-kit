@@ -106,7 +106,7 @@ async function barKeys(ui: Ui): Promise<string[]> {
     if (typeof node !== 'object' || node === null) return
     const { type, props, children } = node as { type?: unknown; props?: { key?: unknown }; children?: unknown }
     const key = props?.key
-    if (type === 'Button' && typeof key === 'string' && key.startsWith('key:')) ids.push(key.slice(4))
+    if (type === 'Button' && typeof key === 'string' && key.startsWith('key:')) ids.push(key.slice(4).replace(/:enter$/, ''))
     if (Array.isArray(children)) for (const child of children) walk(child)
   }
   walk(await ui.find({ key: 'bar' }))
@@ -199,6 +199,17 @@ describe('the frame', () => {
     expect((await ui.find({ key: 'header' }))?.text).toContain('ctrl+x tab: keys')
     expect((await ui.find({ key: 'header' }))?.text).not.toContain('● keys')
     expect((await ui.find({ key: 'key:menu' }))?.props.dimColor).toBe(true)
+    await ui.unmount()
+  })
+
+  test('the keys the bar does not show are in a Box the surface does not draw', async ($, on) => {
+    const { ui } = await openPane($, on)
+    const hidden = await ui.find({ key: 'keys:hidden' })
+    expect(hidden?.props.display).toBe('none')
+    expect(hidden?.text).toContain('down')
+    // Chats' ⏎ is drawn as `⏎ open`; o is one of the hidden keys.
+    expect((await ui.find({ key: 'key:open:enter' }))?.text).toBe('⏎ open')
+    expect((await ui.find({ key: 'key:open' }))?.props.hotkey).toBe('o')
     await ui.unmount()
   })
 
@@ -298,6 +309,8 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     { name: 'card menu', props: DOCK, steps: ['dialog:1004', 'key:agent', 'key:menu'] },
     { name: 'activity', props: INLINE, steps: ['key:activity'] },
     { name: 'search', props: DOCK, steps: ['key:search'] },
+    { name: 'lens editor', props: DOCK, steps: ['key:lenses'] },
+    { name: 'lens editor inline', props: INLINE, steps: ['key:lenses'] },
   ]
 
   for (const view of VIEWS) {
@@ -313,7 +326,7 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
   }
 
   const ABSENT: { id: number; name: string; absent: string[] }[] = [
-    { id: 1004, name: 'a person chat', absent: ['r', 'f'] },
+    { id: 1004, name: 'a person chat', absent: ['r', 'f', 'b'] },
     { id: 1005, name: 'a channel', absent: ['n', 'r', 'f'] },
     { id: 1006, name: 'BotFather', absent: ['n', 'a', 'w', 'r', 'f', 'p'] },
     { id: 1003, name: 'Saved Messages', absent: ['w', 'a', 'r', 'f', 'p'] },

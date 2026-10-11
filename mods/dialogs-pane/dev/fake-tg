@@ -10,8 +10,9 @@ Placeholder chats and folders only (repo rule): nothing leaves the machine. It
 answers the calls the pane makes, with tg's JSON shapes (README "Output"):
 dialogs, read, msg, whoami, allow list, send (--dry-run too), press, delete,
 watch, folders [--counts | --chats], dialogs --folder. Its guard honours
---yes as tg's does: a write to a chat outside ALLOW needs --yes (exit 7),
-BotFather is refused here as the pane refuses it.
+--yes as tg's does: a write to a chat outside ALLOW needs --yes (exit 7). A
+write that reaches BotFather exits 1 and is logged: the pane must refuse it
+before tg runs, as tg itself has no such rule.
 
 State lives in $FAKE_TG_DIR (default: $TMPDIR/fake-tg): calls.log has one line
 per call, and `tg watch` prints the lines appended to watch.jsonl, so a live
@@ -122,9 +123,16 @@ def fail(text, code):
 
 
 def guard(argv, pid):
-    """tg's guard, as far as the pane meets it: BotFather read-only, allow.toml unless --yes."""
+    """tg's guard, as far as the pane meets it: allow.toml unless --yes.
+
+    tg has no BotFather rule: the pane refuses BotFather before tg runs. A write
+    that gets here is a pane bug, so the fake fails loudly instead of covering it.
+    """
     if pid == 1007:
-        return {"allowed": False, "reason": "BotFather is read-only"}
+        loud = "fake tg: a write reached BotFather; the pane must refuse it before tg runs"
+        with open(os.path.join(STATE, "calls.log"), "a") as log:
+            log.write(f"!! {loud}\n")
+        fail(loud, 1)
     if pid not in ALLOW and "--yes" not in argv:
         return {"allowed": False, "reason": "target is not in the allowlist"}
     return {"allowed": True, "reason": "allowlisted" if pid in ALLOW else "confirmed with --yes"}

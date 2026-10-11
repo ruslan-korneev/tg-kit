@@ -222,6 +222,8 @@ describe('send to main', () => {
     const seen = world(on)
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:send' })
+    // i cycles it until T2's sheet puts intents on digits.
+    expect((await ui.find({ key: 'picker:intent' }))?.props.hotkey).toBe('i')
     await ui.press({ key: 'picker:intent' })
     expect((await ui.find({ key: 'picker:intent' }))?.text).toContain('[Reproduce]')
     // #677790 is from Me: its name is masked; the bot stays readable.

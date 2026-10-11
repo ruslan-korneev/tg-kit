@@ -81,6 +81,8 @@ export type KeyFacts = {
   isSavedLens: boolean
   /** The card's chat has its agent running: ⏎ stops it. */
   isAgentOn: boolean
+  /** The route picker shows its intent chip (the broadcast's legs carry their own). */
+  isPicker: boolean
 }
 
 export type KeyContext = { where: Where; seat: Seat; kind: ChatKind | null; facts: KeyFacts }
@@ -101,6 +103,7 @@ export const NO_FACTS: KeyFacts = {
   summary: 'none',
   isSavedLens: false,
   isAgentOn: false,
+  isPicker: false,
 }
 
 type Def = {
@@ -173,6 +176,8 @@ export const KEYS = [
   { id: 'search', key: 's', hotkey: 's', group: 'chats', where: LISTS, kinds: 'any', label: () => 'search' },
   { id: 'lenses', key: 'z', hotkey: 'z', group: 'chats', where: ['chats', 'editor'], kinds: 'any', label: c => (c.where === 'chats' && c.facts.isSavedLens ? 'edit lens' : 'save lens') },
   { id: 'level', key: '1-4', hotkey: null, group: 'chat', where: ['card'], kinds: AGENT, label: () => 'level', isDigits: true },
+  // The picker's intent chip until T2's sheet puts intents on digits and i on inspect.
+  { id: 'intent', key: 'i', hotkey: 'i', group: 'message', where: ['sheet'], kinds: 'any', label: () => 'intent', needs: c => (c.facts.isPicker ? null : 'needs the target list') },
   { id: 'target', key: '1-9', hotkey: null, group: 'message', where: ['sheet'], kinds: 'any', label: () => 'send to', isDigits: true },
   { id: 'edit', key: 'e', hotkey: 'e', group: 'chat', where: ['card', 'band'], kinds: 'any', label: c => (c.where === 'card' ? 'brief' : 'edit') },
   { id: 'dismiss', key: 'd', hotkey: 'd', group: 'pane', where: ['chat', 'card', 'band'], kinds: 'any', label: () => 'dismiss', needs: c => (c.where === 'band' || c.facts.hasNotice ? null : 'needs a notice') },
@@ -292,7 +297,8 @@ export function actionBar(c: KeyContext, width = Infinity): ShownKey[] {
     if (drop === -1) break
     picked = picked.filter((_, index) => index !== drop)
   }
-  return picked.map(id => shown(keyDef(id), c))
+  // Chats' ⏎ opens the row and is drawn as `⏎ open` (§4.6); `o` stays a hidden hotkey.
+  return picked.map(id => (id === 'open' ? { ...shown(keyDef(id), c), hotkey: null } : shown(keyDef(id), c)))
 }
 
 /**

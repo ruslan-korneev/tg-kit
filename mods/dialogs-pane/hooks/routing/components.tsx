@@ -14,10 +14,10 @@ export type DraftHandlers = { onCheck: () => void; onSend: () => void; onDrop: (
 
 function IntentChip(
   { Button, Text }: Els,
-  props: { intent: RouteIntent; onPress: () => void; id: string; isShort?: boolean },
+  props: { intent: RouteIntent; onPress: () => void; id: string; isShort?: boolean; hotkey?: string },
 ): RenderElement {
   return (
-    <Button key={props.id} plain onPress={props.onPress}>
+    <Button key={props.id} plain hotkey={props.hotkey} onPress={props.onPress}>
       <Text dimColor>{props.isShort === true ? '' : 'intent: '}</Text>
       <Text color={TOKEN.accent} bold>{`[${intentLabel(props.intent)}]`}</Text>
     </Button>
@@ -145,7 +145,7 @@ export function RoutePicker(
         ⇉ broadcast with per-agent intent
       </Button>
       <Box flexDirection="row" gap={2}>
-        {IntentChip(els, { intent: props.intent, onPress: props.onIntent, id: 'picker:intent' })}
+        {IntentChip(els, { intent: props.intent, onPress: props.onIntent, id: 'picker:intent', hotkey: 'i' })}
         <Button key="redact" plain onPress={props.onRedact}>
           <Text dimColor>redact: </Text>
           <Text color={props.isRedacted ? undefined : TOKEN.warn}>{props.isRedacted ? `on · ${props.masked} masked` : 'off'}</Text>

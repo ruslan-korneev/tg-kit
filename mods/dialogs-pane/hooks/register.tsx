@@ -561,6 +561,7 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       summary: peer !== undefined && tri.summary?.peerId === peer.id ? tri.summary.status : 'none',
       isSavedLens: tri.lens !== null,
       isAgentOn: view.kind === 'card' && pilot.running.includes(view.dialogId),
+      isPicker: (await read($, overlay)).kind === 'picker',
     },
   }
 }
@@ -620,6 +621,9 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'diff':
       await toggleDiff($)
       return ringCursor($)
+    case 'intent':
+      await update($, intent, nextIntent)
+      return
     case 'foryou':
       await toggleRanking($)
       return ringCursor($)
@@ -758,6 +762,9 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
       : await drawInline($, els, where, width, room)
   const drawn = new Set(bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])))
   if (strip !== null && hasSearchKey) drawn.add('s')
+  // Views that draw a key of the table themselves: the lens editor's save, the picker's intent chip.
+  if (!isMenu && where === 'editor') drawn.add('z')
+  if (!isMenu && context.facts.isPicker) drawn.add('i')
   // A failed load draws its own `g: reload` (LoadState): the list's, or the chat's, where they show.
   const isListShown = !isMenu && (seat === 'dock' ? where !== 'editor' : where === 'chats')
   const isThreadShown = !isMenu && isBase && (seat === 'dock' || where === 'chat')

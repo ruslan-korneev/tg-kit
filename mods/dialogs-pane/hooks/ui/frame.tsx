@@ -99,28 +99,21 @@ export function Strip(
 }
 
 /** One key of the bar: `k: label`, or `⏎ label` for the cursor row's action (a click does it too). */
-function BarKey({ Box, Button, Text }: Els, key: ShownKey, isFocused: boolean, onKey: (id: RunKey) => void): RenderElement {
+function BarKey({ Button, Text }: Els, key: ShownKey, isFocused: boolean, onKey: (id: RunKey) => void): RenderElement {
   const press = () => onKey(key.id)
   if (key.hotkey === null) {
+    // `⏎ open` has a hidden twin on o, keyed key:open: this one is the click's.
     return (
-      <Button key={`key:${key.id}`} plain dimColor={!isFocused} onPress={press}>
+      <Button key={key.id === 'open' ? 'key:open:enter' : `key:${key.id}`} plain dimColor={!isFocused} onPress={press}>
         {`⏎ ${key.label}`}
       </Button>
     )
   }
   const label = key.id === 'stop' ? <Text color={TOKEN.danger}>{key.label}</Text> : key.label
-  const button = (
+  return (
     <Button key={`key:${key.id}`} plain hotkey={key.hotkey} dimColor={!isFocused} onPress={press}>
       {label}
     </Button>
-  )
-  // In Chats ⏎ on the row opens it, and `o` does the same: one item says both.
-  if (key.id !== 'open') return button
-  return (
-    <Box key="key:open:pair" flexDirection="row">
-      <Text dimColor={!isFocused}>⏎/</Text>
-      {button}
-    </Box>
   )
 }
 

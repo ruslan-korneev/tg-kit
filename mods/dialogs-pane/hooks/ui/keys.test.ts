@@ -52,7 +52,7 @@ describe('the key table', () => {
   // §4.6 "what exists in which chat": a dash means never here.
   const NEVER: Record<ChatKind, readonly string[]> = {
     bot: [],
-    person: ['r', 'f'],
+    person: ['r', 'f', 'b'],
     group: ['r', 'f'],
     channel: ['n', 'r', 'f'],
     saved: ['w', 'a', 'p', 'r', 'f', 'b'],
