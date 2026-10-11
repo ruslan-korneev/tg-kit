@@ -4,10 +4,11 @@
 import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
+import { defaultDialog } from '../hooks/autopilot/config'
 import { KEYS, STRAY_KEYS, helpLines, hotkeyTable } from '../hooks/ui/keys'
 import type { ApDraft, Autopilot, PeerRef, TgDialog, TgMessage } from '../types'
 import { DIALOGS, STARTED, MESSAGES, PERSON_MESSAGES, chatIds, chatKey, findChat, folderRun, messagesFor } from './fixtures'
-import { FOOTER, HINT, bandKeyProblems, engineSites, siteText } from './surfaces'
+import { FOOTER, HINT, bandKeyProblems, beneathCard, engineSites, siteText } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -182,16 +183,18 @@ describe('the frame', () => {
     }
   })
 
-  test('/tg wide and /tg compact are aliases of /tg, /tg hidden of /tg hide: no mode to pick', async ($, on) => {
+  test('the three states (§10.1): /tg and /tg wide open Wide, /tg compact closes to the card, /tg hide and /tg hidden to the footer', async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
     const seen = world(on, happy)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    for (const args of ['wide', 'compact']) expect((await $.command.run(runTg(args))).text).toBe('tg pane open. m lists every key.')
+    for (const args of ['', 'wide']) expect((await $.command.run(runTg(args))).text).toBe('tg pane open. m lists every key.')
+    expect((await $.command.run(runTg('compact'))).text).toContain('card above the prompt')
+    expect(seen.store.get('mode')).toBe('compact')
     expect((await $.command.run(runTg('hidden'))).text).toContain('hidden')
     expect((await $.command.run(runTg('hide'))).text).toContain('hidden')
     await clock.settle()
     expect(seen.opened).toEqual(['tg', 'tg'])
-    expect(seen.closed).toEqual(['tg', 'tg'])
+    expect(seen.closed).toEqual(['tg', 'tg', 'tg'])
     expect(seen.store.get('mode')).toBe('hidden')
     expect((await $.command.run(runTg('nope'))).text).toContain('Usage')
   })
@@ -252,11 +255,24 @@ describe('the frame', () => {
     await ui.unmount()
   })
 
-  test('q hides the pane; the store keeps it hidden', async ($, on) => {
+  test('q closes the pane to the compact card (§10.1); the store keeps it', async ($, on) => {
     const { ui, seen } = await openPane($, on)
     await ui.press({ key: 'key:hide' })
     expect(seen.closed).toEqual(['tg'])
+    expect(seen.store.get('mode')).toBe('compact')
+    await ui.unmount()
+  })
+
+  test('q closes back into the state the owner last left: Hidden after a /tg hide (§10.1)', async ($, on) => {
+    const { ui, seen } = await openPane($, on)
+    await $.command.run(runTg('hide'))
+    await $.command.run(runTg())
+    await ui.press({ key: 'key:hide' })
     expect(seen.store.get('mode')).toBe('hidden')
+    await $.command.run(runTg('compact'))
+    await $.command.run(runTg())
+    await ui.press({ key: 'key:hide' })
+    expect(seen.store.get('mode')).toBe('compact')
     await ui.unmount()
   })
 })
@@ -1333,8 +1349,10 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       await openChat(ui, 1004)
       const base = await place(ui)
       const footer = await siteText($, FOOTER)
-      // What lands outside the pane while the cursor stays: two drafts, an undo window, a summary.
+      // What lands outside the pane while the cursor stays: two drafts, an undo window, a summary, and an agent on (the footer's part).
       await fillBand($, write)
+      const dev: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
+      await write($, value => ({ ...value, running: [dev.id], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
       expect(await siteText($, FOOTER)).not.toBe(footer)
       expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 2 for you · ctrl+x tab')
       expect(await place(ui)).toEqual(base)
@@ -1427,16 +1445,16 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
     await ui.unmount()
   })
 
-  test('the footer label per state: the summary with the unread chats that are not muted; the status line stays clear', async ($, on) => {
+  test('the footer label is the Hidden line (§10.8): unread chats that are not muted, mentions, the autopilot; the status line stays clear', async ($, on) => {
     engineSites(on)
     const write = autopilotWriter(on)
     const { ui, seen } = await openPane($, on)
-    expect(await siteText($, FOOTER)).toBe('focus & tg 3')
+    expect(await siteText($, FOOTER)).toBe('focus & ● tg: 3 unread')
+    // Drafts and a follow are the header's and the card's; the footer keeps the owner's three parts.
     await fillBand($, write)
-    expect(await siteText($, FOOTER)).toBe('focus & tg 3 · 2 for you')
     await openChat(ui, 1001)
     await ui.press({ key: 'key:follow' })
-    expect(await siteText($, FOOTER)).toBe('focus & tg 3 · ⌁1 · 2 for you')
+    expect(await siteText($, FOOTER)).toBe('focus & ● tg: 3 unread')
     expect(seen.status.filter(text => text !== undefined)).toEqual([])
     await ui.unmount()
   })
@@ -1455,7 +1473,7 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
     const status = await $.command.run(runTg('status'))
     expect(status.text?.split('\n')).toEqual([
       'tg status',
-      'tg 3 · ⌁1 · 2 for you',
+      '● tg: 3 unread',
       'running',
       // The test's world spawns no `tg watch`, so the follow reads failed.
       '  ⌁  @example_bot   follows → main · failed',
@@ -1758,7 +1776,7 @@ describe('hidden mode', () => {
     expect(await siteText($, FOOTER)).toBe('focus & tg …')
     await $.command.run(runTg('hidden'))
     await clock.settle()
-    expect(await siteText($, FOOTER)).toBe('focus & tg 1')
+    expect(await siteText($, FOOTER)).toBe('focus & ● tg: 1 unread')
     expect(status.at(-1)).toBeUndefined()
   })
 
@@ -1774,7 +1792,7 @@ describe('hidden mode', () => {
     isOut = false
     await clock.advance(300_000)
     expect(status.at(-1)).toBeUndefined()
-    expect(await siteText($, FOOTER)).toBe('focus & tg 3')
+    expect(await siteText($, FOOTER)).toBe('focus & ● tg: 3 unread')
   })
 
   test("a watched chat whose unread count grows raises the band; a group's news opens (who wrote is unknown); d dismisses it", async ($, on) => {
@@ -1803,6 +1821,160 @@ describe('hidden mode', () => {
     expect((await band.find({ key: 'band:dismiss' }))?.props.hotkey).toBe('d')
     await band.press({ key: 'band:dismiss' })
     expect(await siteText($, HINT)).toBe('? for shortcuts')
+    await band.unmount()
+  })
+})
+
+describe('the compact card above the prompt (§10.7, T15)', () => {
+  const SITE: RenderPropsOf['AbovePrompt'] = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 }, view: {} }
+  const dev: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
+  /** KINDS with mentions of the owner: each a chat For you lists without a ranking call. */
+  const mentioned = (ids: readonly number[]) => (argv: readonly string[]) =>
+    argv[1] === 'dialogs' ? json(KINDS.map(d => (ids.includes(d.id) ? { ...d, unread: Math.max(1, d.unread), mentions: 1 } : d))) : happy(argv)
+  /** No mention and no person's chat unread: For you is empty, the groups', bots' and channels' counts remain. */
+  const noneWaiting = (argv: readonly string[]) => (argv[1] === 'dialogs' ? json(KINDS.map(d => ({ ...d, mentions: 0, unread: d.kind === 'user' ? 0 : d.unread }))) : happy(argv))
+  const unreadGroups = KINDS.filter(d => d.kind !== 'user' && d.unread > 0 && !d.muted).length
+  const allRead = (argv: readonly string[]) => (argv[1] === 'dialogs' ? json(KINDS.map(d => ({ ...d, unread: 0, mentions: 0 }))) : happy(argv))
+
+  async function compact($: Engine, on: On, tg: (argv: readonly string[]) => ProcessRunResult, store: Record<string, unknown> = {}) {
+    const clock = mock.clock(on, { now: Date.parse('2026-10-10T12:00:00Z') })
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const seen = world(on, tg, { mode: 'compact', ...store })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    return { clock, seen, write }
+  }
+  const mount = ($: Engine, columns = 100) => $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: { ...SITE, bodyColumns: columns } })
+  /** The status line's text: a Box of its own, or the ring stop's Button where no row is drawn. */
+  const status = async (band: Mounted<'terminal', 'AbovePrompt'>) => ((await band.find({ key: 'compact:status' })) ?? (await band.find({ key: 'compact:open' })))?.text
+  const rowKeys = async (band: Mounted<'terminal', 'AbovePrompt'>) =>
+    (await band.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.key === 'string' && /^compact:\d+$/.test(button.props.key) ? [button.props.key] : []))
+  const agentOn = (write: ReturnType<typeof autopilotWriter>, $: Engine) =>
+    write($, value => ({ ...value, running: [dev.id], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
+
+  test('3 chats waiting: the status line, then the top two of For you; one ring stop, the first row; right-aligned, 46 wide', { timeoutMs: 15_000 }, async ($, on) => {
+    const { seen } = await compact($, on, mentioned([1001, 1002, 1004]))
+    const band = await mount($)
+    expect(await status(band)).toBe('● 3 chats waiting')
+    // For you's first two, newest first: @example_bot, then Dev Team.
+    expect(await rowKeys(band)).toEqual(['compact:1001'])
+    expect((await band.find({ key: 'compact:1001' }))?.props.autoFocus).toBe(true)
+    // The second row is text in the band's ring: no Button of its own (§10.7 "Rows").
+    expect((await band.find({ key: 'compact:1002' }))?.type).toBe('Box')
+    expect((await band.find({ key: 'compact' }))?.props).toMatchObject({ justifyContent: 'flex-end', paddingRight: 1 })
+    expect((await band.find({ key: 'compact:card' }))?.props.width).toBe(46)
+    expect(await band.find({ type: 'Text', text: ' tg ' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: ' ⏎ open · q: hide ' })).toBeDefined()
+    // ⏎ j k q, no digit (§11), each the table's band meaning.
+    expect(await bandKeyProblems(band)).toEqual([])
+    expect((await band.findAll({ type: 'Button' })).flatMap(b => (typeof b.props.hotkey === 'string' ? [b.props.hotkey] : []))).toEqual(['q', 'j', 'k'])
+    // j moves the ring to the second row, k back.
+    await band.press({ key: 'compact:down' })
+    expect(await rowKeys(band)).toEqual(['compact:1002'])
+    await band.press({ key: 'compact:up' })
+    expect(await rowKeys(band)).toEqual(['compact:1001'])
+    expect(seen.status.filter(text => text !== undefined)).toEqual([])
+    await band.unmount()
+  })
+
+  test('1 chat waiting with an agent on: `● 1 chat waiting   ⚡ 0/50`, one row and no j k', async ($, on) => {
+    const { write } = await compact($, on, mentioned([1004]))
+    await agentOn(write, $)
+    const band = await mount($)
+    expect(await status(band)).toBe('● 1 chat waiting   ⚡ 0/50')
+    expect(await rowKeys(band)).toEqual(['compact:1004'])
+    expect((await band.findAll({ type: 'Button' })).flatMap(b => (typeof b.props.hotkey === 'string' ? [b.props.hotkey] : []))).toEqual(['q'])
+    await band.unmount()
+  })
+
+  test("0 waiting: the unread chats that are not muted, and the folder's first two of them", async ($, on) => {
+    const { seen } = await compact($, on, noneWaiting)
+    const band = await mount($)
+    expect(unreadGroups).toBeGreaterThan(0)
+    expect(await status(band)).toBe(`● ${unreadGroups} unread`)
+    expect((await rowKeys(band)).length).toBe(1)
+    expect(seen.status.filter(text => text !== undefined)).toEqual([])
+    await band.unmount()
+  })
+
+  test('nothing unread and no agent: `all read` is the ring stop, and ⏎ on it opens Wide', async ($, on) => {
+    const { seen } = await compact($, on, allRead)
+    const band = await mount($)
+    expect(await status(band)).toBe('all read')
+    expect(await rowKeys(band)).toEqual([])
+    expect((await band.find({ key: 'compact:open' }))?.props.autoFocus).toBe(true)
+    await band.press({ key: 'compact:open' })
+    expect(seen.store.get('mode')).toBe('open')
+    // Opened, then asked again for the keys once the card left the band (the engine refuses focus while the band holds them).
+    expect(seen.opened).toEqual(['tg', 'tg'])
+    await band.unmount()
+  })
+
+  test('0 waiting with an agent on: the gauge stays beside the unread', async ($, on) => {
+    const { write } = await compact($, on, noneWaiting)
+    await agentOn(write, $)
+    const band = await mount($)
+    expect(await status(band)).toBe(`● ${unreadGroups} unread   ⚡ 0/50`)
+    await band.unmount()
+  })
+
+  test('under 40 columns: one borderless line, the ring stop; ⏎ opens, q hides', async ($, on) => {
+    beneathCard(on)
+    const { seen, write } = await compact($, on, mentioned([1002, 1004]))
+    await agentOn(write, $)
+    const band = await mount($, 36)
+    expect(await status(band)).toBe('tg · ● 2 waiting · ⚡ 0/50')
+    expect(await band.find({ key: 'compact:card' })).toBeUndefined()
+    expect(await rowKeys(band)).toEqual([])
+    expect((await band.find({ key: 'compact:open' }))?.props.autoFocus).toBe(true)
+    await band.press({ key: 'compact:hide' })
+    expect(seen.store.get('mode')).toBe('hidden')
+    expect(await band.find({ key: 'compact' })).toBeUndefined()
+    await band.unmount()
+  })
+
+  test('a band item keeps its full-width rows above; what the plugins beneath drew sits between; the card drops to its status line', async ($, on) => {
+    beneathCard(on)
+    const { write } = await compact($, on, happy)
+    await fillBand($, write)
+    const band = await mount($)
+    const root = (await band.drawn()) as { children?: { props?: { key?: unknown }; children?: unknown[] }[] }
+    expect((root.children ?? []).map(child => child.props?.key ?? child.children?.[0])).toEqual(['band', 'another card', 'compact'])
+    // The item's ⏎ is the first ring stop; the card adds none and no j k of its own (the item's j k walk the queue).
+    expect((await bandShape(band)).isFirstRinged).toBe(true)
+    expect((await bandShape(band)).first).toBe('ap:draft:send')
+    expect(await rowKeys(band)).toEqual([])
+    expect(await band.find({ key: 'compact:open' })).toBeUndefined()
+    // Contact A's and Dev Team's drafts: two chats wait.
+    expect(await status(band)).toBe('● 2 chats waiting')
+    expect(await bandKeyProblems(band)).toEqual([])
+    await band.unmount()
+  })
+
+  test('no card in Wide or Hidden; the plugins beneath still draw', async ($, on) => {
+    beneathCard(on)
+    const { seen } = await compact($, on, happy, { mode: 'hidden' })
+    const band = await mount($)
+    expect(await band.find({ key: 'compact' })).toBeUndefined()
+    expect((await band.drawn()) as unknown).toMatchObject({ type: 'Text', children: ['another card'] })
+    await $.command.run(runTg('compact'))
+    expect(await band.find({ key: 'compact' })).toBeDefined()
+    await $.command.run(runTg())
+    expect(await band.find({ key: 'compact' })).toBeUndefined()
+    expect(seen.store.get('mode')).toBe('open')
+    await band.unmount()
+  })
+
+  test('⏎ on a row opens the pane Wide on that chat', async ($, on) => {
+    const { seen } = await compact($, on, mentioned([1004]))
+    const band = await mount($)
+    await band.press({ key: 'compact:1004' })
+    expect(seen.store.get('mode')).toBe('open')
+    expect(seen.opened).toEqual(['tg', 'tg'])
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
+    expect((await findChat(ui, 1004))?.text).toContain('›')
+    await ui.unmount()
     await band.unmount()
   })
 })

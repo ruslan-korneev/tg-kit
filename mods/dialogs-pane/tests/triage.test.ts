@@ -166,8 +166,8 @@ describe('watched bots in Hidden mode', () => {
     child?.line(event('message', { id: 677793, date: '2026-10-10T11:59:00Z', text: 'old news' }))
     child?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
     await clock.settle()
-    // The footer counts unread chats (the bot's and Dev Team's), and the watched chat's new messages (§4.5).
-    expect(await siteText($, FOOTER)).toBe('focus & tg 2 · ◎ 3 new')
+    // The footer counts unread chats (the bot's and Dev Team's): the Hidden line (§10.8).
+    expect(await siteText($, FOOTER)).toBe('focus & ● tg: 2 unread')
     expect(await siteText($, HINT)).toBe('? for shortcuts')
 
     child?.line(event('message', { id: 677794, date: '2026-10-10T12:00:01Z', out: true, text: '/settings' }))
@@ -175,7 +175,7 @@ describe('watched bots in Hidden mode', () => {
     await clock.settle()
     // Your /settings marks the chat read; the reply makes it 1 unread. No alarm: the status line stays clear.
     expect(seen.status.at(-1)).toBeUndefined()
-    expect(await siteText($, FOOTER)).toBe('focus & tg 2 · ◎ 1 new')
+    expect(await siteText($, FOOTER)).toBe('focus & ● tg: 2 unread')
     expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 1 waiting · ctrl+x tab')
 
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
@@ -240,7 +240,7 @@ describe('the open thread is live', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('compact'))
+    await $.command.run(tgCommand(''))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     // Dev Team: no bot, so triage is the thread watch's only listener.
@@ -269,7 +269,7 @@ describe('the open thread is live', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('compact'))
+    await $.command.run(tgCommand(''))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: await chatKey(ui, 1001) })
@@ -289,7 +289,7 @@ describe('the open thread is live', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('compact'))
+    await $.command.run(tgCommand(''))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     expect((await ui.find({ key: 'key:watch' }))?.text).toBe('watch')
@@ -314,7 +314,7 @@ describe('summary', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => ({ isAnswered: true, text: '- the bot fails on /settings\n- nothing asked of you', usage: USAGE }) })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('compact'))
+    await $.command.run(tgCommand(''))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: await chatKey(ui, 1001) })
@@ -335,7 +335,7 @@ describe('summary', () => {
     const clock = mock.clock(on, { now: NOW })
     world(on, { model: () => ({ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE }) })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('compact'))
+    await $.command.run(tgCommand(''))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: await chatKey(ui, 1001) })
@@ -357,7 +357,7 @@ describe('needs-you ranking', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { dialogs: list, model: () => ({ isAnswered: true, text: '1 noise', usage: USAGE }) })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('compact'))
+    await $.command.run(tgCommand(''))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     const order = async () => chatIds((await ui.findAll({ type: 'Button' })).map(one => one.key))

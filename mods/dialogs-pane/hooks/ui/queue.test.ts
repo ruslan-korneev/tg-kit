@@ -6,6 +6,9 @@ import { KEYS, helpLines } from './keys'
 import {
   NOTHING_ON_SCREEN,
   bandQueue,
+  compactRows,
+  compactStatus,
+  compactStatusText,
   draftFits,
   footerLabel,
   hintTail,
@@ -14,6 +17,7 @@ import {
   statusAlarm,
   stepKey,
   unreadChats,
+  waitingChats,
   type QueueInput,
 } from './queue'
 
@@ -22,21 +26,51 @@ const A = peer(1004, 'Contact A')
 const B = peer(2002, 'Contact B')
 const GROUP = peer(1002, 'Dev Team', 'supergroup')
 
-const NONE = { levels: '', watched: '', forYou: '' }
+const NONE = { mentions: 0, autopilot: null }
 
-describe('the footer label (§4.5)', () => {
-  test('per state: loading, nothing, counts, every part; zero counts left out', () => {
+describe('the Hidden line, the footer label (§10.8)', () => {
+  test('per state: loading, nothing, counts, every part; zero parts left out', () => {
     expect(footerLabel({ kind: 'loading' }, NONE)).toBe('tg …')
     expect(footerLabel({ kind: 'count', unread: 0 }, NONE)).toBe('tg')
-    expect(footerLabel({ kind: 'count', unread: 22 }, NONE)).toBe('tg 22')
-    expect(footerLabel({ kind: 'count', unread: 22 }, { levels: '⌁1 ⟳1 ↯1', watched: '◎ 3 new', forYou: '2 for you' })).toBe('tg 22 · ⌁1 ⟳1 ↯1 · ◎ 3 new · 2 for you')
-    expect(footerLabel({ kind: 'count', unread: 0 }, { ...NONE, forYou: '1 for you' })).toBe('tg · 1 for you')
+    expect(footerLabel({ kind: 'count', unread: 15 }, NONE)).toBe('● tg: 15 unread')
+    expect(footerLabel({ kind: 'count', unread: 15 }, { mentions: 2, autopilot: '12/50' })).toBe('● tg: 15 unread · @2 · autopilot 12/50')
+    expect(footerLabel({ kind: 'count', unread: 0 }, { mentions: 2, autopilot: null })).toBe('● tg: @2')
+    expect(footerLabel({ kind: 'count', unread: 0 }, { mentions: 0, autopilot: 'on' })).toBe('● tg: autopilot on')
     expect(footerLabel({ kind: 'failed', isLoggedOut: true }, NONE)).toBe('tg ⚠ not logged in')
-    expect(footerLabel({ kind: 'failed', isLoggedOut: false }, { ...NONE, levels: '⟳1' })).toBe('tg ⚠ · ⟳1')
+    expect(footerLabel({ kind: 'failed', isLoggedOut: false }, { mentions: 3, autopilot: '12/50' })).toBe('tg ⚠ · autopilot 12/50')
+    expect(footerLabel({ kind: 'loading' }, { mentions: 0, autopilot: '1/50' })).toBe('tg … · autopilot 1/50')
   })
 
   test('tg N counts unread chats that are not muted, not their messages', () => {
     expect(unreadChats([{ unread: 14, muted: false }, { unread: 3, muted: true }, { unread: 0, muted: false }, { unread: 1, muted: false }])).toBe(2)
+  })
+})
+
+describe('the compact card (§10.7)', () => {
+  const row = (id: number, unread: number, muted = false) => ({ id, unread, muted })
+
+  test('the status: chats waiting, else unread chats, else all read', () => {
+    expect(compactStatus(3, 15)).toEqual({ kind: 'waiting', chats: 3 })
+    expect(compactStatus(0, 15)).toEqual({ kind: 'unread', chats: 15 })
+    expect(compactStatus(0, 0)).toEqual({ kind: 'read' })
+    expect(compactStatusText({ kind: 'waiting', chats: 3 })).toEqual({ text: '● 3 chats waiting', role: 'mention' })
+    expect(compactStatusText({ kind: 'waiting', chats: 1 })).toEqual({ text: '● 1 chat waiting', role: 'mention' })
+    expect(compactStatusText({ kind: 'waiting', chats: 3 }, true)).toEqual({ text: '● 3 waiting', role: 'mention' })
+    expect(compactStatusText({ kind: 'unread', chats: 15 })).toEqual({ text: '● 15 unread', role: 'unread' })
+    expect(compactStatusText({ kind: 'read' })).toEqual({ text: 'all read', role: null })
+  })
+
+  test('waiting counts distinct chats: a chat with a mention and a draft is one', () => {
+    expect(waitingChats([row(1, 2), row(2, 1)], [{ id: 1 }, { id: 3 }, { id: 3 }])).toBe(3)
+    expect(waitingChats([], [])).toBe(0)
+  })
+
+  test("the rows: For you's first two, else the folder's first two unread and not muted, else none", () => {
+    const forYou = [row(1, 2), row(2, 1), row(3, 1)]
+    const folder = [row(10, 0), row(11, 4, true), row(12, 1), row(13, 2), row(14, 1)]
+    expect(compactRows(forYou, folder).map(one => one.id)).toEqual([1, 2])
+    expect(compactRows([], folder).map(one => one.id)).toEqual([12, 13])
+    expect(compactRows([], [row(10, 0), row(11, 4, true)])).toEqual([])
   })
 })
 

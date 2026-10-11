@@ -26,6 +26,14 @@ export function engineSites(on: On): void {
   })
 }
 
+/** Another plugin's card above the prompt, beneath this one (statuspane's, §10.7 P3): one Text keyed `beneath`. */
+export function beneathCard(on: On): void {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text key="beneath">another card</Text>
+  })
+}
+
 export const FOOTER = { component: 'SessionMode', props: { modes: ['focus'] } } as const
 export const HINT = { component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
 

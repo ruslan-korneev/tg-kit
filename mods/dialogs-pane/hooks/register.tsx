@@ -1,6 +1,7 @@
 // Dialogs Pane: Telegram chats and threads in a pane, read through the `tg`
 // CLI. The pane lays itself out for where the engine seats it (dock or
-// inline); Hidden is the pane closed (status line + band).
+// inline). Closed, it is Compact, a card above the prompt, or Hidden, the
+// footer label alone; the band raises what needs the owner in both (§10.1).
 // Design: docs/design/dialogs-pane.md, and docs/design/dialogs-pane-ux.md §3,
 // §4 and §7 for the frame, the keys (./ui/keys) and the menu.
 //
@@ -79,7 +80,7 @@ import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } f
 import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
 import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, chipsColumn, chipsTail, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
-import { BandItemView, CommandCard, type BandActions } from './ui/band'
+import { BandItemView, CommandCard, CompactCard, compactInner, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import { PALETTES, readPalette, type Colors } from './ui/palette'
 import {
@@ -119,6 +120,8 @@ import {
 import {
   NOTHING_ON_SCREEN,
   bandQueue,
+  compactRows,
+  compactStatus,
   footerLabel,
   draftFits,
   hintTail,
@@ -127,7 +130,9 @@ import {
   statusAlarm,
   stepKey,
   unreadChats,
+  waitingChats,
   type BandHold,
+  type CompactStatus,
   type BandItem,
   type OnScreen,
   type UnreadHead,
@@ -139,6 +144,8 @@ const PANE = 'tg'
 /** This plugin's name, as the engine stamps its prompts (`origin.name`). */
 const PLUGIN = 'dialogs-pane'
 const STORE_MODE = 'mode'
+/** Compact or Hidden: where `q` and ✕ close the pane to (§10.1). */
+const STORE_CLOSED = 'mode.closed'
 // Watched dialogs and the open thread are live through `tg watch` (triage);
 // this slow poll keeps the unread counts of everything else.
 const POLL_MS = 300_000
@@ -146,13 +153,19 @@ const THREAD_LIMIT = 30
 /** What the pane asks for: the dock's width, the inline block's rows. Each seat ignores the other. */
 const DOCK_COLUMNS = 64
 const INLINE_ROWS = 12
-const MODES: readonly Mode[] = ['open', 'hidden']
+const MODES: readonly Mode[] = ['open', 'compact', 'hidden']
 /**
  * The pane's one open call, shared: opening an id that is open already resets
  * its title and options, so every place that opens it (setMode, and taking the
  * keys back after the engine's dialog) passes these.
  */
 const PANE_OPEN = { id: PANE, title: 'tg · dialogs', focus: true, columns: DOCK_COLUMNS, rows: INLINE_ROWS } as const
+
+const MODE_ANSWER: Record<Mode, string> = {
+  open: 'tg pane open. m lists every key.',
+  compact: 'tg pane closed to its card above the prompt. /tg opens it, /tg hide puts the card away.',
+  hidden: 'tg pane hidden: the footer label only. /tg opens it.',
+}
 
 const isMode = (value: unknown): value is Mode => MODES.some(one => one === value)
 
@@ -196,7 +209,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'tg',
       description: 'Telegram pane: chats, send to Claude, bots, agents · /tg stop · /tg status · /tg help',
-      argumentHint: '[hide|stop|status|help|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
+      argumentHint: '[compact|hide|stop|status|help|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
       // The kill switch must not wait for main's turn to end, so every /tg runs
       // at once: opening the pane touches no turn state either.
       immediate: true,
@@ -213,7 +226,7 @@ export const register: Register = (on, options) => {
         // A failed poll leaves the last status line; the next one retries.
       })
     })
-    if ((await read($, mode)) === 'hidden') {
+    if ((await read($, mode)) !== 'open') {
       loadLatest($).catch(() => {
         // The status line stays at `tg …` until the first poll lands.
       })
@@ -235,27 +248,27 @@ export const register: Register = (on, options) => {
     // §4.4: the key table and what runs, as cards in the transcript (the CommandOutput hook below).
     if (asked === 'help') return { text: helpLines().join('\n') }
     if (asked === 'status') return { text: (await statusLines($)).join('\n') }
-    // The layout follows the seat (design decision 4): `wide` and `compact` stay as
-    // aliases of `/tg`, `hidden` of `/tg hide`.
-    const isHide = asked === 'hide' || asked === 'hidden'
-    if (!isHide && asked !== '' && asked !== 'wide' && asked !== 'compact') return { text: 'Usage: /tg [hide|stop|status|help|autopilot]' }
-    await setMode($, isHide ? 'hidden' : 'open')
-    if (!isHide) await ringCursor($)
-    // Hidden needs the list too: its status line counts the unread. Once a pass is held, it counts that.
-    if (isHide && passHeld === null && (await read($, dialogs)).status !== 'ok') {
+    // §10.1: `/tg` (and `wide`) opens Wide, `/tg compact` closes to the card, `/tg hide` (and `hidden`) to the footer label alone.
+    const asks = asked === 'hide' || asked === 'hidden' ? 'hidden' : asked === 'compact' ? 'compact' : asked === '' || asked === 'wide' ? 'open' : null
+    if (asks === null) return { text: 'Usage: /tg [compact|hide|stop|status|help|autopilot]' }
+    await setMode($, asks)
+    if (asks === 'open') await ringCursor($)
+    // The card and the footer label need the list too: they count the unread. Once a pass is held, they count that.
+    if (asks !== 'open' && passHeld === null && (await read($, dialogs)).status !== 'ok') {
       loadLatest($).catch(() => {
         // loadLatest records its own failures in state; nothing is left to report.
       })
     }
-    return { text: isHide ? 'tg pane hidden: status line only. /tg opens it.' : 'tg pane open. m lists every key.' }
+    return { text: MODE_ANSWER[asks] }
   })
 
-  // The person closing the pane by hand (✕, ctrl+x x) leaves the status line: Hidden.
+  // The person closing the pane by hand (✕, ctrl+x x) closes it as `q` does: into Compact or Hidden, as last left (§10.1).
   on('ui.close', { id: PANE }, async ($, e, next) => {
     const done = await next(e)
     if (e.origin.kind === 'person') {
-      await update($, mode, () => 'hidden')
-      await $.store.set(STORE_MODE, 'hidden')
+      const closed = await closedMode($)
+      await update($, mode, () => closed)
+      await $.store.set(STORE_MODE, closed)
       await refreshStatus($)
       await syncWatches($)
       await armNext($) // ── folders ── every 5 min while hidden
@@ -285,8 +298,10 @@ export const register: Register = (on, options) => {
   // the hint tail, /tg help and /tg status as cards. A packet's transcript row stays whole (decision 10).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const drawn = await drawBand($, $.ui.resolve(e), e.props.bodyColumns)
-    return drawn ?? next(e)
+    // The plugins beneath draw first, so their tree stays between our band item and our card (§10.7, P3).
+    // With nothing beneath to answer (a test's engine), the band is ours alone, as statuspane treats it.
+    const below = await next(e).catch(() => null)
+    return (await drawAbove($, $.ui.resolve(e), e.props.bodyColumns, below)) ?? next(e)
   })
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) =>
@@ -303,7 +318,7 @@ export const register: Register = (on, options) => {
     const asked = e.props.args.trim()
     if (e.props.isErrored || (asked !== 'help' && asked !== 'status')) return next(e)
     // The row's text comes under the plugin's name (`dialogs-pane: tg status`, seen live): the card's title is the command's own.
-    return CommandCard($.ui.resolve(e), e.props.text.replace(`${PLUGIN}: `, ''))
+    return CommandCard($.ui.resolve(e), colors, e.props.text.replace(`${PLUGIN}: `, ''))
   })
   // ── /footer ──
 
@@ -373,7 +388,8 @@ async function runTg<T>($: $, req: TgRequest<T>): Promise<TgResult<T>> {
 async function setMode($: $, next: Mode): Promise<void> {
   await update($, mode, () => next)
   await $.store.set(STORE_MODE, next)
-  if (next === 'hidden') {
+  if (next !== 'open') await $.store.set(STORE_CLOSED, next)
+  if (next !== 'open') {
     await $.ui.close({ id: PANE })
     await armNext($) // ── folders ── every 5 min while hidden
   } else {
@@ -382,6 +398,11 @@ async function setMode($: $, next: Mode): Promise<void> {
   }
   await refreshStatus($)
   await syncWatches($)
+}
+
+/** The closed state the owner last left, kept in `$.store` across sessions: Compact until a Hidden is chosen (§10.1). */
+async function closedMode($: $): Promise<Exclude<Mode, 'open'>> {
+  return (await $.store.get(STORE_CLOSED)) === 'hidden' ? 'hidden' : 'compact'
 }
 
 /**
@@ -402,7 +423,7 @@ async function refreshStatus($: $): Promise<void> {
 
 /** Before the pane is first opened, the footer's count reads `tg dialogs`; after it, the passes (── folders ──). */
 async function poll($: $): Promise<void> {
-  if ((await read($, mode)) === 'hidden' && !(await read($, folders)).pass.hasOpened) await loadLatest($, { isQuiet: true })
+  if ((await read($, mode)) !== 'open' && !(await read($, folders)).pass.hasOpened) await loadLatest($, { isQuiet: true })
 }
 
 // --- loading, and the flood-wait countdown ---
@@ -864,7 +885,8 @@ async function runKey($: $, id: RunKey): Promise<void> {
       await update($, nav, value => ({ ...value, isMenuOpen: !value.isMenuOpen }))
       return ringCursor($)
     case 'hide':
-      return setMode($, 'hidden')
+      // `q` in the pane closes it into Compact or Hidden, the one the owner last left; Compact at first (§10.1).
+      return setMode($, await closedMode($))
     case 'stop': {
       // ── running ── the kill switch; the dock's strip row and the toast say what stopped.
       $.ui.toast(stopAnswer(await stopEverything($)).replace('\n', ' '))
@@ -1491,7 +1513,7 @@ async function syncWatches($: $): Promise<void> {
   const state = await read($, triage)
   const open = await read($, thread)
   const wanted = new Map(state.watched.map(peer => [peer.id, { peer, isBounded: false }]))
-  if ((await read($, mode)) !== 'hidden' && open !== null && !wanted.has(open.peer.id)) {
+  if ((await read($, mode)) === 'open' && open !== null && !wanted.has(open.peer.id)) {
     wanted.set(open.peer.id, { peer: open.peer, isBounded: true })
   }
   for (const id of [...listening.keys()]) {
@@ -3868,7 +3890,7 @@ async function openDraftRow($: $, ref: DraftRef): Promise<void> {
 
 /** `o` on a draft or a summary: the pane, on that dialog. */
 async function apOpen($: $, peer: PeerRef): Promise<void> {
-  if ((await read($, mode)) === 'hidden') await setMode($, 'open')
+  if ((await read($, mode)) !== 'open') await setMode($, 'open')
   const listed = (await knownDialogs($)).find(one => one.id === peer.id)
   await openThread($, listed ?? dialogOfPeer(peer))
 }
@@ -6180,8 +6202,120 @@ async function unreadHead($: $): Promise<UnreadHead> {
   return load.status === 'error' ? { kind: 'failed', isLoggedOut: false } : { kind: 'loading' }
 }
 
+/** The Hidden line (§10.8): the footer label in every state, and `/tg status`'s second line. */
 async function footerText($: $): Promise<string> {
-  return footerLabel(await unreadHead($), await summaryOf($))
+  const mentions = (await knownDialogs($)).reduce((sum, dialog) => sum + dialog.mentions, 0)
+  return footerLabel(await unreadHead($), { mentions, autopilot: (await gaugeNow($))?.pair ?? null })
+}
+
+/**
+ * The chat nearest its limit among those running, by sends in the last hour
+ * over `perHour` (§10.6): `12/50`; `on` while agents run and none has a limit;
+ * null with none on. The bar is T14's `GaugeBar`, null until it lands.
+ */
+async function gaugeNow($: $): Promise<{ bar: RenderElement | null; pair: string } | null> {
+  const pilot = await read($, autopilot)
+  if (pilot.running.length === 0) return null
+  const at = Math.max(pilot.now, await $.clock.now())
+  const limited = pilot.running.flatMap(id => {
+    const dialog = pilot.dialogs[String(id)]
+    return dialog === undefined || dialog.perHour === null ? [] : [{ sent: sentLastHour(pilot.ledger, id, at), perHour: dialog.perHour }]
+  })
+  const tightest = limited.reduce<{ sent: number; perHour: number } | null>((best, one) => (best === null || one.sent / one.perHour > best.sent / best.perHour ? one : best), null)
+  return { bar: null, pair: tightest === null ? 'on' : `${tightest.sent}/${tightest.perHour}` }
+}
+
+/** The compact card's ringed row: 0 or 1 (§10.7). */
+const compactAt = atom({ plugin: 'dialogs-pane', key: 'compactAt' } as const, 0)
+
+/**
+ * What the compact card lists (§10.7): For you's people, from the last pass or,
+ * before the first one, the latest chats; the chats a draft or a hard stop
+ * waits in; and the current folder's chats for when For you is empty.
+ */
+async function compactFacts($: $): Promise<{ status: CompactStatus; rows: TgDialog[] }> {
+  const known = passHeld === null ? await knownDialogs($) : [...passHeld.rows.values()]
+  const state = await read($, triage)
+  const people = forYouPeople(known, me ?? NO_ME, state.verdicts, state.repliedToYou).rows
+  const pilot = await read($, autopilot)
+  const reply = await read($, draft)
+  const agents = [
+    ...pilot.drafts.map(one => one.peer),
+    ...(reply !== null && reply.step.kind !== 'sent' ? [reply.peer] : []),
+    ...(await dgAlarms($)).holds.map(hold => hold.peer),
+  ]
+  const where = await read($, nav)
+  const folder = viewRows(passHeld, where.list) ?? known
+  return { status: compactStatus(waitingChats(people, agents), unreadChats(known)), rows: compactRows(people, folder) }
+}
+
+/**
+ * Above the prompt (§10.7, P3): the band's item at full width, then what the
+ * plugins beneath drew (statuspane's card), then the compact card while the
+ * pane is closed to it. The card keeps its status line alone under an item.
+ */
+async function drawAbove($: $, els: Els, width: number, below: RenderElement | null): Promise<RenderElement | null> {
+  const item = await drawBand($, els, width)
+  const card = (await read($, mode)) === 'compact' ? await drawCompact($, els, width, item !== null) : null
+  const parts = [item, below, card].filter(part => part !== null)
+  if (parts.length <= 1) return parts[0] ?? null
+  return (
+    <els.Box key="above" flexDirection="column">
+      {...parts}
+    </els.Box>
+  )
+}
+
+async function drawCompact($: $, els: Els, width: number, isUnderItem: boolean): Promise<RenderElement> {
+  const facts = await compactFacts($)
+  const at = clamp(await read($, compactAt), facts.rows.length)
+  const now = await $.clock.now()
+  const inner = compactInner(width)
+  const rows = facts.rows.map((dialog, index) =>
+    DialogRow(els, {
+      dialog,
+      rowKey: `compact:${dialog.id}`,
+      isCursor: index === at,
+      isStatic: index !== at,
+      isOpen: false,
+      isPinned: false,
+      width: inner,
+      now,
+      onOpen: () => openFromCompact($, dialog),
+    }),
+  )
+  return CompactCard(els, colors, {
+    width,
+    status: facts.status,
+    gauge: await gaugeNow($),
+    rows,
+    isUnderItem,
+    on: {
+      open: () => openFromCard($),
+      hide: () => setMode($, 'hidden'),
+      move: by => update($, compactAt, value => clamp(value + by, facts.rows.length)),
+    },
+  })
+}
+
+/** ⏎ on a card's row: the pane opens Wide, on that chat, with the keys. */
+async function openFromCompact($: $, dialog: TgDialog): Promise<void> {
+  await openFromCard($, () => openThread($, dialog))
+}
+
+/**
+ * ⏎ in the card: Wide, and the keys in the pane, since the owner pressed ⏎ to
+ * work there. The band holds the keys at the press, and the engine refuses a
+ * pane's `focus` while it does (PaneOpenArgs.focus). So the card leaves first,
+ * `then` draws what the pane opens on, and the pane's open call asks again.
+ * With another plugin's Button left in the band (statuspane's) the band keeps
+ * the keys and the engine refuses again: ctrl+x tab reaches the pane.
+ */
+async function openFromCard($: $, then: () => Promise<void> = () => ringCursor($)): Promise<void> {
+  await setMode($, 'open')
+  // What the pane shows comes before the keys: a ring that lands on the old drawing would move the cursor there (followRing).
+  await then()
+  await takeKeysBack($)
 }
 
 /**
@@ -6190,7 +6324,7 @@ async function footerText($: $): Promise<string> {
  * tab draws nothing.
  */
 async function onScreen($: $): Promise<OnScreen> {
-  if ((await read($, mode)) === 'hidden') return NOTHING_ON_SCREEN
+  if ((await read($, mode)) !== 'open') return NOTHING_ON_SCREEN
   const pane = (await $.ui.panes()).find(one => one.id === PANE)
   if (pane === undefined || !pane.isPlaced || !pane.isShown) return NOTHING_ON_SCREEN
   const where = await read($, nav)
@@ -6228,7 +6362,7 @@ async function drawBand($: $, els: Els, width: number): Promise<RenderElement | 
   if (item === undefined) return null
   const asked = item.kind === 'reply' ? bandIntent(item.event, (await lastIntents($)).last) : null
   const reply = (await read($, triage)).reply
-  return BandItemView(els, {
+  return BandItemView(els, colors, {
     item,
     index,
     count: items.length,

@@ -13,8 +13,12 @@ import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
 import { latencyText } from '../triage/live'
 import type { Els } from './components'
-import { GLYPH, TOKEN, oneLine } from './model'
-import { DRAFT_LEAD, draftFits, positionText, type BandItem } from './queue'
+import { GLYPH, oneLine } from './model'
+import type { Colors } from './palette'
+import { COMPACT_NARROW, COMPACT_WIDTH, DRAFT_LEAD, compactStatusText, draftFits, positionText, type BandItem, type CompactStatus } from './queue'
+
+/** An agent is on: §10.3's ⚡ (T12's `GLYPH.agent` once it lands). */
+const AGENT_GLYPH = '⚡'
 
 /** The band's width from which a draft's row 1 also draws `ctrl+x tab ›` and `o: open`; under it `o` stays a hidden key. */
 export const WIDE_BAND = 90
@@ -45,13 +49,13 @@ export type BandProps = {
 
 const HINT = 'ctrl+x tab ›'
 
-export function BandItemView(els: Els, props: BandProps): RenderElement {
+export function BandItemView(els: Els, colors: Colors, props: BandProps): RenderElement {
   switch (props.item.kind) {
     case 'draft':
-      return DraftItem(els, props, props.item)
+      return DraftItem(els, colors, props, props.item)
     case 'hold':
       return Item(els, props, {
-        title: titleText(els, '⏸', TOKEN.warn, `HARD STOP ${props.item.stops.join(' + ')}: ${oneLine(props.item.what, 200)}`),
+        title: titleText(els, '⏸', colors.held, `HARD STOP ${props.item.stops.join(' + ')}: ${oneLine(props.item.what, 200)}`),
         detail: `${LEVEL_GLYPH.delegate} ${props.item.peer.label} · answer in the dialog`,
         primary: { key: 'band:hold:open', label: '⏎ open' },
         keys: [],
@@ -61,7 +65,7 @@ export function BandItemView(els: Els, props: BandProps): RenderElement {
       const { undo } = props.item
       const conf = undo.confidence === null ? '' : ` · conf ${undo.confidence.toFixed(2)}`
       return Item(els, props, {
-        title: titleText(els, LEVEL_GLYPH.auto, TOKEN.accent, `${undo.peer.label} replied "${oneLine(undo.text, 200)}"${conf}`),
+        title: titleText(els, LEVEL_GLYPH.auto, colors.ok, `${undo.peer.label} replied "${oneLine(undo.text, 200)}"${conf}`),
         detail: null,
         primary: { key: 'ap:band:undo-press', label: `undo ${undoLeft(undo, props.now)}s`, hotkey: 'u' },
         keys: [{ key: 'ap:band:undo-dismiss', label: 'ok', hotkey: 'd', run: props.on.dismiss }],
@@ -74,7 +78,7 @@ export function BandItemView(els: Els, props: BandProps): RenderElement {
       const latency = props.latencyMs === null ? '' : ` ${GLYPH.latency}${latencyText(props.latencyMs)}`
       const said = isBot ? `${event.label} replied${latency}` : event.label
       return Item(els, props, {
-        title: titleText(els, isBot ? GLYPH.bot : GLYPH.unread, isBot ? TOKEN.bot : TOKEN.accent, `${said}: "${oneLine(event.text, 200)}"`),
+        title: titleText(els, isBot ? GLYPH.bot : GLYPH.unread, isBot ? colors.bot : colors.accent, `${said}: "${oneLine(event.text, 200)}"`),
         detail: null,
         primary: { key: 'band:main', label: props.sendAs === null ? '⏎ open' : `⏎ send to main as ${props.sendAs}` },
         keys: [
@@ -86,7 +90,7 @@ export function BandItemView(els: Els, props: BandProps): RenderElement {
     }
     case 'summary':
       return Item(els, props, {
-        title: titleText(els, LEVEL_GLYPH.listen, TOKEN.accent, `${props.item.note.peer.label}: ${oneLine(props.item.note.text, 400)}`),
+        title: titleText(els, LEVEL_GLYPH.listen, colors.accent, `${props.item.note.peer.label}: ${oneLine(props.item.note.text, 400)}`),
         detail: null,
         primary: { key: 'ap:note:open', label: '⏎ open' },
         keys: [{ key: 'ap:note:dismiss', label: 'dismiss', hotkey: 'd', run: props.on.dismiss }],
@@ -96,7 +100,7 @@ export function BandItemView(els: Els, props: BandProps): RenderElement {
       const { task } = props.item
       const ended = task.status === 'done' ? `${GLYPH.done} task done` : `${GLYPH.error} task failed`
       return Item(els, props, {
-        title: titleText(els, LEVEL_GLYPH.delegate, task.status === 'done' ? TOKEN.ok : TOKEN.danger, `${task.peer.label} · ${ended}: ${oneLine(task.reason, 200)}`),
+        title: titleText(els, LEVEL_GLYPH.delegate, task.status === 'done' ? colors.ok : colors.unread, `${task.peer.label} · ${ended}: ${oneLine(task.reason, 200)}`),
         detail: null,
         primary: { key: 'band:task:open', label: '⏎ open' },
         keys: [{ key: 'band:task:dismiss', label: 'dismiss', hotkey: 'd', run: props.on.dismiss }],
@@ -106,7 +110,7 @@ export function BandItemView(els: Els, props: BandProps): RenderElement {
   }
 }
 
-function titleText({ Text }: Els, glyph: string, color: string, text: string): RenderElement {
+function titleText({ Text }: Els, glyph: string, color: Colors[keyof Colors], text: string): RenderElement {
   return (
     <Text wrap="truncate-end">
       <Text color={color}>{`${glyph} `}</Text>
@@ -162,7 +166,7 @@ function Item(
  * draft is read whole and sent (§8 T3, decision 9). `e` swaps row 2 for the
  * field; the band keeps its two rows.
  */
-function DraftItem(els: Els, props: BandProps, item: Extract<BandItem, { kind: 'draft' }>): RenderElement {
+function DraftItem(els: Els, colors: Colors, props: BandProps, item: Extract<BandItem, { kind: 'draft' }>): RenderElement {
   const { Box, Text, Button } = els
   const Input = 'Input' in els ? els.Input : undefined
   const { draft } = item
@@ -196,12 +200,12 @@ function DraftItem(els: Els, props: BandProps, item: Extract<BandItem, { kind: '
       <Box key="band:row1" flexDirection="row" columnGap={2}>
         <Box flexGrow={1} flexShrink={1}>
           <Text wrap="truncate-end">
-            <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} `}</Text>
+            <Text color={colors.held}>{`${LEVEL_GLYPH.draft} `}</Text>
             {`${draft.peer.label}: "${oneLine(draft.incoming, 200)}"${draft.why === '' ? '' : ` · ${draft.why}`}`}
           </Text>
         </Box>
         {verdict === null ? null : (
-          <Text color={verdict.tone === 'danger' ? TOKEN.danger : undefined} dimColor={verdict.tone === 'dim'} wrap="truncate-end">
+          <Text color={verdict.tone === 'danger' ? colors.unread : undefined} dimColor={verdict.tone === 'dim'} wrap="truncate-end">
             {verdict.text}
           </Text>
         )}
@@ -245,12 +249,138 @@ function HiddenNav(els: Els, props: BandProps, hidden: readonly ('o' | 'e')[]): 
   )
 }
 
+export type CompactActions = {
+  /** ⏎ on the status line, where no row is drawn: the pane, Wide. */
+  open: () => void
+  /** `q`: the card goes, the footer label stays (Hidden). */
+  hide: () => void
+  /** `j` (+1) and `k` (-1) between the two rows. */
+  move: (by: 1 | -1) => void
+}
+
+export type CompactProps = {
+  /** The band's `bodyColumns`. */
+  width: number
+  status: CompactStatus
+  /** `▰▰▱▱▱ 12/50` (T14's gauge) and its pair for the one-line form, while an agent is on; `bar` null with no limit. */
+  gauge: { bar: RenderElement | null; pair: string } | null
+  /** The chat rows, drawn for `compactInner(width)` cells, the ringed one a Button; left out under an item and in one line. */
+  rows: readonly RenderElement[]
+  /** A band item shows above: the card keeps its status line, and ⏎ `j` `k` are the item's. */
+  isUnderItem: boolean
+  on: CompactActions
+}
+
+/** The card's width (§10.7): statuspane's, `min(46, bodyColumns − 2)`. */
+export function compactWidth(width: number): number {
+  return Math.min(COMPACT_WIDTH, width - 2)
+}
+
+/** Cells inside the card's border and padding: what a row is drawn for. */
+export function compactInner(width: number): number {
+  return compactWidth(width) - 4
+}
+
+/**
+ * The compact card above the prompt (§10.7): right-aligned and narrow, as
+ * statuspane's, `tg` in its top border and `⏎ open · q: hide` in its bottom
+ * one (P2's absolute Boxes, P3). A status line, then the two chat rows. Under
+ * 40 columns, one borderless line. Exactly one ring stop: the ringed row, else
+ * the status line; under a band item, none (⏎ is the item's). `q` is a hidden
+ * Button; `j` and `k` are hidden ones while two rows show (§6, no digits: §11).
+ */
+export function CompactCard(els: Els, colors: Colors, props: CompactProps): RenderElement {
+  const { Box, Text, Button } = els
+  const isNarrow = props.width < COMPACT_NARROW
+  const status = compactStatusText(props.status, isNarrow)
+  const dot = status.role === null ? null : <Text color={colors[status.role]}>{status.text.slice(0, 1)}</Text>
+  const words = <Text color={status.role === null ? colors.dim : colors.text}>{status.role === null ? status.text : status.text.slice(1)}</Text>
+  // One line has no room for rows, and under an item the card is its status line alone.
+  const rows = isNarrow || props.isUnderItem ? [] : props.rows
+  const isStatusStop = rows.length === 0 && !props.isUnderItem
+  const keys = (
+    <Box key="compact:keys" display="none">
+      <Button key="compact:hide" plain hotkey="q" onPress={props.on.hide}>
+        hide
+      </Button>
+      {rows.length > 1 ? (
+        <Button key="compact:down" plain hotkey="j" onPress={() => props.on.move(1)}>
+          down
+        </Button>
+      ) : null}
+      {rows.length > 1 ? (
+        <Button key="compact:up" plain hotkey="k" onPress={() => props.on.move(-1)}>
+          up
+        </Button>
+      ) : null}
+    </Box>
+  )
+  if (isNarrow) {
+    const line = (
+      <Text wrap="truncate-end">
+        <Text color={colors.accent}>tg</Text>
+        <Text color={colors.dim}> · </Text>
+        {dot}
+        {words}
+        {props.gauge === null ? null : <Text color={colors.ok}>{` · ${AGENT_GLYPH} ${props.gauge.pair}`}</Text>}
+      </Text>
+    )
+    return (
+      <Box key="compact" justifyContent="flex-end" paddingRight={1}>
+        {props.isUnderItem ? (
+          <Box key="compact:status">{line}</Box>
+        ) : (
+          <Button key="compact:open" plain autoFocus onPress={props.on.open}>
+            {line}
+          </Button>
+        )}
+        {keys}
+      </Box>
+    )
+  }
+  const width = compactWidth(props.width)
+  // One Text, so the line also reads as a Button's label: ● and its words, then the gauge three cells on.
+  const statusRow = (
+    <Text wrap="truncate-end">
+      {dot}
+      {words}
+      {props.gauge === null ? null : <Text color={colors.ok}>{`   ${AGENT_GLYPH} `}</Text>}
+      {props.gauge === null ? null : (props.gauge.bar ?? <Text color={colors.text}>{props.gauge.pair}</Text>)}
+    </Text>
+  )
+  return (
+    <Box key="compact" justifyContent="flex-end" paddingRight={1}>
+      <Box key="compact:card" width={width} flexDirection="column">
+        <Box width={width} flexDirection="column" borderStyle="round" borderColor={colors.surface} paddingX={1}>
+          {isStatusStop ? (
+            <Button key="compact:open" plain autoFocus onPress={props.on.open}>
+              {statusRow}
+            </Button>
+          ) : (
+            <Box key="compact:status">{statusRow}</Box>
+          )}
+          {...rows}
+          {keys}
+        </Box>
+        <Box position="absolute" top={0} left={2}>
+          <Text color={colors.accent} bold>
+            {' tg '}
+          </Text>
+        </Box>
+        <Box position="absolute" bottom={0} left={2}>
+          <Text color={colors.dim}>{' ⏎ open · q: hide '}</Text>
+        </Box>
+      </Box>
+    </Box>
+  )
+}
+
 /** `/tg help` and `/tg status` in the transcript: the command's text as a card, its first line the title. */
-export function CommandCard({ Box, Text }: Els, text: string): RenderElement {
+export function CommandCard({ Box, Text }: Els, colors: Colors, text: string): RenderElement {
   const [title = 'tg', ...lines] = text.split('\n')
   return (
     <Box key="tg:card" flexDirection="column" borderStyle="round" paddingX={1}>
-      <Text bold color={TOKEN.accent}>
+      <Text bold color={colors.accent}>
         {title}
       </Text>
       {lines.map((line, index) => (

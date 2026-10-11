@@ -399,7 +399,8 @@ export const KEYS = [
             : 'back',
   },
   { id: 'menu', key: 'm', hotkey: 'm', group: 'pane', where: [...PANE, 'menu'], kinds: 'any', label: c => (c.where === 'menu' ? 'close' : 'menu') },
-  { id: 'hide', key: 'q', hotkey: 'q', group: 'pane', where: [...PANE, 'field'], kinds: 'any', label: () => 'hide' },
+  // In the band, the compact card's `q` puts the card away (§10.7).
+  { id: 'hide', key: 'q', hotkey: 'q', group: 'pane', where: [...PANE, 'field', 'band'], kinds: 'any', label: () => 'hide' },
   {
     id: 'stop',
     key: '0',
@@ -716,6 +717,7 @@ export function helpLines(): string[] {
     'The pane holds the keys while ● keys shows: ctrl+x tab hands them over, Esc gives them back.',
     ...lines,
     'band    ⏎ the item\'s action · e edit · d drop or dismiss · o open in the pane · u undo · j k next, previous',
+    'card    ⏎ open the pane on the chat · j k between its two chats · q hide the card (the pane closed)',
     '/tg     /tg opens · /tg stop · /tg status · /tg help · /tg hide',
   ]
 }

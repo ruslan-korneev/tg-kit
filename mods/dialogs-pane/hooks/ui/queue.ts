@@ -7,31 +7,37 @@ import type { ApNote, ApUndoWindow, BandEvent, DgStatus, PeerRef } from '../../t
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
 import type { DraftView } from './drafts'
-import { GLYPH, cells, oneLine, type SummaryParts } from './model'
+import { GLYPH, cells, oneLine } from './model'
 
 // --- the footer label (SessionMode) ---
 
 /** What the footer's `tg` head counts: unread chats that are not muted, still loading, or why it cannot. */
 export type UnreadHead = { kind: 'count'; unread: number } | { kind: 'loading' } | { kind: 'failed'; isLoggedOut: boolean }
 
+/** What the Hidden line counts besides the head (§10.8): mentions of the owner, and the autopilot's gauge pair. */
+export type HiddenParts = {
+  /** Unread mentions of the owner, muted chats included (Telegram notifies those, §10.3). */
+  mentions: number
+  /** `12/50`: the chat nearest its limit (§10.6); `on` while agents run with no limit; null with none on. */
+  autopilot: string | null
+}
+
 /**
- * `tg 22 · ⌁1 ⟳1 ↯1 · ◎ 3 new · 2 for you` (§4.5): the unread chats that are
- * not muted (the footer only; the pane shows them per chat), then the header's
- * summary. Zero counts are left out; `tg` stays, so the footer always says the
- * pane is there.
+ * The Hidden line (§10.8, decision 2), the footer label in every state and
+ * `/tg status`'s second line: `● tg: 15 unread · @2 · autopilot 12/50`. The
+ * unread chats are those not muted. Zero parts are left out, and `tg` stays
+ * alone, so the footer always says the pane is there. While the list loads or
+ * fails the head says so (`tg …`, `tg ⚠`) and only the autopilot part follows.
+ * The footer label is one string: `●` cannot take a role there, it draws dim.
  */
-export function footerLabel(head: UnreadHead, summary: SummaryParts): string {
-  const first =
-    head.kind === 'count'
-      ? head.unread === 0
-        ? 'tg'
-        : `tg ${head.unread}`
-      : head.kind === 'loading'
-        ? `tg ${GLYPH.working}`
-        : head.isLoggedOut
-          ? `tg ${GLYPH.error} not logged in`
-          : `tg ${GLYPH.error}`
-  return [first, summary.levels, summary.watched, summary.forYou].filter(part => part !== '').join(' · ')
+export function footerLabel(head: UnreadHead, parts: HiddenParts): string {
+  const pilot = parts.autopilot === null ? [] : [`autopilot ${parts.autopilot}`]
+  if (head.kind !== 'count') {
+    const first = head.kind === 'loading' ? `tg ${GLYPH.working}` : head.isLoggedOut ? `tg ${GLYPH.error} not logged in` : `tg ${GLYPH.error}`
+    return [first, ...pilot].join(' · ')
+  }
+  const rest = [...(head.unread === 0 ? [] : [`${head.unread} unread`]), ...(parts.mentions === 0 ? [] : [`@${parts.mentions}`]), ...pilot]
+  return rest.length === 0 ? 'tg' : `${GLYPH.unread} tg: ${rest.join(' · ')}`
 }
 
 /** Unread chats that are not muted, among `rows`: a muted chat's count would bury the rest (§4.5, §4.7). */
@@ -181,4 +187,45 @@ export const DRAFT_LEAD = '  → '
  */
 export function draftFits(text: string, width: number): boolean {
   return cells(`${DRAFT_LEAD}${oneLine(text, Infinity)}`) - 1 <= width
+}
+
+// --- the compact card (§10.7) ---
+
+/** The card's width at most, as statuspane's; under `COMPACT_NARROW` body columns it is one line (§10.7). */
+export const COMPACT_WIDTH = 46
+export const COMPACT_NARROW = 40
+/** The rows the card lists: For you's first two, else the current folder's first two unread. */
+export const COMPACT_ROWS = 2
+
+/**
+ * The card's status line (§10.7): the chats in For you; with none, the unread
+ * chats that are not muted; with neither, `all read`.
+ */
+export type CompactStatus = { kind: 'waiting'; chats: number } | { kind: 'unread'; chats: number } | { kind: 'read' }
+
+export function compactStatus(waiting: number, unread: number): CompactStatus {
+  if (waiting > 0) return { kind: 'waiting', chats: waiting }
+  return unread > 0 ? { kind: 'unread', chats: unread } : { kind: 'read' }
+}
+
+/** The status's words and the role of its `●`; `isShort` is the one-line form's (`● 3 waiting`). Null role: all of it dim. */
+export function compactStatusText(status: CompactStatus, isShort = false): { text: string; role: 'mention' | 'unread' | null } {
+  switch (status.kind) {
+    case 'waiting':
+      return { text: `${GLYPH.unread} ${status.chats}${isShort ? '' : status.chats === 1 ? ' chat' : ' chats'} waiting`, role: 'mention' }
+    case 'unread':
+      return { text: `${GLYPH.unread} ${status.chats} unread`, role: 'unread' }
+    case 'read':
+      return { text: 'all read', role: null }
+  }
+}
+
+/** The chats the card counts as waiting: For you's people and every chat a draft or a hard stop waits in, each once. */
+export function waitingChats(people: readonly { id: number }[], agents: readonly { id: number }[]): number {
+  return new Set([...people, ...agents].map(one => one.id)).size
+}
+
+/** The card's rows: For you's first two, else the first two of `folder` unread and not muted (as the status counts them), else none. */
+export function compactRows<T extends { unread: number; muted: boolean }>(forYou: readonly T[], folder: readonly T[]): T[] {
+  return (forYou.length > 0 ? forYou : folder.filter(row => row.unread > 0 && !row.muted)).slice(0, COMPACT_ROWS)
 }
