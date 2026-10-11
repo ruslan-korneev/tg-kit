@@ -454,7 +454,8 @@ async function openThread($: $, dialog: TgDialog): Promise<void> {
   const peer: PeerRef = { id: dialog.id, arg: peerArg(dialog), label: dialogLabel(dialog), kind: dialog.kind }
   await update($, thread, () => ({ peer, load: { status: 'loading' } }))
   await update($, selection, () => NO_SELECTION)
-  await update($, nav, value => ({ ...value, view: 'thread', messageCursor: 0 }))
+  // A chat opens on its own window: the last chat's start would leave only its newest rows in view.
+  await update($, nav, value => ({ ...value, view: 'thread', messageCursor: 0, messageStart: 0 }))
   await bottestThreadOpened($, peer)
   await loadThread($, peer)
   await syncWatches($)

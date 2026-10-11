@@ -714,6 +714,21 @@ describe('long lists scroll at the edges (the ring keeps its place among the But
   }
 })
 
+describe('a chat opens on its own window', () => {
+  test("after a 40-message thread, a two-message chat shows both: the last chat's window start does not carry over", async ($, on) => {
+    const twoAfterLong = (argv: readonly string[]) => (argv[1] === 'read' && argv[2] === '1004' ? json(PERSON_MESSAGES) : long(argv))
+    const { ui } = await openPane($, on, DOCK, twoAfterLong)
+    await openChat(ui, 1001)
+    expect((await rows(ui, 'msg:')).length).toBeGreaterThan(3)
+    // A move keeps the window's start where the drawing put it, deep in the long thread.
+    await ui.press({ key: 'key:up' })
+    await ui.press({ key: 'key:back' })
+    await openChat(ui, 1004)
+    expect(await rows(ui, 'msg:')).toEqual(['msg:91', 'msg:92'])
+    await ui.unmount()
+  })
+})
+
 /**
  * Ring stops (Buttons, Inputs, Selects) drawn before the first node `isEnd`
  * picks, in document order: the engine keeps the ring at that place.
