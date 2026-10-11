@@ -33,7 +33,8 @@ folder Quiet, last, lists no chat: the empty folder.
 
 Forum topics (T16, README "Forum topics"): Project team (1008) is a forum with
 General (1), Releases (12, pinned), Design review (20, a mention) and Old
-roadmap (40, closed). `topics` lists them; `read`, `watch` and `send` take
+roadmap (40, closed), then five whose titles end in flags, a ZWJ family, VS16 and a keycap
+(50–54; Польша, closed, with 120 unread). `topics` lists them; `read`, `watch` and `send` take
 --topic; a write into Old roadmap exits 7, even with --yes; `topics` on a chat
 that is not a forum exits 2. A send without --topic goes into the topic of its
 --reply-to, else General, as tg's does. Every message carries `topic_id`.
@@ -89,6 +90,17 @@ TOPICS = [
      "hidden": False, "last_id": 805, "last_date": "2026-10-10T19:30:00Z", "last_text": "lunch at 1?"},
     {"id": 40, "title": "Old roadmap", "icon_color": 0xFB6F5F, "unread": 0, "mentions": 0, "pinned": False, "closed": True,
      "hidden": False, "last_id": 41, "last_date": "2026-10-03T10:00:00Z", "last_text": "moved to Design review"},
+] + [
+    # Titles a terminal measures its own way (flags, a ZWJ family, VS16, a keycap): the rows' columns must hold.
+    {"id": 50 + k, "title": title, "icon_color": 0x8EEE98, "unread": unread, "mentions": 0, "pinned": False, "closed": closed,
+     "hidden": False, "last_id": 0, "last_date": "2026-10-02T09:00:00Z", "last_text": text}
+    for k, (title, unread, closed, text) in enumerate([
+        ("Греция🇬🇷", 2, False, "виза 🇬🇷 готова"),
+        ("Болгария🇧🇬", 139, False, "граница 🇧🇬🇬🇷"),
+        ("Польша🇵🇱 (visa D, долгий срок)", 120, True, "закрыто 🇵🇱"),
+        ("Family 👨‍👩‍👧", 0, False, "fine ☺️"),
+        ("Step 1️⃣ ☺️", 1, False, "keycap 1️⃣ 2️⃣"),
+    ])
 ]
 # The channel is muted (its count draws dim, ·14); the group has an unread mention (For you).
 ROW_EXTRA = {1006: {"muted": True}, 1002: {"mentions": 1}, 1008: {"mentions": 1, "forum": True}}

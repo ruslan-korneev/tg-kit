@@ -9,7 +9,7 @@ import type { RenderElement } from 'claude-code'
 import type { Notice } from '../../types'
 import type { Els } from './components'
 import { MENU_GROUPS, type MenuGroup, type MenuSection, type RunKey, type ShownKey } from './keys'
-import { GLYPH, labelCells } from './model'
+import { GLYPH, flagLetters, graphemes, labelCells } from './model'
 import type { Colors, Role } from './palette'
 import { STOP_LABEL, STRIP_SEP, type StripItem } from './running'
 
@@ -36,7 +36,9 @@ export type TitlePart = { text: string; role?: Role; bold?: boolean }
 export function fitTitle(parts: readonly TitlePart[], room: number): TitlePart[] {
   const out: TitlePart[] = []
   let used = 0
-  for (const part of parts) {
+  for (const one of parts) {
+    // A chat's or a topic's name rides in titles: its flags as letters (flagLetters).
+    const part = { ...one, text: flagLetters(one.text) }
     const width = labelCells(part.text)
     if (used + width <= room) {
       out.push(part)
@@ -44,9 +46,9 @@ export function fitTitle(parts: readonly TitlePart[], room: number): TitlePart[]
       continue
     }
     let cut = ''
-    for (const char of part.text) {
-      if (labelCells(`${cut}${char}`) > room - used - 1) break
-      cut += char
+    for (const glyph of graphemes(part.text)) {
+      if (labelCells(`${cut}${glyph}`) > room - used - 1) break
+      cut += glyph
     }
     if (room - used >= 1) out.push({ ...part, text: `${cut}…` })
     break

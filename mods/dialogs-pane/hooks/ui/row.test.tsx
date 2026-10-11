@@ -5,7 +5,9 @@ import { ChatRow } from './components'
 import {
   GLYPH,
   NARROW_GLYPHS,
+  cells,
   dialogLabel,
+  flagLetters,
   dialogRow,
   labelCells,
   peerArg,
@@ -14,6 +16,7 @@ import {
   rowTime,
   rowWidths,
 } from './model'
+import { CARD_INNER } from './frame'
 import { PALETTES } from './palette'
 
 const chat = (over: Partial<TgDialog>): TgDialog => ({
@@ -96,6 +99,46 @@ describe('the chat row (§10.4)', () => {
       expect(await text('emoji')).toBe('    Thu ○ 🎉🎉🎉 Ivan … Can we call…  ⚡')
       expect(await text('narrow')).toBe('  Sep 1 ★ Saved Messages      ')
       for (const row of rows) expect(labelCells(await text(row.key))).toBe(row.width)
+      await ui.unmount()
+    })
+  }
+
+  test('emoji sequences count as tmux 3.5 draws them; a flag is its letters, for display only', () => {
+    // Measured in tmux 3.5a (cursor_x after each, then a marker): each of these is 2 cells.
+    for (const glyph of ['👨‍👩‍👧', '☺️', '1️⃣', '🇬🇷', '😀', '✅']) expect(`${glyph} ${cells(glyph)}`).toBe(`${glyph} 2`)
+    // A combining mark adds nothing to its letter (й as и + U+0306).
+    expect(cells('и\u0306')).toBe(1)
+    expect(flagLetters('Греция🇬🇷')).toBe('ГрецияGR')
+    expect(flagLetters('🇬🇷🇧🇬 and 🇵')).toBe('GRBG and P')
+    expect(flagLetters('Team 👨‍👩‍👧 ☺️ 1️⃣')).toBe('Team 👨‍👩‍👧 ☺️ 1️⃣')
+  })
+
+  for (const columns of [64, 44]) {
+    test(`at ${columns} columns, rows with flags, ZWJ, VS16 and keycaps keep every column: each row its width, no regional indicator drawn`, async ($, on) => {
+      const width = columns - CARD_INNER
+      const titles = ['Греция🇬🇷', 'Болгария🇧🇬', 'Польша🇵🇱 (visa D)', '🇬🇷🇧🇬🇵🇱', 'Family 👨‍👩‍👧 chat', 'Ideas ☺️', 'Step 1️⃣ plan', 'Contact A']
+      const rows = titles.map((title, index) => ({
+        key: `row${index}`,
+        dialog: chat({ id: 3000 + index, title, username: null, unread: index === 2 ? 120 : index, last_date: at(index), last_text: index % 2 === 0 ? `виза 🇵🇱 ${title}` : 'fine ☺️ 👨‍👩‍👧' }),
+      }))
+      on('ui.render', { component: 'UserMessage' }, ($, e) => {
+        const els = $.ui.resolve(e)
+        const { Box } = els
+        return (
+          <Box key="rows" flexDirection="column">
+            {rows.map(row => ChatRow(els, PALETTES['catppuccin-mocha'], { ...dialogRow(row.dialog, { now: NOW, agent: null }), rowKey: row.key, width, isCursor: false, isOpen: false, onPress: () => {} }))}
+          </Box>
+        )
+      })
+      const ui = await $.ui.mount({ plugin: 'dialogs-pane', surface: 'terminal', component: 'UserMessage', props: { text: '', origin: { kind: 'composer' }, isExpanded: false } })
+      const drawn = await Promise.all(rows.map(async row => (await ui.find({ key: row.key }))?.text ?? ''))
+      for (const text of drawn) {
+        expect(`${text} ${labelCells(text)}`).toBe(`${text} ${width}`)
+        expect(text).not.toMatch(/[\u{1F1E6}-\u{1F1FF}]/u)
+      }
+      // The symbol column is the last three cells of every row: 120 unread is 99+, alone in it.
+      expect(drawn[2]?.endsWith(' 99+')).toBe(true)
+      expect(drawn[0]).toContain('ГрецияGR')
       await ui.unmount()
     })
   }

@@ -12,6 +12,7 @@ import {
   cells,
   failureRole,
   failureText,
+  flagLetters,
   isErrorText,
   labelCells,
   mediaTag,
@@ -26,8 +27,11 @@ import { TOPIC_COLUMN } from './topics'
 
 export type Els = ElementTable
 
-/** A column exactly `width` wide: cut with … only when the text is longer (`bot` fills a 3-column sender). */
-const fit = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width))
+/** A column exactly `width` wide: cut with … only when the text is longer (`bot` fills a 3-column sender). A flag shows as its letters (flagLetters). */
+function fit(raw: string, width: number): string {
+  const text = flagLetters(raw)
+  return text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width)
+}
 
 /**
  * Where a list's window starts so that `cursor` is in it, scrolling at the

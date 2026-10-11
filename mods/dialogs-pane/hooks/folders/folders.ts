@@ -4,7 +4,7 @@
 // when the next pass may run. Pure: register.tsx runs tg and keeps the state.
 import type { AgentItem, ApDraft, ApUndoWindow, Folder, FolderChats, FolderPass, ForYouWhy, ListView, PassState, TgDialog, Verdict } from '../../types'
 import { FOLDER_KINDS, TgJsonError, parseDialog } from '../packet/types'
-import { cells, labelCells } from '../ui/model'
+import { cells, flagLetters, graphemes, labelCells } from '../ui/model'
 import { verdictOf, type Me } from '../triage/needs'
 
 /** A row's `last_text` in $.state and $.store: what a row can draw, not the whole message (§8 T9 b). */
@@ -195,13 +195,14 @@ export function stripEntries(list: readonly Folder[]): Entry[] {
   return [...folders, ...views].map((entry, index) => ({ ...entry, digit: index < DIGITS ? index + 1 : null }))
 }
 
-/** A title cut to `max` cells, an emoji counting two. */
+/** A title cut to `max` cells, an emoji counting two, a flag as its letters (`flagLetters`); cut between glyphs, never inside one. */
 export function cutCells(text: string, max: number): string {
-  if (cells(text) <= max) return text
+  const shown = flagLetters(text)
+  if (cells(shown) <= max) return shown
   let out = ''
-  for (const char of text) {
-    if (cells(out + char) > max - 1) break
-    out += char
+  for (const glyph of graphemes(shown)) {
+    if (cells(out + glyph) > max - 1) break
+    out += glyph
   }
   return `${out}…`
 }

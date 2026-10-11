@@ -249,18 +249,51 @@ export function oneLine(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1))}…` : flat
 }
 
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+// What joins code points into one glyph: a mark (combining, VS16, a keycap), ZWJ, a skin tone, a flag's pair.
+// Without any, each code point is its own glyph, and the segmenter (slow on the pane's hot paths) is skipped.
+const JOINS = /[\p{M}\u200D\u{1F3FB}-\u{1F3FF}\u{1F1E6}-\u{1F1FF}]/u
+
+/** `text` as a terminal draws it, one glyph a piece: a flag, a ZWJ family or a keycap stays whole. */
+export function graphemes(text: string): string[] {
+  return JOINS.test(text) ? Array.from(GRAPHEMES.segment(text), one => one.segment) : Array.from(text)
+}
+
+const REGIONAL = /[\u{1F1E6}-\u{1F1FF}]/gu
+
 /**
- * Terminal cells, erring wide: `truncate-end` cuts by cells. Everything from U+2000 up
- * counts two (CJK, emoji, and wide symbols such as ✅ ⭐ ⌚ ☕ among narrow arrows and
- * punctuation), as does Hangul Jamo; Latin and Cyrillic stay one. Too wide only opens
- * a draft that would have fit (the band) or shows one fewer name (the running strip);
- * too narrow would send a draft the owner never saw whole.
+ * A flag's regional indicators as their letters, for display only (`🇬🇷` →
+ * `GR`): tmux 3.5 gives them no fixed width (a pair is 2 cells after a Latin
+ * letter, 1 after a Cyrillic one, and two flags in a row take 2), so no count
+ * of ours could match what it draws, and a row with a flag shifted every column
+ * after it. Names, previews and titles pass through here; what goes to tg or
+ * into a packet never does.
+ */
+export function flagLetters(text: string): string {
+  return text.replace(REGIONAL, one => String.fromCharCode(0x41 + (one.codePointAt(0) ?? 0x1f1e6) - 0x1f1e6))
+}
+
+// An emoji sequence — joined by ZWJ, with VS16, a keycap, a skin tone or a flag's pair — is one glyph, two cells.
+const EMOJI_SEQUENCE = /[\u200D\uFE0F\u20E3\u{1F3FB}-\u{1F3FF}\u{1F1E6}-\u{1F1FF}]/u
+
+/**
+ * Terminal cells, erring wide: `truncate-end` cuts by cells. Counted a glyph
+ * (grapheme) at a time: an emoji sequence is two (tmux 3.5 measured: 👨‍👩‍👧 ☺️ 1️⃣
+ * 🇬🇷 each 2); otherwise the glyph's first code point decides, and its
+ * combining marks add nothing. From U+2000 up counts two (CJK, emoji, and wide
+ * symbols such as ✅ ⭐ ⌚ ☕ among narrow arrows and punctuation), as does
+ * Hangul Jamo; Latin and Cyrillic stay one. Too wide only opens a draft that
+ * would have fit (the band) or shows one fewer name (the running strip); too
+ * narrow would send a draft the owner never saw whole.
  */
 export function cells(text: string): number {
   let count = 0
-  for (const char of text) {
-    const point = char.codePointAt(0) ?? 0
-    count += (point >= 0x1100 && point <= 0x115f) || point >= 0x2000 ? 2 : 1
+  // Without a join each code point is its own glyph (cells runs per character in the cut loops).
+  for (const glyph of graphemes(text)) {
+    const point = glyph.codePointAt(0) ?? 0
+    if (glyph.length > 1 && EMOJI_SEQUENCE.test(glyph)) count += 2
+    else count += (point >= 0x1100 && point <= 0x115f) || point >= 0x2000 ? 2 : 1
   }
   return count
 }

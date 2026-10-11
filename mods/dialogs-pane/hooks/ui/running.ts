@@ -6,7 +6,7 @@
 import type { ActivityView, ApDialog, ApEntry, ApLevel, ApOutcome, ApPhase, LedgerEntry, PeerRef, PinWatch, TgPeerKind } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { packetLogText } from '../routing/route'
-import { GLYPH, clockText, dialogGlyph, isSamePeer, labelCells, oneLine, peerKey } from './model'
+import { GLYPH, clockText, dialogGlyph, flagLetters, graphemes, isSamePeer, labelCells, oneLine, peerKey } from './model'
 import type { Role } from './palette'
 
 /** One chat with something on it. */
@@ -197,11 +197,12 @@ export function minSec(ms: number): string {
 
 /** `text` cut to `room` cells with `…`, counted as the terminal draws it (`labelCells`). */
 export function cutCells(text: string, room: number): string {
-  if (labelCells(text) <= room) return text
+  const shown = flagLetters(text)
+  if (labelCells(shown) <= room) return shown
   let out = ''
-  for (const char of text) {
-    if (labelCells(`${out}${char}…`) > room) break
-    out += char
+  for (const glyph of graphemes(shown)) {
+    if (labelCells(`${out}${glyph}…`) > room) break
+    out += glyph
   }
   return `${out}…`
 }
