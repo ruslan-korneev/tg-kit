@@ -1080,7 +1080,9 @@ stops lives in `o` → danger zone, with the typed confirmation as built.
 
 Whatever `commands` says, the Worker never runs tg and never reaches tg-kit's config directory
 (decision 11). The guard refuses both, as it refuses a path into the owner's checkout, and the
-`commands` Select reads `any but tg (permission rules decide)`.
+`commands` Select reads `any but tg (permission rules decide)`. The guard finds a path wherever a
+command names one, with or without a space after `>`. Under `checks` it lets awk, sed,
+`find -exec` and `git rebase -x` run only when it can read what they would run or write.
 
 ```text
 Flow 5 · Wide · 5: delegate asks once per chat
@@ -1837,6 +1839,22 @@ Decided by the owner during the build (2026-10-11):
       value (`--output=…`, `-o…`), or a redirect target, attached (`>>~/.config/tg-kit/allow.toml`)
       or not. `~`, `$HOME` and `$TG_KIT_CONFIG_DIR` are resolved for it. Reads count too, since a
       Bash word does not say which it is.
+
+    The grant reads every place a command can name a path, in both modes (the T3 review's X3).
+    The checkout rule (both modes), the worktree rule (`checks`) and the config rule above all
+    read paths that way: an operand, a value after `=` (`--output=/p`, `of=/p`), a short option's
+    attached value (`-o/p`), and a redirect target, attached or spaced (`>`, `>>`, `>|`, `<`,
+    `<>`, `&>`, `&>>`, `N>`, `N>>`; `N>&M` names no file). Before, the grant read only operands
+    that start with `/` or `~` or hold `..`. So under `checks`, `echo … >>/home/u/.zshrc`,
+    `sort --output=/home/u/.zshrc` and `git log --output=/home/u/.zshrc` passed, while their
+    spaced forms were refused. The commands that `find -exec`, `-execdir`, `-ok`, `-okdir` and
+    `git rebase -x` (`--exec`) run are read as `sh -c`'s are, in both modes. Under `checks`,
+    `git -c` is refused, as git's config is, since a key such as `core.fsmonitor` runs a command.
+    Under `checks` too, awk and sed count as local read-only commands only with a program that
+    can neither write nor run anything. That leaves out awk's `>`, `>>` and `|` on output,
+    `system(` and a command piped into `getline`; sed's `w` and `W` commands, the `w` and `e`
+    flags of `s`, and its `e` command; and the `-f` of either, a program the grant cannot see.
+    Each of these passed under `checks` before.
 
     Edit, Write and Read already stay inside the worktrees. This is a refusal, not a hard stop:
     there is no dialog and nothing to skip. The Worker is told to go on without it or to end with
