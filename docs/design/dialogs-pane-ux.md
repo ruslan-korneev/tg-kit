@@ -274,6 +274,8 @@ lower part. Inline, each view takes the body.
 - **Menu (`m`)** — every key valid here, grouped (message, chat, chats, pane, safety); each label is
   a Button, so the menu is also the palette.
 - **Mouse** — every key label is a Button, so a click does what the key does; a click on a row is ⏎.
+  The one exception is the dock's running strip, which rule 1 keeps free of ring stops: its
+  `0: stop all` is a label, and `0` is pressed by key, from the menu or with `/tg stop`.
 - **Focus** — the header says `● keys` or `ctrl+x tab: keys`; the action bar dims without the keys.
 
 ### 4.4 Discoverability
@@ -1089,7 +1091,7 @@ Flow 5 · Wide · a task runs: one line in the strip, the card on top of its thr
 │↯ Contact B · task 42 min · ⟳ Dev Team · auto 3/50   0: stop all│
 │  (list rows)                                                   │
 │─ Contact B · ↯ delegate ───────────────────────────────────────│
-│↯ add a payment provider · 42 min                      ⏎ details│
+│↯ add a payment provider · 42 min                               │
 │  ✓ read docs on docs.example.com (3)                           │
 │  ✓ worktree app-task-3 · branch tg/add-payment-provider-3      │
 │  … edit src/pay/webhook.py                                     │
@@ -1098,6 +1100,15 @@ Flow 5 · Wide · a task runs: one line in the strip, the card on top of its thr
 │⏎ send…  a: agent  l: activity  m: menu                         │
 └────────────────────────────────────────────────────────────────┘
 ```
+
+The task card sits on top of its chat's thread as text, without a border: a title line, then its
+lines, the oldest steps giving way first. It has no ring stops, since it sits above the cursor row
+(§4.3). A delegate chat keeps the card's rows whether a task runs or not: a task starts in the
+background, and a thread window that shrank then would move rows above the cursor. The rows follow
+the dock's lower part, which is fixed for the view: `lines = min(6, ⌊lower / 3⌋ − 1)`, and under two
+lines the card is the one-line task row inline uses. That is about 4 rows at 64×30 and 7 at
+180×50. Stop and dismiss are not on the card: `a` then ⏎ stops the chat's task, `0` stops
+everything, and `d` in Activity dismisses a task that ended.
 
 ```text
 Flow 5 · Compact · the grant step in 12 rows
@@ -1179,13 +1190,17 @@ Flow 6 · Hidden · /tg stop runs at once, even while main is mid-turn (immediat
 ### 5.7 Activity
 
 `l` merges the packet ledger, the autopilot ledger and the guard's stop events by time, under what
-runs now. ⏎ on a running row opens its card or task.
+runs now. ⏎ on a running row opens its card or task. The log's lines are text: the log grows above
+its older lines while it is open, so as Buttons they would move under the ring (§4.3); ⏎ belongs to
+the running rows. Those keep the order they were first drawn in while Activity is open: a chat that
+stops stays, drawn `■ stopped`, and one that starts goes last. `0: stop all` is the running strip's
+(§4.6), so the divider does not repeat it.
 
 ```text
 Activity · l: what runs and what happened, in one place
 ┌────────────────────────────────────────────────────────────────┐
 │tg › activity                      ⌁1 ⟳1 ↯1 · 1 for you   ● keys│
-│─ running ──────────────────────────────────────── 0: stop all ─│
+│─ running ──────────────────────────────────────────────────────│
 │▸ ⟳ Dev Team       auto 3/50 · listening                        │
 │  ↯ Contact B      task 42 min · edit src/pay/webhook.py        │
 │  ⌁ @example_bot   follows → main · live                        │
@@ -1309,9 +1324,11 @@ at the right. Inline it shares the header row with the state summary and gives w
 titles, never a second row, and `s: search` moves to the action bar.
 
 Budgets: the dock spends at most three rows on chrome (header, folder strip while in Chats, action
-bar) plus what is temporary (running strip, a sheet, one notice). Inline spends two (header with
-the strip, action bar). Inline, the frame is as tall as what it holds, up to the room
-(`scroll.bodyRows`): the engine fits an inline frame to its tree, and `height` does not pad it.
+bar), plus the running strip's row, kept whether it shows or not (it comes and goes while the
+cursor stays, and §4.3 rule 1 keeps the rows above the cursor still), plus what is temporary (a
+sheet, one notice). Inline spends two (header with the strip, action bar). Inline, the frame is as
+tall as what it holds, up to the room (`scroll.bodyRows`): the engine fits an inline frame to its
+tree, and `height` does not pad it.
 Cards align their labels in a 7-column left column (`brief`, `limits`, `asks`, `writes`, `grant`,
 `stops`, `guard`).
 
