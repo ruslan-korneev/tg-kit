@@ -39,19 +39,21 @@ above the prompt.
   and `--limit 200` (kinds and unread). The pane's store files were read for which keys hold
   anything. §2.2 and §4.6–4.7 have the counts.
 - Throwaway probe mods checked the engine surfaces this design leans on. The first five are this
-  design's own probe. The last three are behaviours the builds found: T1's and T2's, which a probe
-  confirmed and the engine's docs do not state, and T9's, seen live:
+  design's own probe; its `UserMessage` row was drawn by the probe, a plugin of another name. The
+  last four are behaviours the builds found: T1's and T2's, which a probe confirmed and the engine's
+  docs do not state, and T9's and T5's, seen live:
 
 | Surface | Result |
 | --- | --- |
 | `SessionMode` | a mode label (`tg ⟳1 ✎2`) draws dim at the right end of the prompt footer |
 | `PromptHint` `tail` | text joins the hint line under the prompt (`… · tg: ✎ 2 drafts wait · ctrl+x tab`) |
-| `UserMessage` | a packet the pane sent draws as one row; ctrl+o still shows the whole `<tg-packet>` |
+| `UserMessage` | a packet the pane sent draws as one row when another plugin (the probe) rewrites it; ctrl+o still shows the whole `<tg-packet>` |
 | `Pane` `isFocused` | flips on ctrl+x tab and redraws, so the pane can say who holds the keys |
 | `Select` | draws `web: read-only ▾`; focused, it opens a list; ⏎ picks |
 | `Button` `hotkey` in a Box drawn `display: "none"` | pressed while the pane holds the keys, as a drawn one is; so is one in a 0×0 Box. The engine's docs do not promise it (the Button doc says only "while the plugin's site holds the focus"), so it is an assumption: §6 leans on it, Appendix A checks it after every engine upgrade |
 | The focus ring across a redraw | keeps its position among the pane's ring stops (Buttons, Inputs, Selects), not its key; a `$.ui.focus` on a key the old drawing still has lands on the old drawing, and `ok` comes back all the same. In a 40-row list centred on the cursor, `k` put ▸ on row 32 and the ring on 31; a 3-row sheet closing left ▸ on 39 and the ring on 36. Scrolling at the edges and rows without ring stops under the sheet kept the ring on ▸ at every step. §4.3's ring rules lean on it, Appendix A checks it |
 | A printable key with no hotkey in a focused pane | the keys go back to the prompt and the key is typed there; every key after it lands in the prompt too (T9, live: an unbound `h` on the Folders list). The Pane doc's Escape note says as much ("once the prompt has the keys again (the person typed…)"). §6 binds a–z and 0–9 in every view for it |
+| A plugin's own `$.prompt.submit` row | neither its `UserMessage` hook nor that hook's `.catch` is asked (T5, live, three variants; a later redraw does not ask them either); another plugin's hook is. So this plugin cannot fold its own packets: decision 10 keeps them whole |
 
 ## 2. Audit of today's UX
 
@@ -225,7 +227,7 @@ nearly everything; and the owner's own way of sorting Telegram, folders, is not 
 | **Footer label** (`SessionMode`) | always, while anything is on | `tg 22 · ⟳1 ↯1 · 2 for you` |
 | **Hint tail** (`PromptHint`) | while the band holds items | `tg: 2 for you · ctrl+x tab` |
 | **Status line** (`$.ui.status`, yellow ⚠) | alarms only | a hard stop waiting, skipped stops while delegate runs, not logged in |
-| **Transcript** | after a send | one row per packet (`UserMessage`); `/tg status` and `/tg help` as cards (`CommandOutput`) |
+| **Transcript** | after a send | the packet as sent (decision 10); `/tg status` and `/tg help` as cards (`CommandOutput`) |
 | **`/tg`** | any time, any focus | `/tg` open · `/tg stop` · `/tg status` · `/tg help` · `/tg hide`, registered `immediate` |
 
 Hidden is the pane closed: the footer label, the hint tail and the band carry on alone. `q` or the
@@ -826,9 +828,8 @@ Flow 1 · Hidden · a watched bot replied; ⏎ sends it to main; the transcript 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ 
 
-transcript, after ⏎ (ctrl+o shows the whole packet):
-› Prompt from the dialogs-pane plugin
-▣ tg packet → main · Fix · @example_bot #677791 (+1 parent, 3 masked)   ctrl+o shows it
+transcript, after ⏎: the packet as sent, the engine's own row for a plugin's prompt
+(decision 10: the pane cannot fold its own submissions into one row)
 ```
 
 ### 5.2 Bot testing: send, press, record, diff
@@ -1490,6 +1491,21 @@ BotFather runs nothing.
   ⏎ there sends it, as §9 has it. T0d's `unfolded` state and the band's unfolded text go, so a draft
   has one place where it is read and sent, and the band keeps its two rows.
 - Levels by kind follow decision 8: `5` delegate only in person chats.
+- Carried from the tasks before it:
+  - T4b: routing's Draft reply stops waiting behind its notice (`e: open`) and becomes a row of
+    its chat. The notice and the draft layer go.
+  - T5: routing's Draft reply joins the band's draft items once it has a row (until then it counts
+    only in "for you").
+  - T9: For you's draft rows behave as the chat's: ⏎ sends only a draft whose whole text is on
+    screen, `e` edits it in place, `d` drops it.
+  - §4.3: a draft that lands while the cursor stays joins the thread after its newest message,
+    never above the cursor; the card and its steps (options, the warning, the grant) are layers.
+  - T4: `l` from the card opens Activity; ⏎ on a running chat's card stops it and its Worker
+    (`apUnlisten` → `dgStopTasksOf`); `0` stays the kill switch; the task card on top of the
+    thread keeps §5.5's size.
+  - §6 and T9: every new view joins the hotkey sweep, with each of a–z and 0–9 bound exactly once.
+    The letters T1 took from the card's topics, quiet hours, web and commands come back as Selects
+    and digits under `o`.
 - Tests: `a ⏎` starts draft; `a 4` on a chat not allowed fills the prompt and starts nothing; after
   the allow, ⏎ starts; `a 5 ⏎ ⏎` starts with the guard stand-in; a person lists five levels, a
   group four, a channel and a bot two; skip stops only from options with the typed name; draft row
@@ -1549,7 +1565,10 @@ dock, `x` on the newest message moved the first row shown, and the cursor's stop
   (`room` in `draftLine`), so at 64–100 columns most drafts need two ⏎. A draft longer than its
   row is never sent cut short (decision 9): until T3's rows land, ⏎ unfolds it in the band as T0d
   does and the next ⏎ sends; after that, ⏎ opens its row (T3).
-- `UserMessage`: this plugin's packets as one row while not expanded (as the probe did).
+- `UserMessage`: the packet rows stay as the engine draws them (decision 10). The engine asks
+  neither this plugin's `UserMessage` hook nor its `.catch` for the row of its own `$.prompt.submit`
+  (§1), so the hook would never run and goes; `packetRow` would move into a plugin of its own if
+  that ever comes.
 - `/tg help` (the key table from `keys.ts`) and `/tg status` (the summary, what runs) as
   `CommandOutput` cards; the command's description and `argumentHint` list the subcommands.
 - Tests: label text per state; the status line clears without an alarm; queue order and `j`; only
@@ -1766,6 +1785,16 @@ Decided by the owner after the second pass (2026-10-10):
      BotFather stays `ro`.
    - **"Read" means the whole draft is on screen** when ⏎ is pressed. A band item that cuts the
      draft short opens it in the pane first, and ⏎ there sends it.
+
+Decided by the owner during the build (2026-10-11):
+
+10. **The packet stays whole in the transcript.** The engine asks neither this plugin's
+    `UserMessage` hook nor its `.catch` for the row of its own `$.prompt.submit`, while a plugin of
+    another name may rewrite it (§1). Kept: the row as the engine draws it, exactly what main
+    read. Rejected: the rewrite in dialogs-pane-guard, the optional plugin for delegate's grant and
+    hard stops, where a cosmetic rewrite would widen what must be trusted. Deferred: a small plugin
+    of its own, `dialogs-pane-transcript`, if the long rows start to bother the owner. Task T5
+    carries it.
 
 ## 10. Rejected
 
