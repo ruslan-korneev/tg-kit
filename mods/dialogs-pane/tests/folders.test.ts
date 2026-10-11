@@ -397,6 +397,32 @@ describe('passes (§8 T9)', () => {
     await ui.unmount()
   })
 
+  test('a first open whose pass floods for less than the 60 s gap: the list counts down to the retry, which runs once, at 60 s (T7)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    seen.pass.answer = failure(5, 'error: FLOOD_WAIT 40s: Telegram asks to wait before retrying')
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(tgCommand())
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
+    expect(passes(seen)).toBe(1)
+    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 60 s; retrying then.' })).toBeDefined()
+    seen.pass.answer = undefined
+    // Past Telegram's 40 s the pass is still inside its 60 s gap: no pass, and the count goes on.
+    await clock.advance(45_000)
+    await clock.settle()
+    expect(passes(seen)).toBe(1)
+    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 15 s; retrying then.' })).toBeDefined()
+    await clock.advance(15_000)
+    await clock.settle()
+    expect(passes(seen)).toBe(2)
+    expect((await drawnIds(ui)).length).toBeGreaterThan(0)
+    await clock.advance(5_000)
+    await clock.settle()
+    expect(passes(seen)).toBe(2)
+    await ui.unmount()
+  })
+
   test('any other failure keeps the pass and says so with g: retry; the cadence goes on', async ($, on) => {
     const { ui, seen, clock } = await openPane($, on)
     seen.pass.answer = failure(1, 'error: the network is down')

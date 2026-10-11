@@ -5486,7 +5486,9 @@ async function armNext($: $): Promise<void> {
   const cadence = state.startedAt === null ? null : isOpen ? state.startedAt + PASS_GAP_MS : state.hasOpened ? state.startedAt + HIDDEN_GAP_MS : null
   const due = state.queuedFor ?? cadence
   if (due === null || state.isRunning) return
-  const when = Math.max(due, state.floodUntil ?? 0)
+  // Never before passPlan would let it run: a timer due earlier finds the pass not free, skips, and arms
+  // itself again at once (seen live: a 40 s flood wait inside the 60 s gap spun, stuck at `wait 0 s`).
+  const when = Math.max(due, nextAllowed(state))
   const timer = $.clock.after(Math.max(0, when - (await $.clock.now())), () => {
     if (passNext === timer) passNext = null
     requestPass($, 'tick').catch(() => {
@@ -5551,11 +5553,14 @@ async function runPass($: $): Promise<void> {
  */
 async function passFailed($: $, failure: TgFailure, at: number): Promise<void> {
   const floodUntil = failure.kind === 'flood' ? at + failure.seconds * 1000 : null
-  await update($, folders, value => ({
-    ...value,
-    pass: { ...value.pass, isRunning: false, floodUntil: floodUntil ?? value.pass.floodUntil, queuedFor: floodUntil ?? value.pass.queuedFor, error: floodUntil === null ? failureText(failure, at) : null },
-  }))
-  if ((await read($, dialogs)).status !== 'ok') await update($, dialogs, () => failed(failure, at))
+  const state = await update($, folders, value => {
+    // The retry: once the wait is over, and never within 60 s of the failed pass's start (passPlan).
+    const retry = floodUntil === null ? value.pass.queuedFor : Math.max(floodUntil, (value.pass.startedAt ?? at) + PASS_GAP_MS)
+    return { ...value, pass: { ...value.pass, isRunning: false, floodUntil: floodUntil ?? value.pass.floodUntil, queuedFor: retry, error: floodUntil === null ? failureText(failure, at) : null } }
+  })
+  // A list with no rows counts down to that retry itself, not to the end of Telegram's wait.
+  const retryAt = state.pass.queuedFor
+  if ((await read($, dialogs)).status !== 'ok') await update($, dialogs, () => (failure.kind === 'flood' && retryAt !== null ? { status: 'error', failure, retryAt } : failed(failure, at)))
   if (floodUntil !== null) await startCountdown($)
   await refreshStatus($)
 }
