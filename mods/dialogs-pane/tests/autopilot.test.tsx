@@ -84,6 +84,8 @@ function world(
   options: {
     model?: (e: ModelCompleteInput, seen: World) => ModelCompleteResult
     allow?: number[]
+    /** What `tg allow list` answers instead of the list (a failed read). */
+    allowRun?: () => ProcessRunResult | null
     send?: (ran: Ran) => ProcessRunResult
   } = {},
 ): World {
@@ -107,7 +109,7 @@ function world(
     if (cmd === 'dialogs') return { value: json(DIALOGS) }
     if (cmd === 'folders') return { value: folderRun(e.argv, json(DIALOGS)) }
     if (cmd === 'read') return { value: json(seen.history) }
-    if (cmd === 'allow') return { value: json((options.allow ?? [GROUP]).map(id => ({ id }))) }
+    if (cmd === 'allow') return { value: options.allowRun?.() ?? json((options.allow ?? [GROUP]).map(id => ({ id }))) }
     if (cmd === 'send') {
       if (options.send !== undefined) return { value: options.send(ran) }
       const sent = message(nextSent++, ran.stdin ?? '', { out: true })
@@ -343,45 +345,101 @@ describe('auto', () => {
     await band.unmount()
   })
 
-  test('not in allow.toml: auto does not start, and the card says how to add it', async ($, on) => {
-    const clock = mock.clock(on, { now: NOW })
-    const seen = world(on, { allow: [] })
-    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  /** /tg wide, the cursor on Dev Team, a: its card; what the prompt box was filled with. */
+  async function openCard($: Engine, on: On, clock: MockClock, isStarted = false) {
+    const filled: string[] = []
+    if (!isStarted) {
+      on('prompt.fill', (_$, e) => {
+        filled.push(e.text)
+        return { isFilled: true }
+      })
+      await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    }
     await $.command.run(tgCommand('wide'))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: 'key:down' })
     await ui.press({ key: 'key:agent' })
     await clock.settle()
-    expect(await ui.find({ type: 'Text', text: /not in allow\.toml: auto and delegate need it/ })).toBeDefined()
+    return { ui, filled }
+  }
+
+  const allowReads = (seen: World) => seen.runs.filter(one => one.argv[1] === 'allow').length
+
+  test('a 4 on a chat outside allow.toml: the card says why; ⏎ fills `! tg allow add` in the prompt and starts nothing; it never runs it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [] })
+    const { ui, filled } = await openCard($, on, clock)
+    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toContain('· needs allow.toml')
     await ui.press({ key: 'ap:level:auto' })
-    expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first: run `! tg allow add 1002 --yes`/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '✗ Dev Team is not in allow.toml, and auto sends alone' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⏎ puts  ! tg allow add 1002 --yes  in your prompt' })).toBeDefined()
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ allow in the prompt…')
+    await ui.press({ key: 'key:start' })
+    await clock.settle()
+    expect(filled).toEqual(['! tg allow add 1002 --yes'])
+    expect(await ui.find({ type: 'Text', text: '! tg allow add 1002 --yes is in your prompt: Esc, then Enter runs it; this card notices.' })).toBeDefined()
     expect(seen.children).toHaveLength(0)
+    // allow.toml stays the human's: tg allow add never runs from the pane.
+    expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add')).toEqual([])
     await ui.unmount()
   })
 
-  test('added to allow.toml after a refusal: pressing 3 again sets auto and ⏎ starts it, the card still open', async ($, on) => {
+  test('auto stored as the level, the cache says no, the allowlist grows: ⏎ starts after exactly one tg allow list', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const allow: number[] = []
     const seen = world(on, { allow })
-    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('wide'))
-    await clock.settle()
-    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'key:down' })
-    await ui.press({ key: 'key:agent' })
-    await clock.settle()
-    await ui.press({ key: 'ap:level:auto' })
-    expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first/ })).toBeDefined()
-    allow.push(GROUP) // the owner runs `! tg allow add 1002 --yes`
-    const reads = seen.runs.filter(one => one.argv[1] === 'allow').length
-    await ui.press({ key: 'ap:level:auto' })
-    expect(seen.runs.filter(one => one.argv[1] === 'allow').length).toBe(reads + 1)
-    expect(await ui.find({ type: 'Text', text: /must be in allow\.toml first/ })).toBeUndefined()
+    seen.store.set('autopilot.dialogs', { [String(GROUP)]: { peer: { id: GROUP, arg: '1002', label: 'Dev Team', kind: 'supergroup' }, level: 'auto' } })
+    const { ui } = await openCard($, on, clock)
+    // The card opens on the stored level, and its read says no.
+    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toMatch(/^▸ 4: ⟳ auto/)
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ allow in the prompt…')
+    allow.push(GROUP) // the owner runs `! tg allow add 1002 --yes` where the card cannot see it
+    const reads = allowReads(seen)
     await ui.press({ key: 'key:start' })
     await clock.settle()
-    expect(await ui.find({ type: 'Text', text: /Not started/ })).toBeUndefined()
+    expect(allowReads(seen)).toBe(reads + 1)
     expect(seen.children).toHaveLength(1)
+    expect(seen.toasts.at(-1)).toBe('tg: ⟳ auto on for Dev Team. 0 or /tg stop stops every chat.')
+    await ui.unmount()
+  })
+
+  test('a ! command in the prompt reads the allowlist again, so the card shows the allow at once; a session that never read it reads nothing', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const allow: number[] = []
+    const seen = world(on, { allow })
+    const shell = (text: string) => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } } as never)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await shell('<bash-stdout>ok</bash-stdout>')
+    await clock.settle()
+    expect(allowReads(seen)).toBe(0)
+    const { ui } = await openCard($, on, clock, true)
+    await ui.press({ key: 'ap:level:auto' })
+    expect(await ui.find({ type: 'Text', text: '✗ Dev Team is not in allow.toml, and auto sends alone' })).toBeDefined()
+    allow.push(GROUP)
+    await shell('<bash-input>tg allow add 1002 --yes</bash-input>')
+    await shell('<bash-stdout>added 1002</bash-stdout><bash-stderr></bash-stderr>')
+    await clock.settle()
+    expect(await ui.find({ type: 'Text', text: '✓ in allow.toml' })).toBeDefined()
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ start auto')
+    await ui.unmount()
+  })
+
+  test('a failed allowlist read is §7.4\'s error, never "not in allow.toml"; g reads it again', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    let isDown = true
+    const seen = world(on, { allowRun: () => (isDown ? run(1, '', 'error: allow.toml: permission denied') : null) })
+    const { ui } = await openCard($, on, clock)
+    await ui.press({ key: 'ap:level:auto' })
+    expect(await ui.find({ type: 'Text', text: '⚠ could not read allow.toml · g: retry' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /not in allow\.toml/ })).toBeUndefined()
+    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toContain('· could not read allow.toml')
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ read allow.toml again')
+    isDown = false
+    await ui.press({ key: 'key:reload' })
+    await clock.settle()
+    expect(await ui.find({ type: 'Text', text: '✓ in allow.toml' })).toBeDefined()
+    expect(seen.children).toHaveLength(0)
     await ui.unmount()
   })
 

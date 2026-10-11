@@ -38,7 +38,8 @@ Leave out `-g` to install into the current project instead (`.claude/skills/`, `
 
 `mods/dialogs-pane` adds a pane to Claude Code. It lists your Telegram dialogs, sends a message or a
 range as a full `<tg-packet>` to the current agent or to other agents, tests bots (press, record,
-diff, latency), and runs an autopilot per dialog (listen, draft, auto, delegate).
+diff, latency), and gives each chat an agent card: follow, summarize, draft, auto, and delegate in
+person chats.
 `mods/dialogs-pane-guard` enforces the delegate Worker's grant and hard stops. Install it with the
 pane if you plan to use `delegate`. The design is in
 [`docs/design/dialogs-pane.md`](docs/design/dialogs-pane.md).

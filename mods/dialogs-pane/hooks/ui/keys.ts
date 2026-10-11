@@ -10,7 +10,7 @@
 //   that step; no hotkey.
 // - here and now: in the action bar when it is one of this context's verbs,
 //   otherwise a hotkey the frame keeps live without drawing it, and in the menu.
-import type { SheetStep, TgPeerKind } from '../../types'
+import type { CardStep, SheetStep, TgPeerKind } from '../../types'
 
 /** The kinds of chat §4.6 tells apart. */
 export const CHAT_KINDS = ['bot', 'person', 'group', 'channel', 'saved', 'botfather'] as const
@@ -65,6 +65,15 @@ export type MenuGroup = (typeof MENU_GROUPS)[number]
 /** What the cursor row of For you is: a person's chat, an agent's draft, routing's drafted reply, an undo window. */
 export type ForYouRow = 'chat' | 'draft' | 'reply' | 'undo'
 
+/** The agent card while it is up (§5.4, §5.5): its step, and what ⏎ does now. */
+export type CardFacts = {
+  step: CardStep
+  /** The bar's `⏎ …` (`start draft`, `stop auto`, `allow in the prompt…`); null in the options step, where ⏎ belongs to its fields. */
+  enter: string | null
+  /** delegate is picked: `o` opens limits and the safety settings (the danger zone). */
+  isDelegate: boolean
+}
+
 /** What the context holds right now: each fact turns some key on or off. */
 export type KeyFacts = {
   /** Chats listed (chats), messages loaded (chat). */
@@ -91,8 +100,8 @@ export type KeyFacts = {
   summary: 'none' | 'loading' | 'ok' | 'error'
   /** For you: the cursor row's kind; null elsewhere or on an empty view. */
   row: ForYouRow | null
-  /** The card's chat has its agent running: ⏎ stops it. */
-  isAgentOn: boolean
+  /** The agent card's step and ⏎, while it is up; null elsewhere. */
+  card: CardFacts | null
   /** The send sheet's step while it is up (`broadcast`: the legs, from its targets), else null. */
   sheet: SheetStep | 'broadcast' | null
 }
@@ -115,7 +124,7 @@ export const NO_FACTS: KeyFacts = {
   isFollowed: false,
   summary: 'none',
   row: null,
-  isAgentOn: false,
+  card: null,
   sheet: null,
 }
 
@@ -172,6 +181,12 @@ const onRow =
 /** The send sheet's own keys work on its intents; its other steps answer h. */
 const onIntents = (c: KeyContext) => (c.facts.sheet === 'intents' ? null : 'needs the intents (h)')
 
+/** The agent card's keys by step: the ladder's digits pick a rung, the options' toggle a topic (§5.4). */
+const onStep =
+  (...steps: readonly CardStep[]) =>
+  (c: KeyContext) =>
+    c.facts.card === null || steps.includes(c.facts.card.step) ? null : `needs the ${steps[0] ?? 'ladder'} (h)`
+
 export const KEYS = [
   // In the band, the queue's next and previous item (§6 "Band").
   { id: 'down', key: 'j', hotkey: 'j', group: 'move', where: [...MOVES, 'band'], kinds: 'any', label: c => (c.where === 'band' ? 'next' : 'down') },
@@ -181,15 +196,30 @@ export const KEYS = [
     key: 'o',
     hotkey: 'o',
     group: 'chats',
-    where: ['chats', 'folders', 'foryou', 'activity', 'band'],
+    // On the card, o opens its options: limits, quiet hours, topics, the brief, delegate's danger zone (§5.4).
+    where: ['chats', 'folders', 'foryou', 'activity', 'card', 'band'],
     kinds: 'any',
-    label: () => 'open',
-    needs: c => noRows(c.where === 'activity' ? 'something running' : c.where === 'folders' ? 'a folder' : 'a chat in the list')(c) ?? onRow('chat', 'undo')(c),
+    label: c => (c.where !== 'card' ? 'open' : c.facts.card?.isDelegate === true ? 'limits & safety…' : 'limits…'),
+    needs: c =>
+      c.where === 'card'
+        ? onStep('ladder', 'grant')(c)
+        : (noRows(c.where === 'activity' ? 'something running' : c.where === 'folders' ? 'a folder' : 'a chat in the list')(c) ?? onRow('chat', 'undo')(c)),
   },
   // For you: ⏎ on an agent's draft sends it when its whole text is on screen, else shows it whole first (decision 9).
   { id: 'senddraft', key: '⏎', hotkey: null, group: 'chat', where: ['foryou'], kinds: 'any', label: () => 'send draft', needs: onRow('draft') },
   { id: 'send', key: '⏎', hotkey: null, group: 'message', where: ['chat'], kinds: 'any', label: () => 'send…', needs: noRows('a message') },
-  { id: 'start', key: '⏎', hotkey: null, group: 'chat', where: ['card'], kinds: AGENT, label: c => (c.facts.isAgentOn ? 'stop' : 'start') },
+  // The card's ⏎ (§5.4): start or stop the rung picked, or the step it needs first (allow.toml, delegate's warning and grant).
+  {
+    id: 'start',
+    key: '⏎',
+    hotkey: null,
+    group: 'chat',
+    where: ['card'],
+    kinds: AGENT,
+    label: c => c.facts.card?.enter ?? 'start',
+    needs: c => (c.facts.card === null || c.facts.card.enter !== null ? null : 'needs the ladder (h)'),
+    whileWaiting: 'hidden',
+  },
   { id: 'mark', key: 'x', hotkey: 'x', group: 'message', where: ['chat'], kinds: 'any', label: () => 'mark', needs: noRows('a message') },
   { id: 'range', key: 'v', hotkey: 'v', group: 'message', where: ['chat'], kinds: 'any', label: c => (c.facts.isRangeOpen ? 'range end' : 'range'), needs: noRows('a message') },
   { id: 'whole', key: '', hotkey: null, group: 'message', where: ['chat'], kinds: 'any', label: () => 'mark the whole loaded thread', needs: noRows('a message') },
@@ -233,7 +263,8 @@ export const KEYS = [
   { id: 'foryou', key: 'y', hotkey: 'y', group: 'chats', where: [...LISTS, 'folders', 'foryou'], kinds: 'any', label: () => 'for you' },
   // From a chat too: search looks at every chat, not at the one open.
   { id: 'search', key: 's', hotkey: 's', group: 'chats', where: LISTS, kinds: 'any', label: () => 'search', menuLabel: () => 'search every chat' },
-  { id: 'level', key: '1-4', hotkey: null, group: 'chat', where: ['card'], kinds: AGENT, label: () => 'level', isDigits: true },
+  { id: 'level', key: '1-5', hotkey: null, group: 'chat', where: ['card'], kinds: AGENT, label: () => 'level', needs: onStep('ladder'), isDigits: true },
+  { id: 'topics', key: '1-5', hotkey: null, group: 'chat', where: ['card'], kinds: AGENT, label: () => 'ask me first on', needs: onStep('options'), isDigits: true },
   // In a chat, i opens the send sheet on inspect for the cursor's message or the marks.
   {
     id: 'inspect',
@@ -264,10 +295,25 @@ export const KEYS = [
     group: 'chat',
     where: ['chats', 'chat', 'foryou', 'card', 'band'],
     kinds: 'any',
-    label: c => (c.where === 'card' ? 'brief' : c.where === 'band' || (c.where === 'foryou' && c.facts.row === 'draft') ? 'edit' : 'open draft'),
+    label: c =>
+      c.where === 'card'
+        ? c.facts.card?.step === 'grant'
+          ? 'repos'
+          : 'brief'
+        : c.where === 'band' || (c.where === 'foryou' && c.facts.row === 'draft')
+          ? 'edit'
+          : 'open draft',
     // In the lists, e opens the drafted reply its notice names (T4b); nothing to open, nothing listed.
     needs: c =>
-      c.where === 'chats' || c.where === 'chat' ? (c.facts.hasDraft ? null : 'needs a drafted reply') : c.where === 'foryou' ? onRow('draft', 'reply')(c) : null,
+      c.where === 'chats' || c.where === 'chat'
+        ? c.facts.hasDraft
+          ? null
+          : 'needs a drafted reply'
+        : c.where === 'foryou'
+          ? onRow('draft', 'reply')(c)
+          : c.where === 'card'
+            ? onStep('ladder', 'grant', 'options')(c)
+            : null,
     whileWaiting: 'hidden',
   },
   {
@@ -301,7 +347,8 @@ export const KEYS = [
     whileWaiting: 'hidden',
   },
   { id: 'activity', key: 'l', hotkey: 'l', group: 'pane', where: ['chats', 'chat', 'card'], kinds: 'any', label: () => 'activity' },
-  { id: 'reload', key: 'g', hotkey: 'g', group: 'pane', where: [...LISTS, 'folders', 'foryou'], kinds: 'any', label: () => 'reload' },
+  // On the card, g reads allow.toml again (§7.4: a failed read is one red line and `g: retry`).
+  { id: 'reload', key: 'g', hotkey: 'g', group: 'pane', where: [...LISTS, 'folders', 'foryou', 'card'], kinds: 'any', label: c => (c.where === 'card' ? 'read allow.toml again' : 'reload') },
   {
     id: 'back',
     key: 'h',
@@ -347,7 +394,7 @@ export type KeyDef = Def & { id: KeyId }
 const TABLE: readonly KeyDef[] = KEYS
 
 /** The ids a press runs: every key but the digit groups, which their options draw. */
-export type RunKey = Exclude<KeyId, 'folder' | 'level' | 'intents' | 'target'>
+export type RunKey = Exclude<KeyId, 'folder' | 'level' | 'topics' | 'intents' | 'target'>
 
 export function keyDef(id: KeyId): KeyDef {
   const def = TABLE.find(one => one.id === id)
@@ -372,7 +419,8 @@ export function isLive(def: KeyDef, c: KeyContext): boolean {
   return exists(def, c) && needsOf(def, c) === null
 }
 
-export type ShownKey = { id: RunKey; key: string; hotkey: string | null; label: string }
+/** `button`: the bar Button's key where it is not `key:<id>` (the card's ⏎ per step, so a step's ring waits for its own drawing). */
+export type ShownKey = { id: RunKey; key: string; hotkey: string | null; label: string; button?: string }
 
 function shown(def: KeyDef, c: KeyContext): ShownKey {
   // Digit groups never reach here: they are in no bar and pressed by their options.
@@ -417,7 +465,17 @@ function verbs(c: KeyContext): readonly KeyId[] {
     case 'sheet':
       return ['back']
     case 'card':
-      return ['start', 'edit', 'activity', 'back']
+      // §5.4: `⏎ start draft  o: limits…  h: back`; the grant `⏎ start delegate  o: limits & safety…  h: back`.
+      switch (c.facts.card?.step ?? 'ladder') {
+        case 'ladder':
+          return ['start', 'open', 'edit', 'activity', 'back']
+        case 'grant':
+          return ['start', 'edit', 'open', 'back']
+        case 'warning':
+          return ['start', 'back']
+        case 'options':
+          return ['back']
+      }
     case 'activity':
       return ['open', 'dismiss', 'back']
     case 'draft':
@@ -463,8 +521,17 @@ export function actionBar(c: KeyContext, width = Infinity): ShownKey[] {
     if (drop === -1) break
     picked = picked.filter((_, index) => index !== drop)
   }
-  // Chats' ⏎ opens the row and is drawn as `⏎ open` (§4.6); `o` stays a hidden hotkey.
-  return picked.map(id => (id === 'open' ? { ...shown(keyDef(id), c), hotkey: null } : shown(keyDef(id), c)))
+  // Chats' ⏎ opens the row and is drawn as `⏎ open` (§4.6); `o` stays a hidden hotkey. On the card o is its own.
+  // The card's ⏎ is keyed per step: the engine keeps the ring by its place among the stops and lands a focus on a
+  // key the old drawing still has there, so a step that kept `key:start` would leave the ring where the last one put it.
+  const step = c.facts.card?.step ?? 'ladder'
+  return picked.map(id =>
+    id === 'open' && c.where !== 'card'
+      ? { ...shown(keyDef(id), c), hotkey: null }
+      : id === 'start' && step !== 'ladder'
+        ? { ...shown(keyDef(id), c), button: `key:start:${step}` }
+        : shown(keyDef(id), c),
+  )
 }
 
 /**

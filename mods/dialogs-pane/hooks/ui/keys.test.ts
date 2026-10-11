@@ -284,3 +284,32 @@ describe('keys with no meaning here (the T9 review M1)', () => {
     expect(STRAY_KEYS).toHaveLength(36)
   })
 })
+
+describe('the agent card (§5.4, §5.5)', () => {
+  const card = (step: 'ladder' | 'options' | 'warning' | 'grant', enter: string | null = 'start draft', isDelegate = false) => at('card', 'person', { card: { step, enter, isDelegate } })
+
+  test('each step has its bar: ⏎ and o, e on the ladder and the grant; the warning ⏎ and h; the options h', () => {
+    expect(actionBar(card('ladder'), 64).map(key => `${key.hotkey ?? '⏎'} ${key.label}`)).toEqual(['⏎ start draft', 'o limits…', 'e brief', 'h back', 'm menu'])
+    expect(ids(actionBar(card('grant', 'start delegate', true)))).toEqual(['start', 'edit', 'open', 'back', 'menu'])
+    expect(actionBar(card('grant', 'start delegate', true)).find(key => key.id === 'open')?.label).toBe('limits & safety…')
+    expect(actionBar(card('grant', 'start delegate', true)).find(key => key.id === 'edit')?.label).toBe('repos')
+    expect(ids(actionBar(card('warning', 'I understand, set it up', true)))).toEqual(['start', 'back', 'menu'])
+    expect(ids(actionBar(card('options', null)))).toEqual(['back', 'menu'])
+  })
+
+  test("the card's ⏎ is keyed per step, so a step's ring waits for its own drawing", () => {
+    expect(actionBar(card('ladder'))[0]?.button).toBeUndefined()
+    expect(actionBar(card('warning', 'I understand, set it up', true))[0]?.button).toBe('key:start:warning')
+    expect(actionBar(card('grant', 'start delegate', true))[0]?.button).toBe('key:start:grant')
+  })
+
+  test('digits pick a rung on the ladder and toggle a topic in the options; g reads allow.toml again', () => {
+    const live = (id: 'level' | 'topics' | 'reload', c: KeyContext) => exists(keyDef(id), c) && menu(c).flatMap(section => section.entries).find(entry => entry.def.id === id)?.needs === null
+    expect(live('level', card('ladder'))).toBe(true)
+    expect(live('topics', card('ladder'))).toBe(false)
+    expect(live('topics', card('options', null))).toBe(true)
+    expect(live('level', card('options', null))).toBe(false)
+    expect(keyDef('reload').label(card('ladder'))).toBe('read allow.toml again')
+    expect(ids(hiddenKeys(card('ladder'), new Set(['o', 'e', 'h', 'm'])))).toContain('reload')
+  })
+})

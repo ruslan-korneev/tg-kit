@@ -5,7 +5,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { ApDialog, PeerRef } from '../../types'
 import { msg } from '../packet/fixtures'
 import { NO_BURST, afterCheck, gate, onIncoming, onTyping, wakeAt } from './burst'
-import { defaultDialog, isQuiet, parseDialogs, parseQuiet, parseRate, stepGap, stepRate, stepThreshold, toggleTopic } from './config'
+import { defaultDialog, isQuiet, parseDialogs, parseQuiet, toggleTopic } from './config'
 import { parseChecked, parseSpoken, replyPrompt, speakerSystem } from './speaker'
 
 const PEER: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
@@ -14,21 +14,6 @@ const first = msg({ id: 1, text: 'is it merged?' })
 const second = msg({ id: 2, text: 'and deployed?' })
 
 describe('settings', () => {
-  test('+/- walk the ladders; ∞ is the top of the rate', () => {
-    expect(stepRate(50, 1)).toBe(100)
-    expect(stepRate(200, 1)).toBeNull()
-    expect(stepRate(null, -1)).toBe(200)
-    expect(stepRate(1, -1)).toBe(1)
-    expect(stepRate(42, 1)).toBe(50)
-    expect(stepGap(20, -1)).toBe(15)
-    expect(stepGap(120, 1)).toBe(120)
-    expect(stepThreshold(0.8, 1)).toBe(0.85)
-    expect(stepThreshold(1, 1)).toBe(1)
-    expect(parseRate('∞')).toEqual({ ok: true, value: null })
-    expect(parseRate('7')).toEqual({ ok: true, value: 7 })
-    expect(parseRate('-3')).toEqual({ ok: false })
-  })
-
   test('quiet hours cross midnight; off by default', () => {
     expect(defaultDialog(PEER).quiet).toBeNull()
     const quiet = parseQuiet('22:00-08:00')

@@ -1,12 +1,12 @@
 // The autopilot's per-dialog settings (docs/design/dialogs-pane.md §6 "Levels"
-// and "Limits"): defaults, the +/- ladders of the card, quiet hours, and the
-// narrowing of what $.store hands back. Pure.
+// and "Limits"): defaults, quiet hours, and the narrowing of what $.store hands
+// back. Pure. The card's Selects offer their values (./components).
 import type { ApBrief, ApDialog, ApLevel, ApTopic, PeerRef, TgPeerKind } from '../../types'
 
 export const AP_LEVELS = ['listen', 'draft', 'auto', 'delegate'] as const satisfies readonly ApLevel[]
 export const AP_TOPICS = ['money', 'dates', 'promises', 'opinions', 'personal'] as const satisfies readonly ApTopic[]
 
-export const LEVEL_GLYPH = { listen: '◉', draft: '✎', auto: '⟳', delegate: '⚡' } as const satisfies Record<ApLevel, string>
+export const LEVEL_GLYPH = { listen: '◉', draft: '✎', auto: '⟳', delegate: '↯' } as const satisfies Record<ApLevel, string>
 
 export const TOPIC_LABEL = {
   money: 'money',
@@ -16,17 +16,9 @@ export const TOPIC_LABEL = {
   personal: 'personal data',
 } as const satisfies Record<ApTopic, string>
 
-/** Replies per hour, `-`/`+` in the card; Infinity stands for ∞ (stored as null). */
-const RATE_STEPS: readonly number[] = [1, 2, 3, 5, 10, 20, 30, 50, 100, 200, Infinity]
-/** The burst gap, in seconds. */
-const GAP_STEPS: readonly number[] = [5, 10, 15, 20, 30, 45, 60, 120]
-const CONF_STEP = 0.05
-
 export const DEFAULT_PER_HOUR = 50
 export const DEFAULT_GAP_S = 20
 export const DEFAULT_THRESHOLD = 0.8
-/** `t` in the card turns quiet hours on with this range; the field changes it. */
-export const DEFAULT_QUIET = { from: 22 * 60, to: 8 * 60 } as const
 
 const EMPTY_BRIEF: ApBrief = { tone: '', promises: '', facts: '' }
 
@@ -43,36 +35,9 @@ export function defaultDialog(peer: PeerRef): ApDialog {
   }
 }
 
-/** The next rung up or down; a value off the ladder (typed in the card) moves to the nearest rung that way. */
-function step(steps: readonly number[], current: number, by: 1 | -1): number {
-  const next = by === 1 ? steps.find(one => one > current) : steps.findLast(one => one < current)
-  return next ?? current
-}
-
-export function stepRate(perHour: number | null, by: 1 | -1): number | null {
-  const next = step(RATE_STEPS, perHour ?? Infinity, by)
-  return next === Infinity ? null : next
-}
-
-export function stepGap(gapS: number, by: 1 | -1): number {
-  return step(GAP_STEPS, gapS, by)
-}
-
-export function stepThreshold(threshold: number, by: 1 | -1): number {
-  return Math.round(Math.min(1, Math.max(0, threshold + by * CONF_STEP)) * 100) / 100
-}
-
 /** `50/h`, `∞/h`. */
 export function rateText(perHour: number | null): string {
   return `${perHour === null ? '∞' : perHour}/h`
-}
-
-/** What the card's field takes: a whole number ≥ 1, or `∞` / `off` / `0` for no limit. */
-export function parseRate(text: string): { ok: true; value: number | null } | { ok: false } {
-  const typed = text.trim().toLowerCase()
-  if (typed === '∞' || typed === 'off' || typed === 'inf' || typed === '0') return { ok: true, value: null }
-  if (!/^\d+$/.test(typed)) return { ok: false }
-  return { ok: true, value: Number(typed) }
 }
 
 export function toggleTopic(topics: readonly ApTopic[], topic: ApTopic): ApTopic[] {

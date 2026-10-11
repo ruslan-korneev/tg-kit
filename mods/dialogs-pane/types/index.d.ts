@@ -406,9 +406,18 @@ export type BotTest = {
 
 /**
  * listen ◉ reads and summarizes; draft ✎ writes into the band; auto ⟳ sends
- * within the limits; delegate ⚡ also hands work to a Worker agent (── delegate ──).
+ * within the limits; delegate ↯ also hands work to a Worker agent (── delegate ──).
  */
 export type ApLevel = 'listen' | 'draft' | 'auto' | 'delegate'
+
+/**
+ * The agent card's ladder (dialogs-pane-ux.md §5.4): follow ⌁ (the pin), then
+ * the autopilot's levels; `listen` is drawn as summarize. One rung per chat.
+ */
+export type ApRung = 'follow' | ApLevel
+
+/** The card's steps, each a layer over the lower part (dock) or the body (inline): the ladder, `o`'s options, delegate's warning and grant. */
+export type CardStep = 'ladder' | 'options' | 'warning' | 'grant'
 
 /** Escalation topics: a reply touching an enabled one goes to you as a draft. */
 export type ApTopic = 'money' | 'dates' | 'promises' | 'opinions' | 'personal'
@@ -484,7 +493,11 @@ export type ApNote = { seq: number; peer: PeerRef; text: string }
 
 export type ApPhase = 'listening' | 'gathering' | 'typing' | 'thinking' | 'checking' | 'sending'
 
-export type ApView = { kind: 'none' } | { kind: 'card'; dialogId: number; notice: string | null }
+/**
+ * The agent card while it is open: its step, the rung picked (digits pick, ⏎
+ * starts or stops it), a notice, and the step `o`'s options go back to.
+ */
+export type ApView = { kind: 'none' } | { kind: 'card'; dialogId: number; step: CardStep; pick: ApRung; notice: string | null; back: 'ladder' | 'grant' }
 
 /** The newest auto reply while `u` may still delete it. */
 export type ApUndoWindow = { seq: number; peer: PeerRef; ids: number[]; text: string; confidence: number | null; until: number }

@@ -67,7 +67,7 @@ export const STOP_LABEL = '0: stop all'
 
 export type StripItem = { key: string; text: string; isHeld: boolean }
 
-/** `⌁ @example_bot → main`, `⟳ Dev Team`, `⚡ Contact B ⏸`: one item per running chat. */
+/** `⌁ @example_bot → main`, `⟳ Dev Team`, `↯ Contact B ⏸`: one item per running chat. */
 export function stripItems(rows: readonly RunRow[]): StripItem[] {
   return rows.filter(isRunning).map(row => {
     const to = row.agent === null && row.follow !== null ? ` → ${row.follow.to}` : ''

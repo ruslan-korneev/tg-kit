@@ -32,7 +32,7 @@ describe('the footer label (§4.5)', () => {
     expect(footerLabel({ kind: 'loading' }, NONE)).toBe('tg …')
     expect(footerLabel({ kind: 'count', unread: 0 }, NONE)).toBe('tg')
     expect(footerLabel({ kind: 'count', unread: 22 }, NONE)).toBe('tg 22')
-    expect(footerLabel({ kind: 'count', unread: 22 }, { levels: '⌁1 ⟳1 ⚡1', watched: '◎ 3 new', forYou: '2 for you' })).toBe('tg 22 · ⌁1 ⟳1 ⚡1 · ◎ 3 new · 2 for you')
+    expect(footerLabel({ kind: 'count', unread: 22 }, { levels: '⌁1 ⟳1 ↯1', watched: '◎ 3 new', forYou: '2 for you' })).toBe('tg 22 · ⌁1 ⟳1 ↯1 · ◎ 3 new · 2 for you')
     expect(footerLabel({ kind: 'count', unread: 0 }, { ...NONE, forYou: '1 for you' })).toBe('tg · 1 for you')
     expect(footerLabel({ kind: 'failed', isLoggedOut: true }, NONE)).toBe('tg ⚠ not logged in')
     expect(footerLabel({ kind: 'failed', isLoggedOut: false }, { ...NONE, levels: '⟳1' })).toBe('tg ⚠ · ⟳1')
@@ -49,8 +49,8 @@ describe('the status line holds alarms only (§4.1)', () => {
   })
 
   test('a hard stop waiting, skipped stops, not logged in; together in that order', () => {
-    expect(statusAlarm({ hold: 'tg ⏸ HARD STOP publish: git push · ⚡ Contact B · answer in the dialog', noStops: null, isLoggedOut: false })).toBe(
-      'tg ⏸ HARD STOP publish: git push · ⚡ Contact B · answer in the dialog',
+    expect(statusAlarm({ hold: 'tg ⏸ HARD STOP publish: git push · ↯ Contact B · answer in the dialog', noStops: null, isLoggedOut: false })).toBe(
+      'tg ⏸ HARD STOP publish: git push · ↯ Contact B · answer in the dialog',
     )
     expect(statusAlarm({ hold: null, noStops: '⚠ no stops: publish', isLoggedOut: false })).toBe('tg ⚠ no stops: publish')
     expect(statusAlarm({ hold: null, noStops: null, isLoggedOut: true })).toBe('tg ⚠ not logged in: ! tg login')

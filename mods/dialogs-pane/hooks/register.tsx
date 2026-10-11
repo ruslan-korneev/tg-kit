@@ -90,6 +90,7 @@ import {
   hiddenKeys,
   menu as menuSections,
   type ChatKind,
+  type CardFacts,
   type KeyContext,
   type RunKey,
   type Seat,
@@ -170,6 +171,7 @@ const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
 
 export const register: Register = (on, options) => {
   configureAutopilot(options) // ── autopilot ──
+  registerAutopilot(on) // ── autopilot ──
   configureDelegate(options) // ── delegate ──
   registerDelegate(on) // ── delegate ──
   registerTriage(on)
@@ -697,7 +699,7 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       isFollowed: peer !== undefined && (await read($, pins)).some(pin => pin.peer.id === peer.id),
       summary: peer !== undefined && tri.summary?.peerId === peer.id ? tri.summary.status : 'none',
       row: where === 'foryou' ? await forYouRowKind($) : null, // ── folders ──
-      isAgentOn: view.kind === 'card' && pilot.running.includes(view.dialogId),
+      card: where === 'card' && view.kind === 'card' && peer !== undefined ? await cardFacts($, view, peer) : null, // ── autopilot ──
       sheet: sheetStepOf(await read($, overlay)),
     },
   }
@@ -715,6 +717,7 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return
     }
     case 'open':
+      if (where === 'card') return apStep($, 'options') // ── autopilot ── o: the card's options
       if (where === 'activity') return openActivityRow($, (await read($, activity))?.cursor ?? 0)
       return where === 'folders' ? openFolderAt($, (await read($, nav)).folderCursor) : openAtCursor($)
     case 'senddraft':
@@ -722,10 +725,10 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'send':
       return openSheet($)
     case 'start': {
-      const view = (await read($, autopilot)).view
-      const dialog = view.kind === 'card' ? await apDialog($, view.dialogId) : null
-      if (dialog !== null) await apToggleRun($, dialog)
-      return ringCursor($)
+      await apCardEnter($) // ── autopilot ──
+      // A started rung closes the card: the ring goes back to the cursor row. A card still up keeps it where its step put it.
+      if ((await read($, autopilot)).view.kind === 'none') await ringCursor($)
+      return
     }
     case 'mark':
       await selectAtCursor($, 'toggle')
@@ -777,7 +780,7 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return startSearch($)
     case 'edit':
       if (where === 'foryou') return editAgentRow($) // ── folders ──
-      return where === 'card' ? moveRing($, 'ap:tone') : openDraft($)
+      return where === 'card' ? apEditField($) : openDraft($)
     case 'dismiss':
       if (where === 'foryou' && (await cursorRow($))?.kind === 'agent') return dropAgentRow($) // ── folders ──
       if (where === 'card') return apNotice($, null)
@@ -792,6 +795,7 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'activity':
       return openActivity($)
     case 'reload':
+      if (where === 'card') return loadAllow($) // ── autopilot ── g: read allow.toml again (§7.4)
       return reload($)
     case 'back':
       return back($)
@@ -820,7 +824,9 @@ async function back($: $): Promise<void> {
   if ((await read($, nav)).isMenuOpen) {
     await update($, nav, value => ({ ...value, isMenuOpen: false }))
   } else if (where === 'card') {
-    await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
+    // ── autopilot ── one step back; only the ladder closes the card, and the ring then goes back to the cursor row.
+    await apCardBack($)
+    if ((await read($, autopilot)).view.kind === 'card') return
   } else if (where === 'sheet') {
     const shown = await read($, overlay)
     // Broadcast came from the targets, and every other step from the intents: back one step.
@@ -1002,8 +1008,12 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
       return 'tg › for you'
     case 'chat':
       return `tg › ${label}`
-    case 'card':
-      return `tg › agent for ${label}`
+    case 'card': {
+      // ── autopilot ── the card's step after its chat: delegate's warning and grant, `o`'s options.
+      const view = (await read($, autopilot)).view
+      const step = view.kind === 'card' ? view.step : 'ladder'
+      return `tg › agent for ${label}${step === 'options' ? ' · options' : step === 'ladder' ? '' : ` · ${LEVEL_GLYPH.delegate} delegate`}`
+    }
     case 'sheet': {
       // The intents sit under the open chat, which the header names (§5.1); the other steps say what they are.
       const shown = await read($, overlay)
@@ -1052,7 +1062,10 @@ async function summaryCounts($: $) {
 
 async function chipsOf($: $): Promise<{ text: string; color?: string }[]> {
   const recording = (await read($, bottest)).recording
-  return recording === null ? [] : [{ text: `${GLYPH.unread} rec ${recording.steps.length}`, color: TOKEN.danger }]
+  // ── autopilot ── the card says whether its chat runs a rung: `○ off`, `● draft · listening`.
+  const pilot = await read($, autopilot)
+  const card = pilot.view.kind === 'card' ? [cardChip(await runningRungOf($, pilot.view.dialogId), pilot.phase[String(pilot.view.dialogId)])] : []
+  return [...card, ...(recording === null ? [] : [{ text: `${GLYPH.unread} rec ${recording.steps.length}`, color: TOKEN.danger }])]
 }
 
 /**
@@ -1125,7 +1138,7 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
   const { Text } = els
   switch (where) {
     case 'card': {
-      const view = await drawAutopilotView($, els, width) // ── autopilot ──
+      const view = await drawCard($, els) // ── autopilot ──
       return view === null ? [] : [view]
     }
     case 'activity':
@@ -1168,6 +1181,13 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
 
 /** `─ @example_bot · bot · ◎ watched ─`: the open chat, its kind, and what is on it. */
 async function dividerLabel($: $): Promise<string> {
+  // ── autopilot ── over the lower part, the card asks its one question (§5.4).
+  const view = (await read($, autopilot)).view
+  const carded = view.kind === 'card' ? await apDialog($, view.dialogId) : null
+  if (view.kind === 'card' && carded !== null) {
+    const name = carded.peer.label
+    return view.step === 'ladder' ? `what may an agent do in ${name}?` : view.step === 'options' ? `options for ${name}` : view.step === 'warning' ? `${LEVEL_GLYPH.delegate} delegate ${name}?` : `${name} · ${LEVEL_GLYPH.delegate} delegate`
+  }
   const open = await read($, thread)
   if (open === null) return 'no chat open'
   const kind = CHAT_KIND_LABEL[chatKind(open.peer.kind, isBotFather(open.peer.arg))]
@@ -2253,7 +2273,11 @@ async function setWatch($: $, peerId: number, watch: PinWatch): Promise<void> {
   await update($, pins, value => value.map(pin => (pin.peer.id === peerId ? { ...pin, watch } : pin)))
 }
 
-/** `p`: pin the open dialog to the route's agent (main unless one agent is picked); again unpins. */
+/**
+ * `p`: follow the open chat to the route's agent (main unless one agent is
+ * picked), the ladder's first rung; again stops it. One rung per chat
+ * (decision 2): a chat whose autopilot runs is switched on its card.
+ */
 async function togglePin($: $): Promise<void> {
   const open = await read($, thread)
   if (open === null) {
@@ -2265,25 +2289,36 @@ async function togglePin($: $): Promise<void> {
     $.ui.toast(`tg: ${open.peer.label} unpinned.`)
     return
   }
+  const running = await runningRungOf($, open.peer.id) // ── autopilot ──
+  if (running !== null) return say($, 'info', `p: ${open.peer.label} runs ${RUNG_GLYPH[running]} ${RUNG_NAME[running]} · a: its card switches to follow`)
+  const pin = await followPeer($, open.peer)
+  const chosen = await read($, route)
+  const where = pin.to.kind === 'main' ? 'main, every turn' : pin.to.label
+  const note = chosen.kind === 'one' && chosen.to.kind !== 'new' ? '' : ' (pins go to main or one named agent)'
+  $.ui.toast(`tg: ${GLYPH.pinned} ${open.peer.label} pinned → ${where}${note}. p again unpins.`)
+}
+
+/** The chat follows the route's agent: its new messages, from the newest one known, reach main's context or that agent. */
+async function followPeer($: $, peer: PeerRef): Promise<Pin> {
   const chosen = await read($, route)
   const to: Pin['to'] =
     chosen.kind === 'one' && chosen.to.kind === 'agent'
       ? { kind: 'agent', agentId: chosen.to.agentId, label: chosen.to.label }
       : { kind: 'main' }
-  const newest = (await threadMessages($)).reduce((top, message) => Math.max(top, message.id), 0)
+  const open = await read($, thread)
+  const loadedNewest = open?.peer.id === peer.id ? (await threadMessages($)).reduce((top, message) => Math.max(top, message.id), 0) : 0
+  const newest = loadedNewest !== 0 ? loadedNewest : ((await knownDialogs($)).find(one => one.id === peer.id)?.last_id ?? 0)
   const pin: Pin = {
-    peer: open.peer,
+    peer,
     to,
     lastId: newest === 0 ? null : newest,
     messages: [],
     unsent: [],
     watch: { status: 'starting' },
   }
-  await update($, pins, value => [...value, pin])
+  await update($, pins, value => [...value.filter(one => one.peer.id !== peer.id), pin])
   await startPinWatch($, pin)
-  const where = to.kind === 'main' ? 'main, every turn' : to.label
-  const note = chosen.kind === 'one' && chosen.to.kind !== 'new' ? '' : ' (pins go to main or one named agent)'
-  $.ui.toast(`tg: ${GLYPH.pinned} ${open.peer.label} pinned → ${where}${note}. p again unpins.`)
+  return pin
 }
 
 async function unpin($: $, peerId: number): Promise<void> {
@@ -2793,22 +2828,21 @@ async function drawBottestDiff($: $, els: Els, width: number, rows: number): Pro
 // kill switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
 import type { PluginOptions } from 'claude-code'
 
-import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
-import { AutopilotCard, type AllowView } from './autopilot/components'
+import type { ApDialog, ApDraft, ApOutcome, ApPhase, ApRung, ApTopic, ApUndo, ApView, Autopilot, CardStep } from '../types'
+import { CardLadder, CardOptions, cardChip } from './autopilot/components'
+import { AP_LEVELS, LEVEL_GLYPH, defaultDialog, parseDialogs as parseApDialogs, parseQuiet, rateText, toggleTopic } from './autopilot/config'
 import {
-  AP_LEVELS,
-  LEVEL_GLYPH,
-  defaultDialog,
-  parseDialogs as parseApDialogs,
-  parseQuiet,
-  parseRate,
-  rateText,
-  stepGap,
-  stepRate,
-  stepThreshold,
-  toggleTopic,
-  DEFAULT_QUIET,
-} from './autopilot/config'
+  RUNG_GLYPH,
+  RUNG_NAME,
+  allowCommand,
+  actionLabel,
+  cardAction,
+  firstPick,
+  ladderFor,
+  runningRung,
+  type AllowView,
+  type CardAction,
+} from './autopilot/ladder'
 import { MAX_REGENERATIONS, NO_BURST, afterCheck, consume, gate, onDeleted, onEdited, onIncoming, onTyping, sentLastHour, wakeAt, type AfterCheck, type Burst } from './autopilot/burst'
 import { NO_AUTOPILOT, UNDO_MS, addEntry as addApEntry, logCheck, patchEntry, putDraft, undoLeft } from './autopilot/ledger'
 import {
@@ -2835,6 +2869,29 @@ const AP_HUB = 'autopilot'
 
 /** The mod option `speakerModel`, read at each load (SPEAKER_MODEL says why the default). */
 let speakerModel = SPEAKER_MODEL
+
+/**
+ * The allowlist is read again after each `!` command the owner runs (§5.4, T3):
+ * the card's `allow in the prompt…` puts `! tg allow add` there, and the card
+ * shows the chat in allow.toml as soon as it ran. Only once the pane has read
+ * it at all, so a session that never opens the pane runs no tg for it.
+ */
+function registerAutopilot(on: On): void {
+  on('session.append', async ($, e, next) => {
+    const done = await next(e)
+    if (isShellOutput(e.message) && (await read($, bottest)).allow.status !== 'idle') {
+      loadAllow($).catch(() => {
+        // loadAllow records its own failure, and the card shows it (§7.4).
+      })
+    }
+    return done
+  }).catch(($, e, next) => next(e))
+}
+
+/** A `!` command's output row, as the engine records it in the transcript (`<bash-stdout>`, `<bash-stderr>`). */
+function isShellOutput(message: { type: string; content: readonly { type: string; [field: string]: unknown }[] }): boolean {
+  return message.type === 'user' && message.content.some(block => block.type === 'text' && typeof block.text === 'string' && /<bash-(stdout|stderr)>/.test(block.text))
+}
 
 function configureAutopilot(options: PluginOptions): void {
   const chosen = options.speakerModel
@@ -2871,7 +2928,8 @@ async function startAutopilot($: $): Promise<void> {
     running: value.running.filter(id => dialogs[String(id)] !== undefined),
     phase: {},
     // A card for a dialog no longer stored closes; so does the ledger tab a reload across T4 may still hold.
-    view: value.view.kind === 'card' && dialogs[String(value.view.dialogId)] !== undefined ? value.view : { kind: 'none' },
+    // A card held across a reload from before T3 has no step: it closes too.
+    view: value.view.kind === 'card' && dialogs[String(value.view.dialogId)] !== undefined && typeof value.view.step === 'string' ? value.view : { kind: 'none' },
   }))
   // ── delegate ── a reload keeps this session's leases; one another session took meanwhile stops here.
   const kept = await apKeepLeases($, state.running)
@@ -2919,18 +2977,11 @@ function apAllowView(peer: PeerRef, allow: BotTest['allow']): AllowView {
   return blocked?.kind === 'botfather' ? { kind: 'error', text: readOnlyText(blocked) } : { kind: 'ok', isAllowed: blocked === null }
 }
 
-/**
- * Whether tg's guard lets writes to the dialog through without --yes; the allowlist is read when not at hand.
- * `reread` reads it again before answering no, so the card's "press 3 again" sees a `! tg allow add` run since.
- */
-async function apIsAllowed($: $, peer: PeerRef, reread = false): Promise<boolean> {
-  const allowed = async () => {
-    const view = apAllowView(peer, (await read($, bottest)).allow)
-    return view.kind === 'ok' && view.isAllowed
-  }
+/** Whether tg's guard lets an agent's writes to the dialog through without --yes; the allowlist is read when not at hand. */
+async function apIsAllowed($: $, peer: PeerRef): Promise<boolean> {
   if ((await read($, bottest)).allow.status !== 'ok') await loadAllow($)
-  else if (reread && !(await allowed())) await loadAllow($)
-  return allowed()
+  const view = apAllowView(peer, (await read($, bottest)).allow)
+  return view.kind === 'ok' && view.isAllowed
 }
 
 // --- listening: the watch hub ---
@@ -3377,13 +3428,25 @@ async function apOpen($: $, peer: PeerRef): Promise<void> {
   await openThread($, listed ?? dialogOfPeer(peer))
 }
 
-// --- the card, the pane's row, the list marks ---
+// --- the agent card (dialogs-pane-ux.md §5.4, §5.5): the ladder, its options, delegate's warning and grant ---
 
-/** `a`: the card for the open thread's dialog, or the one at the cursor; again closes it. */
+/** The chat kind the card's ladder is read for. */
+function cardKind(peer: PeerRef): ChatKind {
+  return chatKind(peer.kind, isBotFather(peer.arg))
+}
+
+/** The rung running in a chat: its follow (pin), or its autopilot level (one at most, decision 2). */
+async function runningRungOf($: $, dialogId: number): Promise<ApRung | null> {
+  const pilot = await read($, autopilot)
+  const level = pilot.running.includes(dialogId) ? (pilot.dialogs[String(dialogId)]?.level ?? null) : null
+  return runningRung((await read($, pins)).some(pin => pin.peer.id === dialogId), level)
+}
+
+/** `a`: the card for the open thread's chat, or the one at the cursor; again closes it. */
 async function apToggleCard($: $): Promise<void> {
   if ((await read($, autopilot)).view.kind !== 'none') {
     await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
-    return
+    return ringCursor($)
   }
   const peer = await watchTarget($)
   if (peer === undefined) {
@@ -3393,23 +3456,74 @@ async function apToggleCard($: $): Promise<void> {
   await apOpenCard($, peer)
 }
 
-/** The agent card of `peer` (from `a`, or ⏎ on a running row in Activity). */
+/**
+ * The agent card of `peer` (from `a`, or ⏎ on a running row in Activity), on
+ * the ladder with the rung that runs (or the stored one) picked. allow.toml is
+ * read again on every open, so an allow added in the prompt since shows at once.
+ */
 async function apOpenCard($: $, peer: PeerRef): Promise<void> {
-  await update($, autopilot, value => ({
-    ...value,
-    dialogs: value.dialogs[String(peer.id)] === undefined ? { ...value.dialogs, [String(peer.id)]: defaultDialog(peer) } : value.dialogs,
-    view: { kind: 'card', dialogId: peer.id, notice: null },
-  }))
-  // ⏎ starts or stops: the ring waits on the bar's `⏎ start` (design §3.3).
+  const ladder = ladderFor(cardKind(peer))
+  if (ladder.length === 0) return
+  const running = await runningRungOf($, peer.id)
+  await update($, autopilot, value => {
+    const stored = value.dialogs[String(peer.id)] ?? defaultDialog(peer)
+    return {
+      ...value,
+      dialogs: value.dialogs[String(peer.id)] === undefined ? { ...value.dialogs, [String(peer.id)]: stored } : value.dialogs,
+      view: { kind: 'card', dialogId: peer.id, step: 'ladder', pick: firstPick(ladder, running, stored.level), notice: null, back: 'ladder' },
+    }
+  })
+  // ⏎ starts or stops: the ring waits on the bar's `⏎ start …` (design §3.3).
   await moveRing($, 'key:start')
-  // Fresh: an allow added in the prompt since the last read shows at once.
   loadAllow($).catch(() => {
-    // loadAllow records its own failure, and the card shows it.
+    // loadAllow records its own failure, and the card shows it (§7.4).
   })
 }
 
 async function apNotice($: $, notice: string | null): Promise<void> {
   await update($, autopilot, value => (value.view.kind === 'card' ? { ...value, view: { ...value.view, notice } } : value))
+}
+
+/** The card's step: its ⏎ is keyed per step (./ui/keys), so the ring waits for the step's own drawing. */
+async function apStep($: $, step: CardStep, ring?: string): Promise<void> {
+  const view = await update($, autopilot, value => (value.view.kind === 'card' ? { ...value, view: { ...value.view, step, notice: null, back: step === 'options' ? (value.view.step === 'grant' ? 'grant' : 'ladder') : value.view.back } } : value))
+  if (view.view.kind !== 'card') return
+  if (step === 'grant') await dgFillRepos($, view.view.dialogId) // ── delegate ──
+  await moveRing($, ring ?? (step === 'options' ? 'ap:rate' : step === 'ladder' ? 'key:start' : `key:start:${step}`))
+}
+
+/** `e` on the card: the repos field on the grant, else the brief's first field, in the options. */
+async function apEditField($: $): Promise<void> {
+  const view = (await read($, autopilot)).view
+  if (view.kind !== 'card' || view.step === 'warning') return
+  if (view.step === 'grant') return moveRing($, 'dg:repos')
+  if (view.step === 'options') return moveRing($, 'ap:tone')
+  await apStep($, 'options', 'ap:tone')
+}
+
+/** The card's facts for the key table: its step, and what ⏎ does now (the bar's label). */
+async function cardFacts($: $, view: Extract<ApView, { kind: 'card' }>, peer: PeerRef): Promise<CardFacts> {
+  const action = await apCardActionNow($, view, peer)
+  return { step: view.step, enter: action.kind === 'none' ? null : actionLabel(action, view.pick, view.step), isDelegate: view.pick === 'delegate' }
+}
+
+/** `h` on the card: the options back to where `o` came from, the warning and the grant back to the ladder, the ladder closes. */
+async function apCardBack($: $): Promise<void> {
+  const view = (await read($, autopilot)).view
+  if (view.kind !== 'card') return
+  if (view.step === 'ladder') {
+    await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
+    return
+  }
+  await apStep($, view.step === 'options' ? view.back : 'ladder')
+}
+
+/** A digit on the ladder: picks the rung; 5 goes on to delegate's warning (once per chat) or its grant. */
+async function apPick($: $, rung: ApRung): Promise<void> {
+  const view = (await read($, autopilot)).view
+  if (view.kind !== 'card') return
+  await update($, autopilot, value => (value.view.kind === 'card' ? { ...value, view: { ...value.view, pick: rung, notice: null } } : value))
+  if (rung === 'delegate') await apStep($, (await dgSettings($, view.dialogId)).isWarned ? 'grant' : 'warning') // ── delegate ──
 }
 
 /** A change from the card: kept in $.state and $.store at once. */
@@ -3421,46 +3535,102 @@ async function apEdit($: $, dialogId: number, change: (dialog: ApDialog) => ApDi
   await $.store.set(STORE_AUTOPILOT, next.dialogs)
 }
 
-async function apSetLevel($: $, dialog: ApDialog, level: ApLevel): Promise<void> {
-  if ((level === 'auto' || level === 'delegate') && !(await apIsAllowed($, dialog.peer, true))) {
-    await apNotice($, `${level} sends by itself, so ${dialog.peer.arg} must be in allow.toml first: run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, then press ${level === 'auto' ? 3 : 4} again.`)
-    return
-  }
-  if (level === 'delegate' && !(await dgWarned($, dialog))) return // ── delegate ── the one-time warning
-  await apNotice($, null)
-  await apEdit($, dialog.peer.id, one => ({ ...one, level }))
+/** What the card's ⏎ does now, from what is held (the allowlist as last read, the guard's last answer). */
+async function apCardActionNow($: $, view: Extract<ApView, { kind: 'card' }>, peer: PeerRef): Promise<CardAction> {
+  return cardAction({
+    step: view.step,
+    pick: view.pick,
+    running: await runningRungOf($, peer.id),
+    allow: apAllowView(peer, (await read($, bottest)).allow),
+    isGuardUp: (await dgGuardArmed($)) !== null, // ── delegate ──
+    isWarned: (await dgSettings($, peer.id)).isWarned, // ── delegate ──
+  })
 }
 
-/** ⏎ in the card: start the dialog (auto needs allow.toml), or stop it. */
-async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
+/**
+ * ⏎ on the card: stop the rung that runs, start or switch to the one picked,
+ * or the step it needs first. A rung that sends alone reads allow.toml once
+ * more before it says no (§2.4's stale cache, T0c), so an allow run in the
+ * prompt since is seen; a read that failed is read again, as `g` does.
+ */
+async function apCardEnter($: $): Promise<void> {
+  const view = (await read($, autopilot)).view
+  if (view.kind !== 'card') return
+  const dialog = await apDialog($, view.dialogId)
+  if (dialog === null) return
+  const { peer } = dialog
+  let action = await apCardActionNow($, view, peer)
+  const isStale = action.kind === 'allow' || action.kind === 'retry' || action.kind === 'reading'
+  if (isStale) {
+    await loadAllow($)
+    action = await apCardActionNow($, view, peer)
+  }
+  switch (action.kind) {
+    case 'none':
+    case 'reading':
+    case 'retry':
+      return
+    case 'warn':
+      return apStep($, 'warning')
+    case 'grant':
+      if (view.step === 'warning') await dgEdit($, peer.id, dg => ({ ...dg, isWarned: true })) // ── delegate ── the owner read the warning
+      return apStep($, 'grant')
+    case 'allow': {
+      // allow.toml stays the human's (decision 1): the command waits in the prompt for them to run.
+      const command = allowCommand(peer.arg)
+      const filled = await $.prompt.fill({ text: command })
+      return apNotice($, filled.isFilled ? `${command} is in your prompt: Esc, then Enter runs it; this card notices.` : `Run ${command} in the prompt; this card notices.`)
+    }
+    case 'guard':
+      return apNotice($, `Not started: ${await dgGuardText($)}`)
+    case 'stop':
+      await apStopRung($, dialog)
+      $.ui.toast(`tg: ${RUNG_NAME[view.pick]} off for ${peer.label}.`)
+      return refreshStatus($)
+    case 'start':
+    case 'switch': {
+      const refused = await apStartRung($, dialog, view.pick)
+      if (refused !== null) return apNotice($, `Not started: ${refused}`)
+      await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
+      const off = action.kind === 'switch' ? ` (${RUNG_NAME[action.from]} off)` : ''
+      $.ui.toast(`tg: ${RUNG_GLYPH[view.pick]} ${RUNG_NAME[view.pick]} on for ${peer.label}${off}. 0 or /tg stop stops every chat.`)
+      return refreshStatus($)
+    }
+  }
+}
+
+/** Stops whatever rung runs in the chat: its follow, or its autopilot (and with it its Worker, apUnlisten → dgStopTasksOf). */
+async function apStopRung($: $, dialog: ApDialog): Promise<void> {
   const id = dialog.peer.id
-  if ((await read($, autopilot)).running.includes(id)) {
-    await apUnlisten($, id)
-    await update($, autopilot, value => ({ ...value, running: value.running.filter(one => one !== id), phase: { ...value.phase, [String(id)]: 'listening' } }))
-    $.ui.toast(`tg: autopilot off for ${dialog.peer.label}.`)
-    await refreshStatus($)
-    return
+  if ((await read($, pins)).some(pin => pin.peer.id === id)) await unpin($, id) // ── routing ──
+  if (!(await read($, autopilot)).running.includes(id)) return
+  await apUnlisten($, id)
+  await update($, autopilot, value => ({ ...value, running: value.running.filter(one => one !== id), phase: { ...value.phase, [String(id)]: 'listening' } }))
+}
+
+/**
+ * Starts `rung` in the chat, stopping the rung that ran there first (one per
+ * chat, decision 2). The lease is taken before anything stops, so a chat that
+ * runs in another session keeps what runs here. Answers why it did not start.
+ */
+async function apStartRung($: $, dialog: ApDialog, rung: ApRung): Promise<string | null> {
+  const id = dialog.peer.id
+  if (rung === 'follow') {
+    await apStopRung($, dialog)
+    await followPeer($, dialog.peer) // ── routing ──
+    return null
   }
-  if ((dialog.level === 'auto' || dialog.level === 'delegate') && !(await apIsAllowed($, dialog.peer, true))) {
-    await apNotice($, `Not started: ${dialog.level} needs ${dialog.peer.arg} in allow.toml. Run \`! tg allow add ${dialog.peer.arg} --yes\` in the prompt, or pick 2 draft.`)
-    return
-  }
-  // ── delegate ── one session answers a dialog: the lease in $.store says which.
-  const guardText = dialog.level === 'delegate' ? await dgGuardText($) : null
-  if (guardText !== null) {
-    await apNotice($, `Not started: ${guardText}`)
-    return
-  }
+  // ── delegate ── one session answers a chat: the lease in $.store says which.
   const lease = await apTakeLease($, id)
-  if (!lease.ok) {
-    await apNotice($, `Not started: ${dialog.peer.label} is ${lease.reason}. Stop it there first.`)
-    return
-  }
-  await apEdit($, id, one => one)
-  await update($, autopilot, value => ({ ...value, running: [...value.running, id], view: { kind: 'none' } }))
+  if (!lease.ok) return `${dialog.peer.label} is ${lease.reason}. Stop it there first.`
+  // Stopping an autopilot level lets its lease go: take it again, which this session may (it held it a moment ago).
+  await apStopRung($, dialog)
+  const again = await apTakeLease($, id)
+  if (!again.ok) return `${dialog.peer.label} is ${again.reason}. Stop it there first.`
+  await apEdit($, id, one => ({ ...one, level: rung }))
+  await update($, autopilot, value => ({ ...value, running: [...value.running.filter(one => one !== id), id] }))
   await apListen($, dialog.peer)
-  $.ui.toast(`tg: ${LEVEL_GLYPH[dialog.level]} autopilot ${dialog.level} on for ${dialog.peer.label}. /tg stop stops every dialog.`)
-  await refreshStatus($)
+  return null
 }
 
 /**
@@ -3497,8 +3667,8 @@ async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
   return { text: lines.length === 0 ? 'tg autopilot: off. Open a chat in the pane and press a.' : ['tg autopilot:', ...lines].join('\n') }
 }
 
-/** The card in the lower part (dock) or the body (inline) while it is open. */
-async function drawAutopilotView($: $, els: Els, width: number): Promise<RenderElement | null> {
+/** The card in the lower part (dock) or the body (inline) while it is open: its step's layer. */
+async function drawCard($: $, els: Els): Promise<RenderElement | null> {
   const state = await read($, autopilot)
   const view = state.view
   if (view.kind === 'none') return null
@@ -3507,36 +3677,47 @@ async function drawAutopilotView($: $, els: Els, width: number): Promise<RenderE
   const id = dialog.peer.id
   const edit = (change: (one: ApDialog) => ApDialog) => apEdit($, id, change)
   const allow = apAllowView(dialog.peer, (await read($, bottest)).allow)
-  return AutopilotCard(els, {
-    dialog,
-    isRunning: state.running.includes(id),
-    phase: state.phase[String(id)],
-    allow,
-    notice: view.notice,
-    width,
-    // ── delegate ── offered only for dialogs in allow.toml; its rows while it is the level.
-    levels: (allow.kind === 'ok' && allow.isAllowed) || dialog.level === 'delegate' ? AP_LEVELS : AP_LEVELS.filter(one => one !== 'delegate'),
-    extra: dialog.level === 'delegate' ? await drawDelegateRows($, els, dialog) : null,
-    onLevel: level => apSetLevel($, dialog, level),
-    onBrief: (field, text) => edit(one => ({ ...one, brief: { ...one.brief, [field]: text.trim() } })),
-    onRate: by => edit(one => ({ ...one, perHour: stepRate(one.perHour, by) })),
-    onRateText: async text => {
-      const parsed = parseRate(text)
-      if (!parsed.ok) return apNotice($, `"${text}" is not a rate: a whole number of replies per hour, or ∞.`)
-      await apNotice($, null)
-      await edit(one => ({ ...one, perHour: parsed.value }))
-    },
-    onGap: by => edit(one => ({ ...one, gapS: stepGap(one.gapS, by) })),
-    onConf: by => edit(one => ({ ...one, threshold: stepThreshold(one.threshold, by) })),
-    onTopic: (topic: ApTopic) => edit(one => ({ ...one, topics: toggleTopic(one.topics, topic) })),
-    onQuiet: () => edit(one => ({ ...one, quiet: one.quiet === null ? { ...DEFAULT_QUIET } : null })),
-    onQuietText: async text => {
-      const parsed = parseQuiet(text)
-      if (!parsed.ok) return apNotice($, `"${text}" is not a range: write it as 22:00-08:00, or off.`)
-      await apNotice($, null)
-      await edit(one => ({ ...one, quiet: parsed.value }))
-    },
-  })
+  const isGuardUp = (await dgGuardArmed($)) !== null // ── delegate ──
+  switch (view.step) {
+    case 'ladder': {
+      const pin = await read($, pins)
+      const chosen = await read($, route) // ── routing ── where a follow sends the chat
+      const followed = pin.find(one => one.peer.id === id)
+      const to = followed?.to ?? (chosen.kind === 'one' && chosen.to.kind === 'agent' ? { kind: 'agent' as const, label: chosen.to.label } : { kind: 'main' as const })
+      return CardLadder(els, {
+        dialog,
+        kind: cardKind(dialog.peer),
+        ladder: ladderFor(cardKind(dialog.peer)),
+        pick: view.pick,
+        running: await runningRungOf($, id),
+        allow,
+        isGuardUp,
+        followTo: to.kind === 'main' ? 'main, every turn' : to.label,
+        notice: view.notice,
+        onPick: rung => apPick($, rung),
+      })
+    }
+    case 'options':
+      return CardOptions(els, {
+        dialog,
+        notice: view.notice,
+        // ── delegate ── the danger zone, in person chats (where delegate exists).
+        extra: ladderFor(cardKind(dialog.peer)).includes('delegate') ? await drawDangerZone($, els, dialog) : null,
+        onRate: value => edit(one => ({ ...one, perHour: value === 'none' ? null : Number(value) })),
+        onGap: value => edit(one => ({ ...one, gapS: Number(value) })),
+        onConf: value => edit(one => ({ ...one, threshold: Number(value) })),
+        onQuiet: async value => {
+          const parsed = parseQuiet(value)
+          if (parsed.ok) await edit(one => ({ ...one, quiet: parsed.value }))
+        },
+        onTopic: (topic: ApTopic) => edit(one => ({ ...one, topics: toggleTopic(one.topics, topic) })),
+        onBrief: (field, text) => edit(one => ({ ...one, brief: { ...one.brief, [field]: text.trim() } })),
+      })
+    case 'warning':
+      return DelegateWarning(els, { label: dialog.peer.label }) // ── delegate ──
+    case 'grant':
+      return drawGrant($, els, dialog, allow, isGuardUp, view.notice) // ── delegate ──
+  }
 }
 
 /** DialogRow's level mark for running dialogs: the glyph, and `auto 3/50` (sent this hour / limit). */
@@ -3584,12 +3765,12 @@ function apLevelTail(state: Autopilot, dialog: ApDialog, at: number): string {
 // leases in $.store keep a dialog to one session, at every level.
 import type { ApEntry, DgDialog, DgGrant, DgStop, DgTask, DgWorktree, Delegate, GuardEvent, GuardHold, GuardWork } from '../types'
 import type { Peer } from './packet/types'
-import { DelegateRows, TaskCard, TaskRow, chatCardLines, chatTaskRows, warningText } from './delegate/components'
+import { DangerZone, DelegateGrant, DelegateWarning, TaskCard, TaskRow, chatCardLines, chatTaskRows } from './delegate/components'
 import { armedOf, eventsOf, holdsOf as guardHoldsOf, workOf } from './delegate/guard'
-import { CHECK_FILES, DEFAULT_DG_DIALOG, checksOf, nextWeb, parseDgDialogs, parseDuration, parseRepos, workerTools } from './delegate/grant'
+import { CHECK_FILES, DEFAULT_DG_DIALOG, DG_WEB, checksOf, parseDgDialogs, parseDuration, parseRepos, workerTools } from './delegate/grant'
 import { HEARTBEAT_MS, holder, leaseKey, leaseOf } from './delegate/lease'
 import { resolvePath } from './delegate/paths'
-import { SKIP_FLAG, noStopsLabel, parseDialogSkip, parseSkipFlag, parseStops, skippedStops } from './delegate/skip'
+import { SKIP_FLAG, noStopsLabel, parseDialogSkip, parseSkipFlag, parseStops, skippedStops, untilText } from './delegate/skip'
 import { delegateInstructions, delegateSystem, parseDelegate, relayPrompt, type DelegateSpoken, type TaskAction } from './delegate/speaker'
 import { partition, stopQuestion, textHits, type StopHit } from './delegate/stops'
 import {
@@ -3731,6 +3912,7 @@ async function dgSeeMode($: $, mode: string | undefined): Promise<void> {
 /** From session.start (and a reload): settings from $.store; live tasks keep their Worker and their deadline. */
 async function startDelegate($: $): Promise<void> {
   dgHome = (await $.env.get('HOME')) ?? '/'
+  dgSessionRepo = null
   const dialogsStored = parseDgDialogs(await $.store.get(STORE_DELEGATE))
   const state = await dgUpdate($, value => ({ ...value, dialogs: dialogsStored, alwaysSkip }))
   await dgGuardArmed($)
@@ -3800,7 +3982,7 @@ async function apBeat($: $): Promise<void> {
   const armed = await dgGuardArmed($)
   if (armed === null && (await read($, delegate)).tasks.some(isLive)) {
     await dgStopAll($, `the ${GUARD} plugin stopped answering`)
-    $.ui.toast(`tg: ⚡ every Worker stopped: the ${GUARD} plugin stopped answering.`)
+    $.ui.toast(`tg: ↯ every Worker stopped: the ${GUARD} plugin stopped answering.`)
   }
 }
 
@@ -3879,14 +4061,6 @@ async function dgEditGrant($: $, dialogId: number, change: (grant: DgGrant) => D
   await dgEdit($, dialogId, dg => ({ ...dg, grant: change(dg.grant) }))
 }
 
-/** 4 in the card: the first time for a dialog it shows the warning and stops; the next press goes on. */
-async function dgWarned($: $, dialog: ApDialog): Promise<boolean> {
-  if ((await dgSettings($, dialog.peer.id)).isWarned) return true
-  await dgEdit($, dialog.peer.id, dg => ({ ...dg, isWarned: true }))
-  await apNotice($, warningText(dialog.peer.label))
-  return false
-}
-
 /** Every stop skipped for a dialog now, from the option, the session and the dialog. */
 async function dgSkipped($: $, dialogId: number): Promise<DgStop[]> {
   const state = await read($, delegate)
@@ -3901,26 +4075,60 @@ async function dgNoStopsOf($: $): Promise<(dialogId: number) => string | null> {
     noStopsLabel(skippedStops({ always: alwaysSkip, session: state.sessionSkip, dialog: state.dialogs[String(dialogId)]?.skip ?? null, now: at }), state.permissionMode)
 }
 
-async function drawDelegateRows($: $, els: Els, dialog: ApDialog): Promise<RenderElement> {
+/** The session's repo (`git rev-parse --show-toplevel` in its directory), once looked up; null: not in a repo. */
+let dgSessionRepo: { path: string | null } | null = null
+
+/**
+ * The grant step's repos, filled from where the owner is (§5.5): the session's
+ * repo when its directory is in one and the chat grants none yet.
+ */
+async function dgFillRepos($: $, dialogId: number): Promise<void> {
+  if ((await dgSettings($, dialogId)).grant.repos.length > 0) return
+  if (dgSessionRepo === null) {
+    const cwd = await $.session.cwd()
+    const top = await dgGit($, ['git', '-C', cwd, 'rev-parse', '--show-toplevel'])
+    dgSessionRepo = { path: top.ok && top.stdout.trim() !== '' ? top.stdout.trim() : null }
+  }
+  const path = dgSessionRepo.path
+  if (path !== null) await dgEditGrant($, dialogId, grant => ({ ...grant, repos: [path] }))
+}
+
+async function drawGrant($: $, els: Els, dialog: ApDialog, allow: AllowView, isGuardUp: boolean, notice: string | null): Promise<RenderElement> {
   const id = dialog.peer.id
   const state = await read($, delegate)
+  const dg = state.dialogs[String(id)] ?? DEFAULT_DG_DIALOG
   const at = await $.clock.now()
-  return DelegateRows(els, {
-    guard: await dgGuardText($),
+  const skipped = dg.skip === null || (dg.skip.until !== null && dg.skip.until <= at) ? null : `skipped: ${dg.skip.stops.join(', ')} (${untilText(dg.skip.until)}) · o: limits & safety`
+  return DelegateGrant(els, {
+    dg,
+    label: dialog.peer.label,
+    arg: dialog.peer.arg,
+    sessionRepo: dgSessionRepo?.path ?? null,
+    skipped,
+    noStops: (await dgNoStopsOf($))(id),
+    isGuardUp,
+    guardText: `the ${GUARD} plugin is not loaded or not answering: it holds the Worker's hard stops`,
+    allow,
+    notice,
+    onRepos: text => dgEditGrant($, id, grant => ({ ...grant, repos: parseRepos(text) })),
+    onWeb: value => dgEditGrant($, id, grant => ({ ...grant, web: DG_WEB.find(one => one === value) ?? grant.web })),
+    onCommands: value => dgEditGrant($, id, grant => ({ ...grant, commands: value === 'any' ? 'any' : 'checks' })),
+    onDuration: async value => {
+      const parsed = parseDuration(value)
+      if (parsed.ok) await dgEditGrant($, id, grant => ({ ...grant, duration: parsed.value }))
+    },
+  })
+}
+
+/** `o`'s danger zone: dangerouslySkipHardStops for this chat, confirmed only by its name typed exactly. */
+async function drawDangerZone($: $, els: Els, dialog: ApDialog): Promise<RenderElement> {
+  const id = dialog.peer.id
+  const state = await read($, delegate)
+  return DangerZone(els, {
     dg: state.dialogs[String(id)] ?? DEFAULT_DG_DIALOG,
     label: dialog.peer.label,
-    noStops: (await dgNoStopsOf($))(id),
     pending: state.pending?.dialogId === id ? state.pending : null,
-    now: at,
-    onWeb: () => dgEditGrant($, id, grant => ({ ...grant, web: nextWeb(grant.web) })),
-    onCommands: () => dgEditGrant($, id, grant => ({ ...grant, commands: grant.commands === 'checks' ? 'any' : 'checks' })),
-    onRepos: text => dgEditGrant($, id, grant => ({ ...grant, repos: parseRepos(text) })),
-    onDuration: async text => {
-      const parsed = parseDuration(text)
-      if (!parsed.ok) return apNotice($, `"${text}" is not a duration: write done, 2h, 90m or 1h30m.`)
-      await apNotice($, null)
-      await dgEditGrant($, id, grant => ({ ...grant, duration: parsed.value }))
-    },
+    now: await $.clock.now(),
     onSkip: async text => {
       const parsed = parseDialogSkip(text, await $.clock.now())
       if (!parsed.ok) return apNotice($, parsed.why)
@@ -3933,7 +4141,7 @@ async function drawDelegateRows($: $, els: Els, dialog: ApDialog): Promise<Rende
     onConfirm: async text => {
       const pending = (await read($, delegate)).pending
       if (pending === null || pending.dialogId !== id) return
-      if (text.trim() !== dialog.peer.label) return apNotice($, `Not confirmed: type the dialog's name exactly, "${dialog.peer.label}".`)
+      if (text.trim() !== dialog.peer.label) return apNotice($, `Not confirmed: type the chat's name exactly, "${dialog.peer.label}".`)
       await dgUpdate($, value => ({ ...value, pending: null }))
       await dgEdit($, id, dg => ({ ...dg, skip: pending.skip }))
       await apNotice($, null)
@@ -4005,7 +4213,7 @@ async function dgForward($: $, task: DgTask, text: string, packet: string): Prom
   if (task.agentId === null) return
   const sent = await $.session.send({ to: { agentId: task.agentId }, text: workerAnswer(text, packet) })
   if (!sent.isDelivered) {
-    $.ui.toast(`tg: ⚡ the answer did not reach the Worker for ${task.peer.label}: ${sent.reason}`)
+    $.ui.toast(`tg: ↯ the answer did not reach the Worker for ${task.peer.label}: ${sent.reason}`)
     return
   }
   await dgPatchTask($, task.id, one => ({ ...one, question: null, status: one.status === 'asking' ? 'working' : one.status }))
@@ -4026,7 +4234,7 @@ async function dgStartTask($: $, peer: PeerRef, summary: string, packet: string)
   if (task === undefined) return
   const fail = async (reason: string) => {
     await dgPatchTask($, task.id, one => ({ ...one, status: 'failed', reason }))
-    $.ui.toast(`tg: ⚡ the task for ${peer.label} did not start: ${reason}`)
+    $.ui.toast(`tg: ↯ the task for ${peer.label} did not start: ${reason}`)
     await refreshStatus($)
   }
   await refreshStatus($)
@@ -4055,7 +4263,7 @@ async function dgStartTask($: $, peer: PeerRef, summary: string, packet: string)
     spawned = await $.agent.spawn({
       subagentType: `${WORKER_PREFIX}${task.id}`,
       prompt: workerTask(summary, packet),
-      description: `⚡ ${peer.label}: ${oneLine(summary, 40)}`,
+      description: `↯ ${peer.label}: ${oneLine(summary, 40)}`,
       cwd: worktrees[0]?.path,
     })
   } catch (error) {
@@ -4259,7 +4467,7 @@ async function dgOnWorkerTurn($: $, agentId: string, reason: string, answer: str
   if (task === undefined || !isLive(task)) return
   if (reason !== 'answer') {
     await dgPatchTask($, task.id, one => ({ ...one, status: 'failed', reason: `the Worker's turn ended: ${reason}` }))
-    $.ui.toast(`tg: ⚡ the Worker for ${task.peer.label} stopped: ${reason}.`)
+    $.ui.toast(`tg: ↯ the Worker for ${task.peer.label} stopped: ${reason}.`)
     await refreshStatus($)
     return
   }
@@ -4292,7 +4500,7 @@ async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
   if (spoken === null || spoken.text === '') {
     const why = result.isAnswered ? 'the Speaker answered in a shape the autopilot cannot read' : modelFailure(result)
     await apLog($, { at, peer: task.peer, level: dialog.level, incoming, reply: '', confidence: null, topics: [], checks: [], outcome: { kind: 'failed', reason: why }, undo: null })
-    $.ui.toast(`tg: ⚡ could not tell ${task.peer.label} what the Worker said: ${why}`)
+    $.ui.toast(`tg: ↯ could not tell ${task.peer.label} what the Worker said: ${why}`)
     return
   }
   const seq = await apLog($, { at, peer: task.peer, level: dialog.level, incoming, reply: spoken.text, confidence: spoken.confidence, topics: spoken.topics, checks: [], outcome: { kind: 'working' }, undo: null })

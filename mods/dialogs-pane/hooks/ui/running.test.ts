@@ -96,7 +96,7 @@ describe('a part that failed is named, after what did stop', () => {
 describe('the running strip (dock)', () => {
   test('one item a running chat: a follow says where it goes, a held task ⏸', () => {
     const rows = runRows({ ...FLOW_6, tasks: [{ ...FLOW_6.tasks[0], peer: B, isHeld: true } as RunInput['tasks'][number]] })
-    expect(stripItems(rows).map(item => item.text)).toEqual(['⟳ Dev Team', '⚡ Contact B ⏸', '⌁ @example_bot → main'])
+    expect(stripItems(rows).map(item => item.text)).toEqual(['⟳ Dev Team', '↯ Contact B ⏸', '⌁ @example_bot → main'])
     expect(stripItems(rows).map(item => item.isHeld)).toEqual([false, true, false])
   })
 
@@ -124,7 +124,7 @@ describe('Activity (§5.7)', () => {
   test('a row: glyphs, the name in a column, what it does; a stopped one says so; ⏎ opens the card or the chat', () => {
     const [group, contact, bot] = runRows(FLOW_6)
     expect(activityText(group ?? null, 'Dev Team')).toBe('⟳  Dev Team       auto 3/50 · listening')
-    expect(activityText(contact ?? null, 'Contact B')).toBe('⚡  Contact B      delegate · listening · task 42 min · … edit src/pay/webhook.py')
+    expect(activityText(contact ?? null, 'Contact B')).toBe('↯  Contact B      delegate · listening · task 42 min · … edit src/pay/webhook.py')
     expect(activityText(bot ?? null, '@example_bot')).toBe('⌁  @example_bot   follows → main · live')
     expect(activityText(null, 'Dev Team')).toBe('■  Dev Team       stopped')
     expect([group, contact, bot, null].map(row => activityTarget(row ?? null))).toEqual(['card', 'chat', 'chat', 'chat'])
