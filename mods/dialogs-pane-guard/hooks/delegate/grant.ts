@@ -4,7 +4,7 @@
 // grant holds whatever the prompt says. Pure.
 import type { DgCommands, DgDialog, DgDuration, DgGrant, DgSkip, DgStop, DgWeb } from './contract'
 import { isInside, isUnresolvable, resolvePath } from './paths'
-import { base, gitSub, operands, readCommand, type Simple } from './shell'
+import { base, gitSub, operands, pathWords, readCommand, type Reading, type Simple } from './shell'
 import { DG_STOPS, type Place, type ToolUse } from './stops'
 
 export const DG_WEB = ['off', 'read', 'full'] as const satisfies readonly DgWeb[]
@@ -155,10 +155,11 @@ const refuse = (reason: string): GrantCheck => ({
 /** What the Worker may touch: its worktrees; never the human's checkouts the worktrees came from. */
 export type Scope = Place & { checkouts: readonly string[]; checks: readonly string[] }
 
-function pathCheck(raw: string, scope: Scope, verb: string): GrantCheck {
+/** isLiteral: a Bash word the shell does not expand (`'$1'`), so a `$` in it is a letter. */
+function pathCheck(raw: string, scope: Scope, verb: string, cwd = scope.worktrees[0] ?? '/', isLiteral = false): GrantCheck {
   if (raw === '') return { ok: true }
-  if (isUnresolvable(raw)) return refuse(`${verb} ${raw}: a path the grant cannot resolve`)
-  const path = resolvePath(raw, scope.worktrees[0] ?? '/', scope.home)
+  if (isLiteral ? /^~[^/]/.test(raw) : isUnresolvable(raw)) return refuse(`${verb} ${raw}: a path the grant cannot resolve`)
+  const path = resolvePath(raw, cwd, scope.home)
   if (isInside(path, scope.worktrees)) return { ok: true }
   if (isInside(path, scope.checkouts)) return refuse(`${verb} ${path}: that is the owner's own checkout; work in your worktree (${scope.worktrees.join(', ')})`)
   return refuse(`${verb} ${path}: outside your worktree (${scope.worktrees.join(', ')})`)
@@ -170,13 +171,286 @@ function isCheck(simple: Simple, scope: Scope): boolean {
   return scope.checks.some(check => line === check || line.startsWith(`${check} `))
 }
 
+// --- where a Bash word can point ---
+
+const GLOB = /[*?[{]/
+
+/** One segment of a glob as a regex, case-insensitive; a class it cannot read matches anything. */
+function globSegment(part: string): RegExp {
+  const source = part
+    .replace(/[.+^$()|\\]/g, '\\$&')
+    .replace(/\{[^}]*\}/g, '.*')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.')
+    .replace(/\[!/g, '[^')
+  try {
+    return new RegExp(`^${source}$`, 'i')
+  } catch {
+    // An unclosed `[`: fail closed, it may match the segment.
+    return /^/
+  }
+}
+
+/**
+ * Whether a resolved path, a glob perhaps, can name something inside `root`
+ * that is not in a worktree. The root is compared case-insensitively (macOS
+ * file systems are), the worktrees exactly.
+ */
+function reaches(path: string, root: string, worktrees: readonly string[]): boolean {
+  if (!GLOB.test(path)) return isInside(path.toLowerCase(), [root.toLowerCase()]) && !isInside(path, worktrees)
+  const parts = path.split('/').filter(part => part !== '')
+  const rootParts = root.split('/').filter(part => part !== '')
+  for (const [i, rootPart] of rootParts.entries()) {
+    const part = parts[i]
+    if (part === undefined) return false
+    if (part.includes('**')) return true
+    if (!globSegment(part).test(rootPart)) return false
+  }
+  // It matches the root; what it names below the root is a worktree only when it says so before its first glob.
+  const below = parts.slice(rootParts.length)
+  const firstGlob = below.findIndex(part => GLOB.test(part))
+  return !isInside(`/${[...rootParts, ...(firstGlob === -1 ? below : below.slice(0, firstGlob))].join('/')}`, worktrees)
+}
+
+/** A word with `~`, `$HOME` and `${HOME}` put in; null when a variable is left that the grant cannot know. */
+function expandWord(word: string, scope: Scope): string | null {
+  const out = word.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, scope.home).replace(/^~(?=\/|$)/, scope.home)
+  return /[$`]/.test(out) ? null : out
+}
+
+/** The rest of a path spelled out inside a longer text. */
+const PATH_RUN = /^[^\s'"`;|&<>(){},]*/
+
+/**
+ * The first place inside `roots` (and not in a worktree) that a command names:
+ * in any word's path position, resolved from each place the command may
+ * stand in; or spelled out anywhere in a word (an awk program, a `-c` text).
+ */
+function fenced(reading: Reading, roots: readonly string[], scope: Scope, cwds: (index: number) => readonly string[]): string | null {
+  for (const [index, simple] of reading.commands.entries()) {
+    for (const word of [simple[0] ?? '', ...pathWords(simple)]) {
+      const expanded = expandWord(word, scope)
+      if (expanded === null || expanded === '') continue
+      for (const cwd of cwds(index)) {
+        const path = resolvePath(expanded, cwd, scope.home)
+        if (roots.some(root => reaches(path, root, scope.worktrees))) return path
+      }
+    }
+  }
+  for (const word of [...reading.commands.flat(), ...reading.assigns]) {
+    const text = word.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, scope.home).replace(/(^|[^A-Za-z0-9_])~(?=\/)/g, `$1${scope.home}`)
+    for (const root of roots) {
+      const lower = text.toLowerCase()
+      for (let at = lower.indexOf(root.toLowerCase()); at !== -1; at = lower.indexOf(root.toLowerCase(), at + 1)) {
+        const path = resolvePath(`${root}${(PATH_RUN.exec(text.slice(at + root.length)) ?? [''])[0]}`, '/', scope.home)
+        if (reaches(path, root, scope.worktrees)) return path
+      }
+    }
+  }
+  return null
+}
+
+// --- awk and sed under `checks`: read-only only when their program is ---
+
+/** awk's program text; null when it comes from a file (`-f`) or an option the grant does not know. */
+function awkProgram(simple: Simple): string | null {
+  let i = 1
+  for (; i < simple.length; i++) {
+    const word = simple[i] ?? ''
+    if (word === '--') return simple[i + 1] ?? null
+    if (!word.startsWith('-') || word === '-') break
+    if (word === '-F' || word === '-v') i++
+    else if (!/^-[Fv]./.test(word)) return null
+  }
+  return simple[i] ?? null
+}
+
+/** An awk program that writes or runs: output redirected or piped, `system(`, getline from a command or a file, gawk's @load. */
+const AWK_WRITES = /\bsystem\s*\(|\|\s*&?\s*getline|\bgetline\b[^;}\n]*<|\bprintf?\b[^;}\n]*[>|]|@(load|include)\b/
+
+const SED_LONG = new Set(['--quiet', '--silent', '--regexp-extended', '--separate', '--unbuffered', '--null-data', '--zero-terminated', '--posix', '--debug', '--sandbox', '--follow-symlinks'])
+
+/**
+ * sed's programs: each `-e`, or else the first operand; null when one comes
+ * from a file (`-f`) or an option the grant does not know. bsdProgram: after a
+ * bare `-i`, BSD sed takes the first operand for the backup suffix and runs
+ * the second, where GNU runs the first.
+ */
+function sedPrograms(simple: Simple): { programs: string[]; bsdProgram: string | null } | null {
+  const programs: string[] = []
+  const rest: string[] = []
+  let isBareInPlace = false
+  for (let i = 1; i < simple.length; i++) {
+    const word = simple[i] ?? ''
+    if (word === '--') {
+      rest.push(...simple.slice(i + 1))
+      break
+    }
+    if (word.startsWith('--')) {
+      const eq = word.indexOf('=')
+      const option = eq === -1 ? word : word.slice(0, eq)
+      if (option === '--expression') programs.push(eq === -1 ? (simple[++i] ?? '') : word.slice(eq + 1))
+      else if (option === '--line-length') i += eq === -1 ? 1 : 0
+      else if (option !== '--in-place' && !SED_LONG.has(option)) return null
+      continue
+    }
+    if (!word.startsWith('-') || word === '-') {
+      rest.push(word)
+      continue
+    }
+    for (let k = 1; k < word.length; k++) {
+      const letter = word[k] ?? ''
+      if (letter === 'e') {
+        programs.push(k + 1 < word.length ? word.slice(k + 1) : (simple[++i] ?? ''))
+        break
+      }
+      if (letter === 'i') {
+        // The rest is the backup suffix.
+        isBareInPlace = k + 1 === word.length
+        break
+      }
+      if (letter === 'l') {
+        if (k + 1 === word.length) i++
+        break
+      }
+      if (!'nrEsuz'.includes(letter)) return null
+    }
+  }
+  if (programs.length > 0) return { programs, bsdProgram: null }
+  return { programs: rest.slice(0, 1), bsdProgram: isBareInPlace ? (rest[1] ?? null) : null }
+}
+
+type SedVerdict = 'safe' | 'writes' | 'unknown'
+
+/**
+ * Whether a sed program can write, run or read another file (`w`, `W`, `e`,
+ * `r`, `R`, `s///w`, `s///e`), or is one this cannot parse. `bsd` reads it as
+ * BSD sed does: GNU's own commands are unknown there.
+ */
+function sedVerdict(program: string, dialect: 'gnu' | 'bsd'): SedVerdict {
+  const isGnu = dialect === 'gnu'
+  let i = 0
+  const at = () => program[i] ?? ''
+  const isEnd = () => i >= program.length
+  /** Past the next unescaped `delim`; false when there is none. */
+  const past = (delim: string): boolean => {
+    while (!isEnd() && at() !== delim) i += at() === '\\' ? 2 : 1
+    if (isEnd()) return false
+    i++
+    return true
+  }
+  const address = (): boolean => {
+    if (at() === '/' || at() === '\\') {
+      const delim = at() === '/' ? '/' : (program[i + 1] ?? '')
+      i += at() === '/' ? 1 : 2
+      if (!past(delim)) return false
+      while (at() === 'I' || at() === 'M') i++
+      return true
+    }
+    while (/[\d$~+]/.test(at()) && !isEnd()) i++
+    return true
+  }
+  for (;;) {
+    while (/[\s;]/.test(at()) && !isEnd()) i++
+    if (isEnd()) return 'safe'
+    if (!address()) return 'unknown'
+    if (at() === ',') {
+      i++
+      if (!address()) return 'unknown'
+    }
+    while (at() === ' ' || at() === '!') i++
+    const command = at()
+    i++
+    if ('{}pPdDnNgGhHx='.includes(command) || (isGnu && 'zF'.includes(command))) continue
+    if ('wr'.includes(command) || (isGnu && 'WeR'.includes(command))) return 'writes'
+    if (command === 's' || command === 'y') {
+      const delim = at()
+      i++
+      if (delim === '' || delim === '\n' || delim === '\\' || !past(delim) || !past(delim)) return 'unknown'
+      if (command === 's') {
+        for (; /[gpiImMew0-9]/.test(at()) && !isEnd(); i++) if (at() === 'w' || (isGnu && at() === 'e')) return 'writes'
+      }
+      continue
+    }
+    if ('aic#:bt'.includes(command) || (isGnu && command === 'T')) {
+      // Text or a comment runs to the end of the line; a label also ends at `;`.
+      const isLabel = ':btT'.includes(command)
+      while (!isEnd() && at() !== '\n' && !(isLabel && at() === ';')) i += at() === '\\' ? 2 : 1
+      continue
+    }
+    if ('ql'.includes(command) || (isGnu && 'QL'.includes(command))) {
+      while (/[\d ]/.test(at()) && !isEnd()) i++
+      continue
+    }
+    return 'unknown'
+  }
+}
+
+/** Under `checks`: awk and sed are local read-only commands only with a program that can neither write nor run. */
+function isReadOnlyProgram(simple: Simple, name: string): boolean {
+  if (name === 'awk') {
+    const program = awkProgram(simple)
+    return program !== null && !AWK_WRITES.test(program)
+  }
+  if (name === 'sed') {
+    const read = sedPrograms(simple)
+    if (read === null || read.programs.some(program => sedVerdict(program, 'gnu') !== 'safe')) return false
+    // BSD sed runs nothing of a program it cannot parse, so there only one that writes is refused.
+    return read.bsdProgram === null || sedVerdict(read.bsdProgram, 'bsd') !== 'writes'
+  }
+  return true
+}
+
+/** The program words of an awk or sed command: code, not paths; isReadOnlyProgram reads them. */
+function programWords(simple: Simple, name: string): string[] {
+  if (name === 'awk') return [awkProgram(simple) ?? '']
+  const read = name === 'sed' ? sedPrograms(simple) : null
+  return read === null ? [] : [...read.programs, ...(read.bsdProgram === null ? [] : [read.bsdProgram])]
+}
+
+/** Variables that make a check run other code (git's config and helpers, preloads); refused under `checks`. */
+const RUNS_ENV = /^(GIT_[A-Z0-9_]*|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|NODE_OPTIONS|BASH_ENV|PAGER|EDITOR|VISUAL)=/
+/** git options that run a command of their own: fetch's upload-pack, push's receive-pack. */
+const GIT_RUNS = /^(--upload-pack|--receive-pack|--exec)(=|$)/
+
 function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
   const reading = readCommand(command)
-  if (grant.commands === 'checks' && reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
+  const isChecks = grant.commands === 'checks'
+  if (isChecks && reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
+  if (isChecks && reading.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec)')
+  const start = scope.worktrees[0] ?? '/'
+  // Where each simple command stands: its worktree, and where a `cd` before it went (null: it cannot be told).
+  const cwds: string[][] = []
+  let cwd: string | null = start
   for (const simple of reading.commands) {
+    cwds.push([...new Set([start, cwd ?? start])])
+    const name = base(simple[0] ?? '')
+    if (name === 'cd' || name === 'pushd') {
+      const target = operands(simple)[0]
+      const expanded = target === undefined ? scope.home : expandWord(target, scope)
+      cwd = expanded === null ? null : resolvePath(expanded, cwd ?? start, scope.home)
+    }
+  }
+  if (isChecks) {
+    const runs = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))].find(word => RUNS_ENV.test(word))
+    if (runs !== undefined) return refuse(`${runs.slice(0, runs.indexOf('='))}: a variable that makes a command run other code`)
+    for (const assign of reading.assigns) {
+      if (reading.expanded.has(assign)) return refuse(`${assign.slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
+      for (const word of pathWords(['', assign.slice(assign.indexOf('=') + 1)])) {
+        const checked = pathCheck(word, scope, 'set', start, true)
+        if (!checked.ok) return checked
+      }
+    }
+  }
+  // Paths into the owner's checkouts are refused in every mode: the worktree is the Worker's place.
+  const checkout = fenced(reading, scope.checkouts, scope, index => cwds[index] ?? [start])
+  if (checkout !== null) return refuse(`${checkout}: that is the owner's own checkout`)
+  for (const [index, simple] of reading.commands.entries()) {
     const name = base(simple[0] ?? '')
     // `$W/app.py`: where it points is known only when the shell runs, so `checks` cannot clear it.
-    if (grant.commands === 'checks' && simple.some(isUnresolvable)) return refuse(`${simple.join(' ').slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
+    if (isChecks && simple.some(word => reading.expanded.has(word) || /^~[^/]/.test(word))) {
+      return refuse(`${simple.join(' ').slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
+    }
     if (NET.has(name)) {
       if (grant.web === 'off') return refuse(`${name}: web is off`)
       const isFetch = FETCHERS.has(name) && !simple.some(word => SEND_FLAGS.test(word))
@@ -184,33 +458,32 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
         return refuse(`${simple.join(' ').slice(0, 60)}: web is read-only (fetch pages, nothing sent)`)
       }
     }
-    // Paths into the owner's checkouts are refused in every mode: the worktree is the Worker's place.
-    for (const word of operands(simple)) {
-      if (isUnresolvable(word) || !(word.startsWith('/') || word.startsWith('~') || word.includes('..'))) continue
-      const path = resolvePath(word, scope.worktrees[0] ?? '/', scope.home)
-      if (isInside(path, scope.checkouts) && !isInside(path, scope.worktrees)) return refuse(`${name} ${path}: that is the owner's own checkout`)
+    const git = name === 'git' ? gitSub(simple) : null
+    for (const dir of git?.dirs ?? []) {
+      const checked = pathCheck(dir, scope, 'git -C')
+      if (!checked.ok) return checked
     }
-    if (name === 'git') {
-      const git = gitSub(simple)
-      for (const dir of git?.dirs ?? []) {
-        const checked = pathCheck(dir, scope, 'git -C')
+    if (!isChecks) continue
+    if ((name === 'cd' || name === 'pushd') && operands(simple).length === 0) return refuse(`${name} with no path: it leaves your worktree`)
+    // Every place a word can name a path (an operand, `--out=/p`, `-o/p`, `>>/p`) stays in the worktree; an awk or sed program is code, read below.
+    const programs = programWords(simple, name)
+    for (const word of pathWords(simple.filter((word, i) => i === 0 || !programs.includes(word)))) {
+      for (const from of cwds[index] ?? [start]) {
+        const checked = pathCheck(word, scope, name, from, true)
         if (!checked.ok) return checked
       }
     }
-    if (grant.commands === 'any') continue
     if (isCheck(simple, scope)) continue
     if (name === 'git') {
-      const sub = gitSub(simple)?.sub ?? ''
+      const sub = git?.sub ?? ''
+      if (git?.hasConfig === true) return refuse(`git -c: git's config is not the Worker's (a key such as core.fsmonitor runs a command)`)
+      if (sub !== 'rebase' && simple.some(word => GIT_RUNS.test(word))) return refuse(`git ${sub}: an option that runs a command of its own`)
       if (LOCAL_GIT.has(sub) || sub === 'push') continue
       return refuse(`git ${sub}: not a local git command`)
     }
     if (NET.has(name) && grant.web !== 'off') continue
     if (!LOCAL.has(name)) return refuse(`${name}: not one of the repo's checks (${scope.checks.join(', ') || 'none found'}) or a local read-only command`)
-    for (const word of operands(simple)) {
-      if (!(word.startsWith('/') || word.startsWith('~') || word.includes('..'))) continue
-      const checked = pathCheck(word, scope, name)
-      if (!checked.ok) return checked
-    }
+    if (!isReadOnlyProgram(simple, name)) return refuse(`${name}: a program that writes or runs commands, or one read from a file`)
   }
   return { ok: true }
 }

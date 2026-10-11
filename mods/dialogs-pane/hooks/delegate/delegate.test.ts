@@ -146,6 +146,48 @@ describe('the grant', () => {
     expect(ok('Agent', { prompt: 'x' }, grant({ commands: 'any' }))).toBe(false)
   })
 
+  // The T3 review's X3 (dialogs-pane-ux.md §9 decision 11): a path in any position. `{P}` is the target.
+  const POSITIONS = [
+    'echo x >>{P}', 'echo x >> {P}', 'true 2>{P}', 'true 2> {P}', 'echo hi &>{P}', 'echo hi &>>{P}', 'echo hi >|{P}', 'echo hi>{P}', 'cat <{P}', 'cat <>{P}',
+    'uv run pytest >{P}', 'uv run pytest > {P}', 'sort -o{P} README.md', 'sort -o {P} README.md', 'sort -uo{P} README.md', 'sort --output={P} README.md', 'git log --output={P}', 'dd if=README.md of={P}',
+    "find . -name x -exec sh -c 'echo x >> {P}' \;", "git rebase -x 'echo x >> {P}' HEAD~1", "git rebase --exec='echo x >> {P}' HEAD~1", "git -c core.fsmonitor='echo x >> {P}' status",
+    `awk 'BEGIN { print 1 > "{P}" }'`, "sed -n 'w {P}' README.md", 'cd /home/me/code && echo x >> app/{P_REL}',
+  ]
+  const at = (form: string, path: string) => form.replace('{P}', path).replace('{P_REL}', 'x.txt')
+  const both = [grant({ commands: 'checks' }), grant({ commands: 'any' })]
+
+  for (const form of POSITIONS) {
+    test(`X3: ${form} into the owner's checkout is refused in both modes`, () => {
+      for (const g of both) expect([g.commands, ok('Bash', { command: at(form, '/home/me/code/app/x.txt') }, g)]).toEqual([g.commands, false])
+    })
+    if (form.includes('{P_REL}')) continue
+    test(`X3: ${form} outside the worktree is refused under checks`, () => {
+      expect(ok('Bash', { command: at(form, '/home/me/.zshrc') })).toBe(false)
+    })
+  }
+
+  test("checks: a program that writes or runs, git's config, and what find and rebase run", () => {
+    for (const command of [
+      'awk -f prog.awk README.md', `awk 'BEGIN { system("id") }'`, `awk '{ print | "sh" }' f`, `awk 'BEGIN { "id" | getline x }'`, `awk 'BEGIN { getline x < "f" }'`,
+      "sed 'e id' f", "sed 's/a/b/e' f", "sed 's/a/b/w out' f", "sed 'W out' f", "sed '/x/r f' f", 'sed -f prog.sed f', "sed -i 's/a/b/' 'w out'",
+      "git -c core.fsmonitor='echo x' status", 'GIT_CONFIG_COUNT=1 git status', 'export GIT_EXTERNAL_DIFF=x; git diff', "git fetch --upload-pack='touch x' .",
+      "find . -exec python3 -c 'print(1)' \;", "git rebase -x 'python3 -c 1' HEAD~1", 'cd; cat .zshrc',
+    ]) {
+      expect([command, ok('Bash', { command })]).toEqual([command, false])
+    }
+  })
+
+  test('X3: commands inside the worktree still pass, in both modes', () => {
+    for (const command of [
+      'uv run pytest > ./out.txt', 'uv run pytest 2>&1 | tail -5', 'sort -o ./x README.md', 'sort -o./x README.md', 'sort --output=out.txt README.md', 'ls 2>&1', 'cat < README.md',
+      `echo x > ${WT}/out.txt`, `echo x>>${WT}/out.txt`, "find . -name '*.pyc' -exec rm {} +", 'find . -name x -exec rm {} \;', "git rebase -x 'uv run pytest' HEAD~1",
+      "awk '{print $1}' README.md", "awk -F: '$2 > 5 { print $1 }' README.md", "sed -n '1,5p' README.md", "sed '/^#/d' README.md", "sed -i 's/a/b/g' README.md", "sed -i '' 's/a/b/' notes.txt",
+      'cd src && cat a.ts', 'NODE_ENV=test uv run pytest', "grep -n 'end$' README.md",
+    ]) {
+      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+    }
+  })
+
   test('checks are read off the repo root', () => {
     expect(checksOf([{ name: 'pyproject.toml', text: '[project]' }, { name: 'uv.lock', text: '' }])).toEqual(['uv run pytest', 'uv run ruff check', 'uv run ruff format --check', 'uv run mypy', 'uv sync'])
     expect(checksOf([{ name: 'package.json', text: '{"scripts": {"test": "vitest", "lint": "eslint ."}}' }])).toEqual(['npm test', 'npm run lint', 'npx tsc', 'npx vitest', 'npx jest', 'npx eslint', 'npx prettier --check'])

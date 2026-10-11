@@ -314,9 +314,15 @@ card that you see in the pane:
   - `checks` allows the repo's own checks, read off `package.json`, `pyproject.toml` with
     `uv.lock`, `Makefile`, `justfile`, `Cargo.toml` and `go.mod`. It also allows local git (no
     stash, no config, since both are shared with your checkout) and local read-only commands.
-  - `checks` refuses any word with a `$`: a path known only when the shell runs cannot be cleared.
+  - `checks` refuses a word the shell expands (a `$` outside single quotes): a path known only
+    when the shell runs cannot be cleared.
+  - `checks` lets awk and sed run only with a program that can neither write nor run (no `-f`).
+    It refuses `git -c` and the variables that make git or a check run other code (`GIT_*`,
+    `NODE_OPTIONS`, preloads).
   - `any` lets Claude Code's normal permission rules decide.
-  - Files are only in the worktrees, never in your checkouts, in both modes.
+  - Files are only in the worktrees, never in your checkouts, in both modes. A path counts
+    wherever a command names one: an operand, `--out=/p`, `-o/p`, a redirect target attached or
+    spaced. What `sh -c`, `eval`, `find -exec` and `git rebase -x` run is read too.
 - **Duration:** until the task is done, or a deadline (`2h`, `90m`). The kill switch ends either.
 
 **Who decides when to ask you.** The agent decides by default: if it's unsure, if the task grows, or

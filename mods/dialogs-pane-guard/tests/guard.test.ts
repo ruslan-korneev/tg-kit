@@ -150,6 +150,18 @@ describe('the grant', () => {
     ])
   })
 
+  test('a path attached to a redirect or an option is read too (X3); the same inside the worktree runs', WITH_PANE, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const seen = world(on)
+    await start($)
+    expect((await worker($, `echo 'alias ls=true' >>${HOME}/.zshrc`)).deny).toContain('outside your worktree')
+    expect((await worker($, `uv run pytest >${REPO}/out.txt`)).deny).toContain("the owner's own checkout")
+    expect((await worker($, `sort --output=${HOME}/.zshrc README.md`)).deny).toContain('outside your worktree')
+    expect((await worker($, `awk 'BEGIN { print 1 > "${HOME}/.zshrc" }'`)).deny).toContain('a program that writes or runs commands')
+    expect((await worker($, 'uv run pytest -q > ./out.txt 2>&1')).deny).toBeUndefined()
+    expect(seen.ran).toEqual(['uv run pytest -q > ./out.txt 2>&1'])
+  })
+
   test("a subagent that is no Worker is not the guard's", WITH_PANE, async ($, on) => {
     mock.clock(on, { now: NOW })
     const seen = world(on)
