@@ -381,6 +381,7 @@ both: one Button per hotkey.
 | a group | `⏎ send…  t: summary  w: watch  a: agent  n: write  m: menu` |
 | a channel | `⏎ send…  t: summary  w: watch  a: agent  x: mark  m: menu` |
 | Saved Messages | `⏎ send…  n: write  x: mark  m: menu` |
+| messages marked, any chat | `▪ 2 marked  ⏎ send…  x: mark  f: diff  h: clear  m: menu`. The marked set's keys lead: `v: range end` after ⏎ while a range is open, `f` on a marked pair in a bot chat. The chat's own verbs follow while they fit and leave first, so `h: clear` always fits; the count is text and is not one of the seven |
 | the cursor on a draft | `⏎ send draft  e: edit  d: drop  a: agent  m: menu` |
 | For you | the row's ⏎, `e d u` on agent rows, `t` on people rows, `h: folders  m: menu` |
 
