@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -658,7 +658,7 @@ requires-dist = [
     { name = "keyring", specifier = ">=25.0" },
     { name = "qrcode", marker = "extra == 'qr'", specifier = ">=7.4" },
     { name = "telethon", specifier = ">=1.40" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", specifier = ">=0.27.2,<0.28" },
 ]
 provides-extras = ["qr"]
 

@@ -16,6 +16,7 @@ from tg_kit.app import (
     AccountOpt,
     JsonOpt,
     Runtime,
+    TgTyper,
     TimeoutOpt,
     VerboseOpt,
     YesOpt,
@@ -52,7 +53,7 @@ def _entry_json(e: AllowEntry) -> dict[str, object]:
 
 
 def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one closure per command
-    allow_app = typer.Typer(
+    allow_app = TgTyper(
         no_args_is_help=True, help="Peers writable without --yes (stored by id in allow.toml)."
     )
     app.add_typer(allow_app, name="allow")
