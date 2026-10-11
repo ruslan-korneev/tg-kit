@@ -188,6 +188,43 @@ export function ActionBar(
   )
 }
 
+/**
+ * The hotkeys a drawn tree already binds, read off its Buttons: the bar's,
+ * the hidden keys', and the ones its content draws (a message's buttons, the
+ * sheet's intents, the card's levels, the strip's digits).
+ */
+export function hotkeysIn(nodes: readonly unknown[]): Set<string> {
+  const found = new Set<string>()
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const one of node) walk(one)
+      return
+    }
+    if (typeof node !== 'object' || node === null) return
+    if ('props' in node && typeof node.props === 'object' && node.props !== null && 'hotkey' in node.props && typeof node.props.hotkey === 'string') found.add(node.props.hotkey)
+    if ('children' in node) walk(node.children)
+  }
+  walk(nodes)
+  return found
+}
+
+/**
+ * The keys nothing in this view binds, each a Button in a Box the surface
+ * does not show: a press says where the key works instead of falling through
+ * to the prompt, which would take the keys with it (the T9 review's M1).
+ */
+export function StrayKeys({ Box, Button }: Els, props: { keys: readonly string[]; onKey: (key: string) => void }): RenderElement {
+  return (
+    <Box key="keys:stray" display="none">
+      {props.keys.map(key => (
+        <Button key={`stray:${key}`} plain hotkey={key} onPress={() => props.onKey(key)}>
+          {key}
+        </Button>
+      ))}
+    </Box>
+  )
+}
+
 /** The bar's lead while messages are marked: `▪ 3 marked`. */
 export function marksLead(count: number): string | null {
   return count === 0 ? null : `${GLYPH.marked} ${count} marked`
@@ -312,6 +349,8 @@ export function Frame(
     hidden: RenderElement
     /** The strip's digits while live (DigitKeys). */
     digits?: RenderElement | null
+    /** Every other key, caught (StrayKeys). */
+    stray?: RenderElement | null
   },
 ): RenderElement {
   return (
@@ -326,6 +365,7 @@ export function Frame(
       {props.bar}
       {props.hidden}
       {props.digits ?? null}
+      {props.stray ?? null}
     </Box>
   )
 }

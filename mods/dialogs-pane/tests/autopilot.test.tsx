@@ -565,7 +565,8 @@ describe('kill switch', () => {
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(child?.isKilled).toBe(true)
-    expect(await zeros()).toEqual([])
+    // Nothing runs: 0 stops nothing, and only the catch-all keeps it from the prompt (T9 review M1).
+    expect(await zeros()).toEqual(['stray:0'])
     await ui.unmount()
   })
 

@@ -404,11 +404,13 @@ function verbs(c: KeyContext): readonly KeyId[] {
     case 'chat': {
       // Inline shows one view: the way back to the chats is a verb there. An open range shows its end;
       // marks show how to clear them (`h: clear`), docked too, where h is otherwise only a hidden key.
-      // While marking, x and f come right after ⏎: they act on the marks, so the other verbs leave first.
+      // While marking, x and f come right after ⏎ in every kind of chat, x even where the kind's bar
+      // leaves it to the menu (a group's): they act on the marks, so the other verbs leave first (§4.6).
+      // f stays where it exists (bot chats); elsewhere the live filter drops it.
       const kindBar: readonly KeyId[] = c.kind === null ? ['send'] : KIND_BAR[c.kind]
       const isMarking = c.facts.marks > 0 || c.facts.isRangeOpen
       const marking: readonly KeyId[] = ['mark', 'diff']
-      const base = isMarking ? [...kindBar.slice(0, 1), ...kindBar.filter(id => marking.includes(id)), ...kindBar.slice(1).filter(id => !marking.includes(id))] : kindBar
+      const base = isMarking ? [...kindBar.slice(0, 1), ...marking, ...kindBar.slice(1).filter(id => !marking.includes(id))] : kindBar
       return [...base.slice(0, 1), ...(c.facts.isRangeOpen ? (['range'] as const) : []), ...base.slice(1), ...(c.seat === 'inline' || isMarking ? ['back' as const] : [])]
     }
     case 'sheet':
@@ -501,4 +503,62 @@ export function hotkeyTable(): Map<string, KeyId> {
   const owners = new Map<string, KeyId>()
   for (const def of TABLE) if (def.hotkey !== null) owners.set(def.hotkey, def.id)
   return owners
+}
+
+// --- keys with no meaning here (the T9 review's M1) ---
+
+/**
+ * Every key a view binds while the pane holds the keys: a–z and 0–9. One that
+ * nothing here binds would fall through to the prompt and take the keys with
+ * it, so every view catches the rest with a Button the surface does not draw
+ * (`stray`), and its press says where the key does work.
+ */
+export const STRAY_KEYS: readonly string[] = [...'abcdefghijklmnopqrstuvwxyz0123456789']
+
+const WHERE_WORDS: Record<Where, string> = {
+  chats: 'Chats',
+  chat: 'a chat',
+  folders: 'the Folders list',
+  foryou: 'For you',
+  sheet: 'the send sheet',
+  card: 'the agent card',
+  activity: 'Activity',
+  diff: 'a diff',
+  summary: 'the summary',
+  draft: 'a drafted reply',
+  field: 'a field',
+  menu: 'the menu',
+  band: 'the band',
+}
+
+const KIND_WORDS: Record<ChatKind, string> = {
+  bot: 'a bot chat',
+  person: 'a person chat',
+  group: 'a group',
+  channel: 'a channel',
+  saved: 'Saved Messages',
+  botfather: 'BotFather',
+}
+
+function joinWords(words: readonly string[]): string {
+  return words.length <= 1 ? (words[0] ?? '') : `${words.slice(0, -1).join(', ')} or ${words.at(-1) ?? ''}`
+}
+
+/**
+ * The notice for a key this view does not bind: what it does and where it
+ * works (`r: rec works in a bot chat`), the step it waits for, or that it is
+ * not a key. Never drawn or listed: §4.6's never-here keys stay unseen.
+ */
+export function strayText(key: string, c: KeyContext): string {
+  const def = TABLE.find(one => one.hotkey === key)
+  if (def === undefined) {
+    return /^[0-9]$/.test(key) ? `${key}: nothing is numbered ${key} here · m lists the keys` : `${key}: not a key · m lists them`
+  }
+  const label = (def.menuLabel ?? def.label)(c)
+  if (exists(def, c)) {
+    const needs = needsOf(def, c)
+    return needs === null ? `${key}: ${label}` : `${key}: ${label} · ${needs}`
+  }
+  if (def.where.includes(c.where) && def.kinds !== 'any') return `${key}: ${label} works in ${joinWords(def.kinds.map(kind => KIND_WORDS[kind]))}`
+  return `${key}: ${label} works in ${joinWords(def.where.filter(where => where !== 'band' && where !== 'field').map(where => WHERE_WORDS[where]))}`
 }

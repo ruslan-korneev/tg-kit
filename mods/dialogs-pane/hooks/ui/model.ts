@@ -116,6 +116,18 @@ export function cells(text: string): number {
   return count
 }
 
+/**
+ * Glyphs of the pane's own chrome that `cells` counts two but a terminal draws
+ * in one (East Asian Width Neutral): the running strip's level glyphs and
+ * arrow, and the folder strip's ‹ ›. ⚡ and ⏸ are two, so they are not here.
+ */
+export const NARROW_GLYPHS: ReadonlySet<string> = new Set(['⟳', '⌁', '◉', '✎', '→', '‹', '›'])
+
+/** Cells of the pane's own labels: its narrow glyphs as drawn, everything else erring wide (`cells`). */
+export function labelCells(text: string): number {
+  return cells(text) - [...text].filter(char => NARROW_GLYPHS.has(char)).length
+}
+
 export function mediaTag(message: Pick<TgMessage, 'media'>): string {
   return message.media === null ? '' : `[${message.media.type}]`
 }

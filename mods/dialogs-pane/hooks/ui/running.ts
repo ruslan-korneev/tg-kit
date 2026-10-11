@@ -7,7 +7,7 @@ import type { ActivityView, ApEntry, ApLevel, ApPhase, LedgerEntry, PeerRef, Pin
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { entryLines } from '../autopilot/ledger'
 import { ledgerRowText } from '../routing/route'
-import { GLYPH, cells, clockText } from './model'
+import { GLYPH, clockText, labelCells } from './model'
 
 /** One chat with something on it. */
 export type RunRow = {
@@ -78,14 +78,6 @@ export function stripItems(rows: readonly RunRow[]): StripItem[] {
 
 export const STRIP_SEP = ' · '
 
-/** The strip's own glyphs that `cells` counts two but a terminal draws in one (⚡ and ⏸ are two). */
-const NARROW_GLYPHS = new Set(['⟳', '⌁', '◉', '✎', '→'])
-
-/** Cells of a strip item: its glyphs as drawn, the chat names erring wide (`cells`). */
-function stripCells(text: string): number {
-  return cells(text) - [...text].filter(char => NARROW_GLYPHS.has(char)).length
-}
-
 /**
  * The items that fit beside `0: stop all` in `width` cells, and how many are
  * left over (`+2`). Names err wide, so a strip shows one name fewer rather than
@@ -100,7 +92,7 @@ export function fitStrip(items: readonly StripItem[], width: number): { shown: S
 function fitCount(texts: readonly string[], sep: string, room: number): number {
   const used = (count: number) => {
     const more = texts.length - count
-    return stripCells(texts.slice(0, count).join(sep)) + (more === 0 ? 0 : ` +${more}`.length)
+    return labelCells(texts.slice(0, count).join(sep)) + (more === 0 ? 0 : ` +${more}`.length)
   }
   let count = texts.length
   while (count > 1 && used(count) > room) count -= 1

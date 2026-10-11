@@ -202,8 +202,8 @@ describe('the strip and the Folders list (§4.7)', () => {
   test("Telegram's order with All chats where the owner put it, digits on the first nine, +N past the edge", async ($, on) => {
     const { ui } = await openPane($, on)
     // The first open lands on Telegram's first folder.
-    // ‹ and › count two cells, erring wide (ui/model `cells`): at 64 columns three tabs fit, and +11.
-    expect(await tabsOf(ui)).toEqual(['1: ‹Personal›', '2: Work', '3: All chats 2', '+11'])
+    // ‹ and › draw in one cell each (ui/model NARROW_GLYPHS): at 64 columns four tabs fit, and +10.
+    expect(await tabsOf(ui)).toEqual(['1: ‹Personal›', '2: Work', '3: All chats 2', '4: News', '+10'])
     expect(await drawnIds(ui)).toEqual([3002, 1003])
     // The ninth tab: scrolled into view, with the ones before it past the left edge.
     await ui.press({ key: 'digit:9' })
@@ -242,6 +242,10 @@ describe('the strip and the Folders list (§4.7)', () => {
   test('h goes up to every folder, shared marked, the Archive, then the pane views; ⏎ comes down into one', async ($, on) => {
     const { ui } = await openPane($, on)
     await ui.press({ key: 'key:back' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › folders')
+    // A key the Folders list does not bind is caught: a notice says where it works (T9 review M1).
+    await ui.press({ key: 'stray:x' })
+    expect((await ui.find({ key: 'running' }))?.text).toContain('x: mark works in a chat')
     expect((await ui.find({ key: 'header' }))?.text).toContain('tg › folders')
     const rows = (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => key.startsWith('folder:'))
     expect(rows.slice(0, 4).map(key => key.split(':')[2])).toEqual(['f1', 'f2', 'f0', 'f11'])

@@ -4,7 +4,7 @@
 import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
-import { KEYS, hotkeyTable } from '../hooks/ui/keys'
+import { KEYS, STRAY_KEYS, hotkeyTable } from '../hooks/ui/keys'
 import type { TgDialog, TgMessage } from '../types'
 import { DIALOGS, MESSAGES, PERSON_MESSAGES, chatIds, chatKey, findChat, folderRun, messagesFor } from './fixtures'
 
@@ -97,9 +97,15 @@ const runTg = (args = '', columns = 160) =>
   ({ command: 'tg', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns } }) as const
 
 /** Every Button drawn, shown or kept as a hidden hotkey, by its hotkey. */
+/** The keys the view binds to something, by hotkey: every Button but the catch-all's (`stray:`), which say where a key works. */
 async function hotkeys(ui: Ui): Promise<string[]> {
   const buttons = await ui.findAll({ type: 'Button' })
-  return buttons.flatMap(button => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : []))
+  return buttons.flatMap(button => (typeof button.props.hotkey === 'string' && button.key?.startsWith('stray:') !== true ? [button.props.hotkey] : []))
+}
+
+/** Every hotkey drawn, the catch-all's included. */
+async function allHotkeys(ui: Ui): Promise<string[]> {
+  return (await ui.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : []))
 }
 
 /** The bar's keys as drawn: the `key:<id>` Buttons inside the bar. */
@@ -387,12 +393,15 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
   ]
 
   for (const view of VIEWS) {
-    test(`${view.name}: no two Buttons share a hotkey, each is the table's, the bar holds ≤ 7`, async ($, on) => {
+    test(`${view.name}: each of a–z and 0–9 has exactly one Button; the bound ones are the table's; the bar holds ≤ 7`, async ($, on) => {
       const { ui } = await openPane($, on, view.props)
       for (const key of view.steps) await ui.press({ key: key.startsWith('dialog:') ? await chatKey(ui, Number(key.slice('dialog:'.length))) : key })
       const drawn = await hotkeys(ui)
-      expect(drawn.filter((key, index) => drawn.indexOf(key) !== index)).toEqual([])
       for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
+      // Nothing falls through to the prompt (the T9 review's M1): what the view does not bind, the catch-all does, once.
+      const every = await allHotkeys(ui)
+      expect(every.filter((key, index) => every.indexOf(key) !== index)).toEqual([])
+      expect([...every].sort()).toEqual([...STRAY_KEYS].sort())
       expect((await barKeys(ui)).length).toBeLessThanOrEqual(7)
       await ui.unmount()
     })

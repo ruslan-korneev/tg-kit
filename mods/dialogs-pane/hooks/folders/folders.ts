@@ -4,7 +4,7 @@
 // when the next pass may run. Pure: register.tsx runs tg and keeps the state.
 import type { AgentItem, ApDraft, ApUndoWindow, Folder, FolderChats, FolderPass, ForYouWhy, ListView, PassState, TgDialog, Verdict } from '../../types'
 import { FOLDER_KINDS, TgJsonError, parseDialog } from '../packet/types'
-import { cells } from '../ui/model'
+import { cells, labelCells } from '../ui/model'
 import { verdictOf, type Me } from '../triage/needs'
 
 /** A row's `last_text` in $.state and $.store: what a row can draw, not the whole message (§8 T9 b). */
@@ -221,12 +221,13 @@ const GAP = 2
  */
 export function stripWindow(texts: readonly string[], current: number, width: number): { start: number; end: number } {
   const fill = (start: number) => {
-    let used = start > 0 ? cells(`+${start}`) + GAP : 0
+    // The tabs' ‹ › draw in one cell each (ui/model NARROW_GLYPHS); titles err wide.
+    let used = start > 0 ? labelCells(`+${start}`) + GAP : 0
     let end = start
     while (end < texts.length) {
-      const next = cells(texts[end] ?? '') + (end > start ? GAP : 0)
+      const next = labelCells(texts[end] ?? '') + (end > start ? GAP : 0)
       const rest = texts.length - end - 1
-      const mark = rest > 0 ? GAP + cells(`+${rest}`) : 0
+      const mark = rest > 0 ? GAP + labelCells(`+${rest}`) : 0
       if (used + next + mark > width && end > start) break
       used += next
       end += 1

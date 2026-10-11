@@ -781,7 +781,8 @@ describe('drafted reply', () => {
     const owners = hotkeyTable()
     for (const step of ['open', 'planned'] as const) {
       if (step === 'planned') await ui.press({ key: 'draft:check' })
-      const drawn = (await ui.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : []))
+      // The catch-all's Buttons (`stray:`) bind what nothing else does; they say where a key works.
+      const drawn = (await ui.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.hotkey === 'string' && button.key?.startsWith('stray:') !== true ? [button.props.hotkey] : []))
       expect(drawn.filter((key, index) => drawn.indexOf(key) !== index)).toEqual([])
       for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
     }

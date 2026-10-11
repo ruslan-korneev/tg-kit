@@ -78,10 +78,12 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
-import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, marksLead, stripRight } from './ui/frame'
+import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
+  STRAY_KEYS,
+  strayText,
   actionBar,
   chatKind,
   hiddenKeys,
@@ -931,23 +933,20 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   if (isMenu) for (const section of menuSections(context)) for (const entry of section.entries) if (entry.def.hotkey !== null) drawn.add(entry.def.hotkey)
   // ── folders ── digits pick a folder while the cursor is in Chats, the Folders list or For you (§4.7).
   const isDigitsLive = !isMenu && (where === 'chats' || where === 'folders' || where === 'foryou')
-  return Frame(els, {
-    rows,
-    header: Header(els, {
-      location: await locationOf($, where, isMenu, isInlineChats),
-      strip: isInlineChats ? strip : null,
-      summary,
-      chips: await chipsOf($),
-      isFocused: seating.isFocused,
-    }),
-    running,
-    strip: isInlineChats ? null : strip,
-    slot,
-    notice,
-    bar: sheetBar ?? fieldBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey }),
-    hidden: HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey }),
-    digits: isDigitsLive ? await drawDigitKeys($, els) : null,
+  const header = Header(els, {
+    location: await locationOf($, where, isMenu, isInlineChats),
+    strip: isInlineChats ? strip : null,
+    summary,
+    chips: await chipsOf($),
+    isFocused: seating.isFocused,
   })
+  const barRow = sheetBar ?? fieldBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey })
+  const hidden = HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey })
+  const digits = isDigitsLive ? await drawDigitKeys($, els) : null
+  // Every other letter and digit is caught, so none falls through to the prompt and takes the keys (the T9 review's M1).
+  const taken = hotkeysIn([header, running, strip, slot, notice, barRow, hidden, digits])
+  const stray = StrayKeys(els, { keys: STRAY_KEYS.filter(key => !taken.has(key)), onKey: key => say($, 'info', strayText(key, barContext)) })
+  return Frame(els, { rows, header, running, strip: isInlineChats ? null : strip, slot, notice, bar: barRow, hidden, digits, stray })
 }
 
 async function hasReloadRow($: $, isListShown: boolean, isThreadShown: boolean): Promise<boolean> {
