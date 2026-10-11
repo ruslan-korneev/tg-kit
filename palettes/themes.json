@@ -132,14 +132,14 @@
       "roles": {
         "accent": "#8839EF",
         "unread": "#D20F39",
-        "mention": "#FE640B",
-        "held": "#DF8E1D",
-        "ok": "#40A02B",
+        "mention": "#E45401",
+        "held": "#B87518",
+        "ok": "#3C9628",
         "person": "#1E66F5",
         "group": "#179299",
-        "channel": "#04A5E5",
-        "bot": "#EA76CB",
-        "saved": "#DF8E1D",
+        "channel": "#038DC4",
+        "bot": "#E23FB6",
+        "saved": "#B87518",
         "dim": "#7C7F93",
         "subtext": "#5C5F77",
         "text": "#4C4F69",
@@ -160,6 +160,32 @@
         "subtext": "subtext1",
         "text": "text",
         "surface": "surface2"
+      },
+      "adjusted": {
+        "mention": {
+          "from": "#FE640B",
+          "to": "#E45401"
+        },
+        "held": {
+          "from": "#DF8E1D",
+          "to": "#B87518"
+        },
+        "saved": {
+          "from": "#DF8E1D",
+          "to": "#B87518"
+        },
+        "ok": {
+          "from": "#40A02B",
+          "to": "#3C9628"
+        },
+        "channel": {
+          "from": "#04A5E5",
+          "to": "#038DC4"
+        },
+        "bot": {
+          "from": "#EA76CB",
+          "to": "#E23FB6"
+        }
       },
       "senders": [
         "#E64553",
@@ -186,6 +212,14 @@
         "8EEE98": "#40A02B",
         "FF93B2": "#EA76CB",
         "FB6F5F": "#E64553"
+      },
+      "variant256": {
+        "roles": {
+          "held": "#B8751A",
+          "saved": "#B8751A"
+        },
+        "senders": {},
+        "topics": {}
       }
     },
     "tokyo-night": {
@@ -423,16 +457,16 @@
       "foreground": "#ECEFF4",
       "roles": {
         "accent": "#88C0D0",
-        "unread": "#BF616A",
+        "unread": "#C56F77",
         "mention": "#D08770",
         "held": "#EBCB8B",
         "ok": "#A3BE8C",
         "person": "#81A1C1",
         "group": "#8FBCBB",
-        "channel": "#5E81AC",
+        "channel": "#6A8AB2",
         "bot": "#B48EAD",
         "saved": "#EBCB8B",
-        "dim": "#4C566A",
+        "dim": "#77849E",
         "subtext": "#D8DEE9",
         "text": "#ECEFF4",
         "surface": "#4C566A"
@@ -452,6 +486,20 @@
         "subtext": "nord4",
         "text": "nord6",
         "surface": "nord3"
+      },
+      "adjusted": {
+        "dim": {
+          "from": "#4C566A",
+          "to": "#77849E"
+        },
+        "unread": {
+          "from": "#BF616A",
+          "to": "#C56F77"
+        },
+        "channel": {
+          "from": "#5E81AC",
+          "to": "#6A8AB2"
+        }
       },
       "senders": [
         "#BF617D",
@@ -481,14 +529,17 @@
       },
       "variant256": {
         "roles": {
-          "group": "#7FBCBB"
+          "group": "#7FBCBB",
+          "dim": "#777F9E"
         },
         "senders": {
           "0": "#BF6180",
           "1": "#E67470",
           "4": "#7FBCBB"
         },
-        "topics": {}
+        "topics": {
+          "FB6F5F": "#B2616A"
+        }
       }
     },
     "dracula": {
