@@ -1238,38 +1238,6 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
     await ui.unmount()
   })
 
-  test("only this plugin's packets become one row; ctrl+o shows the whole packet", async ($, on) => {
-    engineSites(on)
-    const prompts: string[] = []
-    on('prompt.submit', (_$, e) => {
-      prompts.push(e.text)
-      return { text: e.text }
-    })
-    const { ui, clock } = await openPane($, on)
-    await openChat(ui, 1001)
-    await ui.press({ key: 'msg:677791' })
-    await ui.press({ key: 'sheet:intent:fix' })
-    await clock.settle()
-    const packet = prompts[0] ?? ''
-    expect(packet).toMatch(/^<tg-packet /)
-    const row = (props: RenderPropsOf['UserMessage']) => $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'UserMessage', props })
-    const ours: RenderPropsOf['UserMessage'] = { text: packet, origin: { kind: 'plugin', name: PLUGIN }, isExpanded: false }
-    const one = await row(ours)
-    expect((await one.find({ type: 'Text' }))?.text).toBe('▣ tg packet → main · Fix · @example_bot #677791 (+1 parent, 3 masked)   ctrl+o shows it')
-    await one.unmount()
-    for (const props of [
-      { ...ours, isExpanded: true },
-      { ...ours, origin: { kind: 'plugin', name: 'another-plugin' } },
-      { ...ours, origin: { kind: 'plugin', name: PLUGIN, asUser: true } },
-      { ...ours, origin: { kind: 'composer' } },
-    ] satisfies RenderPropsOf['UserMessage'][]) {
-      const shown = await row(props)
-      expect((await shown.find({ type: 'Text' }))?.text).toBe(packet)
-      await shown.unmount()
-    }
-    await ui.unmount()
-  })
-
   test('/tg help is the key table, /tg status the summary and what runs, each a card; the command lists them', async ($, on) => {
     engineSites(on)
     const write = autopilotWriter(on)

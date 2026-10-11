@@ -119,7 +119,6 @@ import {
   draftFits,
   hintTail,
   itemLine,
-  packetRow,
   shownIndex,
   statusAlarm,
   stepKey,
@@ -265,7 +264,7 @@ export const register: Register = (on, options) => {
   })
 
   // ── footer ── dialogs-pane-ux.md §4.1, §4.5, §8 T5: the band, the footer label,
-  // the hint tail, one transcript row per packet, /tg help and /tg status as cards.
+  // the hint tail, /tg help and /tg status as cards. A packet's transcript row stays whole (decision 10).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const drawn = await drawBand($, $.ui.resolve(e), e.props.bodyColumns)
@@ -280,17 +279,6 @@ export const register: Register = (on, options) => {
     const tail = hintTail((await bandNow($)).length, (await summaryCounts($)).forYou)
     if (tail === undefined) return next(e)
     return next({ ...e, props: { ...e.props, tail: e.props.tail === undefined ? tail : `${e.props.tail} · ${tail}` } })
-  })
-
-  // A packet this plugin sent to main is one row; ctrl+o (isExpanded) shows it whole (§5.1).
-  // Seen live on 2.1.296: the engine does not run this hook for the row of this plugin's own
-  // $.prompt.submit (a probe plugin of another name was handed that row and rewrote it), so the
-  // row stays whole there until the rewrite moves to another plugin or the engine changes.
-  on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'plugin' } } }, async ($, e, next) => {
-    const { origin } = e.props
-    if (e.props.isExpanded || origin.kind !== 'plugin' || origin.name !== PLUGIN || origin.asUser === true) return next(e)
-    const row = packetRow(e.props.text, await read($, ledger))
-    return row === null ? next(e) : next({ ...e, props: { ...e.props, text: row } })
   })
 
   on('ui.render', { component: 'CommandOutput', props: { command: 'tg' } }, async ($, e, next) => {
@@ -5773,8 +5761,8 @@ async function emptyText($: $): Promise<string> {
 // that are not muted; the status line holds the three alarms only; the band
 // above the prompt is one queue of what needs the owner, most urgent first,
 // leaving out what the pane draws; the hint tail says the band has something;
-// a packet sent to main is one transcript row; /tg help and /tg status are
-// cards. Pure rules in ./ui/queue, the band's drawing in ./ui/band.
+// /tg help and /tg status are cards; a packet's transcript row stays whole
+// (decision 10). Pure rules in ./ui/queue, the band's drawing in ./ui/band.
 
 /** The seat the pane was last drawn in: docked, the open chat shows under Chats. */
 let lastSeat: Seat | null = null

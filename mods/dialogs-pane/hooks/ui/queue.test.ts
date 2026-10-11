@@ -1,8 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ApNote, ApUndoWindow, BandEvent, LedgerEntry, PeerRef } from '../../types'
-import { buildPacket } from '../packet/build'
-import { BOT, PERSON, REPLY, SENT } from '../packet/fixtures'
+import type { ApNote, ApUndoWindow, BandEvent, PeerRef } from '../../types'
 import { apDraftView, type DraftView } from './drafts'
 import { KEYS, helpLines } from './keys'
 import {
@@ -11,7 +9,6 @@ import {
   draftFits,
   footerLabel,
   hintTail,
-  packetRow,
   positionText,
   shownIndex,
   statusAlarm,
@@ -24,7 +21,6 @@ const peer = (id: number, label: string, kind: PeerRef['kind'] = 'user'): PeerRe
 const A = peer(1004, 'Contact A')
 const B = peer(2002, 'Contact B')
 const GROUP = peer(1002, 'Dev Team', 'supergroup')
-const BOT_PEER = peer(1001, '@example_bot', 'bot')
 
 const NONE = { levels: '', watched: '', forYou: '' }
 
@@ -137,44 +133,6 @@ describe("a draft's row (decision 9: ⏎ sends only what was read)", () => {
     expect(draftFits('Завтра занят', 64)).toBe(true)
     expect(draftFits(`${'x'.repeat(58)} ✅`, 64)).toBe(false)
     expect(draftFits(`${'x'.repeat(57)} ✅`, 64)).toBe(true)
-  })
-})
-
-describe('the transcript: one row per packet (§5.1)', () => {
-  const entry = (over: Partial<LedgerEntry> = {}): LedgerEntry => ({
-    seq: 1,
-    at: 0,
-    peer: BOT_PEER,
-    messageIds: [REPLY.id],
-    to: { kind: 'main' },
-    intent: 'fix',
-    state: { kind: 'sent' },
-    parents: 1,
-    missing: [],
-    masked: 3,
-    ...over,
-  })
-
-  test('the ledger names the chat, the parents and the masks', () => {
-    const packet = buildPacket({ messages: [REPLY], context: [SENT], peer: BOT, intent: { id: 'fix' } })
-    expect(packetRow(packet.text, [entry()])).toBe('▣ tg packet → main · Fix · @example_bot #677791 (+1 parent, 3 masked)   ctrl+o shows it')
-    // The row as the engine hands it: under its framing of a plugin's prompt.
-    expect(packetRow(`The dialogs-pane plugin sent a message:\n${packet.text}`, [entry()])).toBe(packetRow(packet.text, [entry()]))
-    expect(packetRow(`The other plugin sent a message:\n${packet.text}`, [entry()])).toBeNull()
-  })
-
-  test('without the ledger (a resumed session), the packet itself: a person masked stays masked', () => {
-    const person = { id: PERSON.id, kind: 'user', username: null, name: 'Contact A' } as const
-    const packet = buildPacket({ messages: [{ ...REPLY, sender: person }], peer: { ...PERSON, username: null }, intent: { id: 'explain', audience: 'people' } })
-    expect(packetRow(packet.text, [])).toMatch(/^▣ tg packet → main · Explain · \[name-1\] #677791 \(\d masked\)   ctrl\+o shows it$/)
-    const several = buildPacket({ messages: [SENT, REPLY], peer: BOT, intent: { id: 'raw', text: 'why?' }, redact: false })
-    expect(packetRow(several.text, [])).toBe('▣ tg packet → main · Ask · @example_bot 2 messages   ctrl+o shows it')
-  })
-
-  test('nothing else is a packet row: another source, plain text, a broken head', () => {
-    expect(packetRow('fix this please', [])).toBeNull()
-    expect(packetRow('<tg-packet v="1" intent="fix" source="elsewhere">', [])).toBeNull()
-    expect(packetRow('<tg-packet v="1" intent="bogus" source="dialogs-pane">', [])).toBeNull()
   })
 })
 
