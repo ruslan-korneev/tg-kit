@@ -5,6 +5,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
 import { KEYS, STRAY_KEYS, helpLines, hotkeyTable } from '../hooks/ui/keys'
+import { defaultDialog } from '../hooks/autopilot/config'
 import { PALETTES } from '../hooks/ui/palette'
 import type { ApDraft, Autopilot, PeerRef, TgDialog, TgMessage } from '../types'
 import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, PERSON_MESSAGES, borderOf, chatIds, chatKey, cornerOf, findChat, folderRun, legendOf, messagesFor, reachChat, tabsOf, titleOf } from './fixtures'
@@ -1404,12 +1405,12 @@ describe('the dock\'s sections hold their rows for a layout generation (§10.5 "
       expect((await ui.find({ key: 'card:foryou-section' }))?.props.height).toBe(forYou)
       expect(await place(ui)).toEqual(base)
       // An agent starts: the header counts it at once, the card waits for the next generation.
-      await write($, value => ({ ...value, running: [1004] }))
+      await write($, value => ({ ...value, running: [1004], dialogs: { ...value.dialogs, '1004': { ...defaultDialog(contact), level: 'draft' } } }))
       expect((await ui.find({ key: 'header' }))?.text).toContain('AUTOPILOT 1 CHATS')
       expect(await ui.find({ key: 'card:autopilot' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
       // A log entry lands: the same.
-      await write($, value => ({ ...value, running: [1004], ledger: [sent(1)] }))
+      await write($, value => ({ ...value, running: [1004], dialogs: { ...value.dialogs, '1004': { ...defaultDialog(contact), level: 'draft' } }, ledger: [sent(1)] }))
       expect(await ui.find({ key: 'card:log' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
       // g starts a generation: FOR YOU takes its rows over CHATS, the other two under it, and nothing above CHATS draws a stop.

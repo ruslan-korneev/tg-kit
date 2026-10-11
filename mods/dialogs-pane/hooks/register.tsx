@@ -806,6 +806,8 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return openSheet($)
     case 'start': {
       await apCardEnter($) // ── autopilot ──
+      // ⏎ on the card is the owner's move: the agent it started gets its AUTOPILOT rows now (§10.5).
+      layoutGen += 1
       // A started rung closes the card: the ring goes back to the cursor row. A card still up keeps it where its step put it.
       if ((await read($, autopilot)).view.kind === 'none') await ringCursor($)
       return
@@ -1225,7 +1227,6 @@ async function drawDock($: $, els: Els, where: Where, width: number, room: numbe
   // The send box writes into the open chat, so its card stays; the search field types for the list.
   const isLower = LOWER.includes(where) || (where === 'field' && !at.isSearching && (await read($, thread)) !== null)
   const isStart = await isStartDrawn($, 'dock', where)
-  const pilot = await read($, autopilot)
   const key = [layoutGen, (await read($, folders)).gen, room, width, isLower, at.view, JSON.stringify(at.list), at.query, isStart].join('|')
   if (heldLayout?.key !== key) {
     const fresh = dockLayout({
@@ -1234,8 +1235,8 @@ async function drawDock($: $, els: Els, where: Where, width: number, room: numbe
       isStart,
       // FOR YOU's section sits over Chats only: the For you view and the Folders list draw no such card.
       forYou: (await chatsOnTop($)) ? (await forYouSectionRows($)).length : 0,
-      autopilot: autopilotRowsNow(pilot.running.length),
-      log: (await logRowsNow($, width - CARD_INNER)).length,
+      autopilot: (await apCardNow($)).rows,
+      log: (await logNow($)).length,
       list: await topLength($),
     })
     heldLayout = { key, layout: fresh }
@@ -1516,65 +1517,19 @@ async function drawForYouSection($: $, els: Els, width: number, rows: number, bo
   })
 }
 
-// ── running ── the AUTOPILOT and LOG slots (§10.5, §10.6). T14's AutopilotSection and LogSection
-// (./ui/activity) draw them; until they land, these draw the running rows and the merged log as text.
-
-/** Content rows the AUTOPILOT card asks for: the gauge, the strip and one lane per chat on, three at most; none with no agent on. */
-function autopilotRowsNow(lanes: number): number {
-  return lanes === 0 ? 0 : 2 + Math.min(3, lanes)
-}
-
-/** LOG's rows now, newest first (./ui/running `mergedLog`): packets, bursts and stops. */
-async function logRowsNow($: $, width: number): Promise<LogRow[]> {
-  const pilot = await read($, autopilot)
-  const at = Math.max(pilot.now, await read($, now), await $.clock.now())
-  const entries = await dgLedger($, pilot.ledger, pilot.dialogs) // ── delegate ── with the guard's stop events
-  return mergedLog(await read($, ledger), entries, at, width)
-}
+// ── running ── the AUTOPILOT and LOG slots (§10.5, §10.6): T14's cards (./ui/activity) in the rows this generation holds.
 
 async function drawAutopilotSlot($: $, els: Els, width: number, rows: number, border: CardBorder): Promise<RenderElement> {
-  const { Text } = els
-  const runs = await runRowsNow($)
-  const agents = runs.filter(row => row.agent !== null)
-  return Card(els, {
-    key: 'card:autopilot',
-    colors,
-    role: 'ok',
-    title: `AUTOPILOT · ${agents.length} ${agents.length === 1 ? 'chat' : 'chats'}`,
-    // The legend row leaves `0: stop all` to this corner while the card is on screen: never drawn twice.
-    corner: runs.some(isRunning) ? (width < LEGEND_MIN ? '0: stop' : STOP_LABEL) : null,
-    border,
-    width,
-    rows,
-    children: agents.map(row => (
-      <Text key={`ap:${row.peer.id}`} wrap="truncate-end">
-        {activityText(row, row.peer.label)}
-      </Text>
-    )),
-  })
+  const drawn = await apCardNow($)
+  // The legend row leaves `0: stop all` to this corner while the card is on screen: never drawn twice.
+  const isStopCorner = (await runRowsNow($)).some(isRunning)
+  // An emptied card keeps its rows for the generation; with no card ever drawn, the rows stay blank.
+  if (drawn.card === null) return Card(els, { key: 'card:autopilot', colors, role: 'ok', title: 'AUTOPILOT', border, width, rows, children: [] })
+  return AutopilotSection(els, { colors, width: width - CARD_INNER, rows, border, isStopCorner, card: drawn.card, isStale: drawn.isStale })
 }
 
-const LOG_ROLE: Record<LogTone, Role> = { plain: 'subtext', ok: 'ok', warn: 'held', danger: 'unread' }
-
 async function drawLogSlot($: $, els: Els, width: number, rows: number, border: CardBorder): Promise<RenderElement> {
-  const { Text } = els
-  const log = await logRowsNow($, width - CARD_INNER)
-  return Card(els, {
-    key: 'card:log',
-    colors,
-    role: 'surface',
-    titleRole: 'subtext',
-    title: 'LOG',
-    corner: 'l: all',
-    border,
-    width,
-    rows,
-    children: log.slice(0, rows).map(row => (
-      <Text key={row.key} color={colors[LOG_ROLE[row.tone]]} wrap="truncate-end">
-        {row.text}
-      </Text>
-    )),
-  })
+  return LogSection(els, { colors, width: width - CARD_INNER, rows, border, log: await logNow($) })
 }
 
 /**
@@ -5437,13 +5392,16 @@ async function dgLedger($: $, ledger: readonly ApEntry[], dialogs: Record<string
 // (./ui/running), for the dock's running strip, Activity (`l`) and the kill
 // switch (`0`, `/tg stop`), which stops every follow, autopilot and Worker
 // and says what it stopped, by name. Every `$` call of it is here.
-import { Activity } from './ui/activity'
+import { Activity, AutopilotSection, LogSection } from './ui/activity'
 import {
   activityOrder,
   activityTarget,
   activityText,
+  autopilotRows,
   fitStrip,
+  gauge,
   isRunning,
+  lanes,
   mergedLog,
   runRows,
   stopAnswer,
@@ -5451,8 +5409,8 @@ import {
   stopNotice,
   stoppedOf,
   stripItems,
+  type AutopilotCard,
   type LogRow,
-  type LogTone,
   type RunInput,
   type RunRow,
   type StopReport,
@@ -5579,22 +5537,111 @@ async function drawActivity($: $, els: Els, width: number, rows: number): Promis
   const live = await runRowsNow($)
   const order = view === null ? [] : activityOrder(view, live)
   const byId = new Map(live.map(row => [row.peer.id, row]))
-  const pilot = await read($, autopilot)
-  const at = Math.max(pilot.now, await read($, now), await $.clock.now())
   const watched = (await read($, triage)).watched.map(peer => peer.label)
-  const entries = await dgLedger($, pilot.ledger, pilot.dialogs) // ── delegate ── with the guard's stop events
   return Activity(els, {
+    colors,
     rows: order.map(peer => {
       const row = byId.get(peer.id) ?? null
       return { id: peer.id, text: activityText(row, peer.label), isStopped: row === null || !isRunning(row) }
     }),
     cursor: clamp(view?.cursor ?? 0, order.length),
     watching: watched.length === 0 ? null : watched.join(' · '),
-    log: mergedLog(await read($, ledger), entries, at, width),
+    card: await apCardLive($),
+    log: await logNow($),
     rowsLeft: rows,
     width,
     onOpen: index => openActivityRow($, index),
   })
+}
+
+// --- the AUTOPILOT and LOG cards (§10.6, T14) ---
+
+/** The last card drawn with an agent on: a section that empties keeps its rows for the layout generation, drawn dim (§10.5). */
+let lastApCard: AutopilotCard | null = null
+
+/**
+ * The AUTOPILOT card's data now, and the content rows it wants (0: no agent
+ * on, so no card). With none on, the last card drawn comes back `isStale`, for
+ * a frame that still holds the rows it granted.
+ */
+async function apCardNow($: $): Promise<{ card: AutopilotCard | null; rows: number; isStale: boolean }> {
+  const pilot = await read($, autopilot)
+  const at = Math.max(pilot.now, await read($, now), await $.clock.now())
+  const dialogs = pilot.running.flatMap(id => pilot.dialogs[String(id)] ?? [])
+  if (dialogs.length === 0) return { card: lastApCard, rows: 0, isStale: lastApCard !== null }
+  const tasks = (await read($, delegate)).tasks.filter(isLive)
+  const entries = await dgLedger($, pilot.ledger, pilot.dialogs) // ── delegate ── with the guard's stop events
+  const card: AutopilotCard = {
+    gauge: gauge(dialogs, pilot.ledger, at),
+    entries,
+    lanes: lanes(
+      dialogs.map(dialog => {
+        const burst = apRuntimes.get(dialog.peer.id)?.burst
+        return {
+          peer: dialog.peer,
+          level: dialog.level,
+          phase: pilot.phase[String(dialog.peer.id)] ?? 'listening',
+          gapS: dialog.gapS,
+          burstAt: burst === undefined || burst.messages.length === 0 ? null : burst.lastAt,
+          latest: entries.findLast(entry => entry.peer.id === dialog.peer.id) ?? null,
+          hasDraft: pilot.drafts.some(draft => draft.peer.id === dialog.peer.id),
+          taskAt: dialog.level === 'delegate' ? (tasks.find(task => task.peer.id === dialog.peer.id)?.startedAt ?? null) : null,
+        }
+      }),
+      at,
+    ),
+  }
+  lastApCard = card
+  apCardWatch($, card, at)
+  return { card, rows: autopilotRows(card.lanes.length), isStale: false }
+}
+
+/** The card while an agent is on; Activity holds no rows from an earlier draw, so a stale card is not drawn there. */
+async function apCardLive($: $): Promise<AutopilotCard | null> {
+  const drawn = await apCardNow($)
+  return drawn.isStale ? null : drawn.card
+}
+
+/** The LOG card's lines, newest first: packets, bursts and stops. Empty: no LOG card. */
+async function logNow($: $): Promise<LogRow[]> {
+  const pilot = await read($, autopilot)
+  return mergedLog(await read($, ledger), await dgLedger($, pilot.ledger, pilot.dialogs))
+}
+
+/** The card was drawn this recently: it is on screen, so its clocks move. */
+const AP_CARD_SEEN_MS = 2_000
+let apCardSeenAt = 0
+let apCardTicker: Timer | null = null
+
+/** Something on the card changes by the second: a burst's lane filling, a drafting clock, `↻`. */
+function isApCardMoving(card: AutopilotCard): boolean {
+  return (card.gauge !== null && card.gauge.freeInMs !== null) || card.lanes.some(lane => (lane.gap !== null && lane.gap < 1) || lane.state.kind === 'drafting')
+}
+
+/**
+ * Once a second while the card is on screen and something on it moves, `now`
+ * steps and the pane redraws. Started by the draw that shows it, stopped by the
+ * first tick after it leaves the screen or stops moving: no redraws while the
+ * card is not drawn.
+ */
+function apCardWatch($: $, card: AutopilotCard, at: number): void {
+  apCardSeenAt = at
+  if (apCardTicker !== null || !isApCardMoving(card)) return
+  apCardTicker = $.clock.every(1000, () => {
+    apCardTick($).catch(() => {
+      // A missed tick holds the lanes and the clocks one second.
+    })
+  })
+}
+
+async function apCardTick($: $): Promise<void> {
+  const at = await $.clock.now()
+  if (at - apCardSeenAt > AP_CARD_SEEN_MS || lastApCard === null || !isApCardMoving(lastApCard) || (await read($, autopilot)).running.length === 0) {
+    apCardTicker?.cancel()
+    apCardTicker = null
+    return
+  }
+  await update($, now, () => at)
 }
 // ── /running ──
 
