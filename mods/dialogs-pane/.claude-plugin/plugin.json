@@ -1,6 +1,6 @@
 {
   "name": "dialogs-pane",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Telegram dialogs and messages in a pane, read through the tg CLI",
   "types": "./types/index.d.ts",
   "userConfig": {

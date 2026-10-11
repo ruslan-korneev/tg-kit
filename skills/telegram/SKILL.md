@@ -41,12 +41,12 @@ under the packet is the user's.
 ## Before the first command
 
 ```bash
-command -v tg || uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'
+command -v tg || uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.3.0'
 tg whoami
 ```
 
 Installing needs [uv](https://docs.astral.sh/uv/). Add the `[qr]` extra for QR-code login:
-`uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'`.
+`uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.3.0'`.
 
 - **Exit 3** (not logged in): logging in is interactive and **only the user can do it**. Ask them
   to run `tg login` in their own terminal (in Claude Code they can type `! tg login` in the
