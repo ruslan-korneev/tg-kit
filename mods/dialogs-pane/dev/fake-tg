@@ -75,8 +75,16 @@ def msg(i, text, sender, chat, out=False, date="2026-10-10T21:00:00Z", buttons=(
             "buttons": list(buttons), "reactions": [], "links": []}
 
 
+# Earlier turns, so the bot's thread is longer than the pane's window (the T2 review's ring check).
+EARLIER = [
+    msg(677752 + k, f"/ping {k // 2 + 1}" if k % 2 == 0 else f"pong {k // 2 + 1}", ME if k % 2 == 0 else BOT, 1001,
+        k % 2 == 0, f"2026-10-10T19:{k + 10:02d}:00Z", (), None if k % 2 == 0 else 677751 + k)
+    for k in range(32)
+]
+
 THREADS = {
     1001: [
+        *EARLIER,
         msg(677788, "/start", ME, 1001, True, "2026-10-10T20:11:00Z"),
         msg(677789, "Hi! I am Example Bot. Pick an option:", BOT, 1001, False, "2026-10-10T20:11:06Z", BUTTONS, 677788),
         msg(677790, "/settings", ME, 1001, True, "2026-10-10T21:02:00Z"),
