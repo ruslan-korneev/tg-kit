@@ -39,8 +39,8 @@ above the prompt.
   and `--limit 200` (kinds and unread). The pane's store files were read for which keys hold
   anything. §2.2 and §4.6–4.7 have the counts.
 - Throwaway probe mods checked the engine surfaces this design leans on. The first five are this
-  design's own probe; the last two are behaviours T1 and T2 found, which a probe confirmed and the
-  engine's docs do not state:
+  design's own probe. The last three are behaviours the builds found: T1's and T2's, which a probe
+  confirmed and the engine's docs do not state, and T9's, seen live:
 
 | Surface | Result |
 | --- | --- |
@@ -51,6 +51,7 @@ above the prompt.
 | `Select` | draws `web: read-only ▾`; focused, it opens a list; ⏎ picks |
 | `Button` `hotkey` in a Box drawn `display: "none"` | pressed while the pane holds the keys, as a drawn one is; so is one in a 0×0 Box. The engine's docs do not promise it (the Button doc says only "while the plugin's site holds the focus"), so it is an assumption: §6 leans on it, Appendix A checks it after every engine upgrade |
 | The focus ring across a redraw | keeps its position among the pane's ring stops (Buttons, Inputs, Selects), not its key; a `$.ui.focus` on a key the old drawing still has lands on the old drawing, and `ok` comes back all the same. In a 40-row list centred on the cursor, `k` put ▸ on row 32 and the ring on 31; a 3-row sheet closing left ▸ on 39 and the ring on 36. Scrolling at the edges and rows without ring stops under the sheet kept the ring on ▸ at every step. §4.3's ring rules lean on it, Appendix A checks it |
+| A printable key with no hotkey in a focused pane | the keys go back to the prompt and the key is typed there; every key after it lands in the prompt too (T9, live: an unbound `h` on the Folders list). The Pane doc's Escape note says as much ("once the prompt has the keys again (the person typed…)"). §6 binds a–z and 0–9 in every view for it |
 
 ## 2. Audit of today's UX
 
@@ -245,8 +246,9 @@ Any view: h back one level · m menu · 0 stop everything · q hide the pane
 ```
 
 `h` always goes one level up: clear the marks, close the sheet, close the card, leave the chat,
-and from Chats up to the Folders list. Esc stays the engine's: it hands the keys back to the prompt
-and leaves the pane as it is.
+and from Chats up to the Folders list. On the Folders list, the top, `h` goes back to the chats it
+came from, so `h` is bound in every view (§6). Esc stays the engine's: it hands the keys back to
+the prompt and leaves the pane as it is.
 
 In the dock, Chats stay on screen above the chat, and the card, sheet, diff and activity take the
 lower part. Inline, each view takes the body.
@@ -279,8 +281,12 @@ lower part. Inline, each view takes the body.
 - **Menu (`m`)** — every key valid here, grouped (message, chat, chats, pane, safety); each label is
   a Button, so the menu is also the palette.
 - **Mouse** — every key label is a Button, so a click does what the key does; a click on a row is ⏎.
-  The one exception is the dock's running strip, which rule 1 keeps free of ring stops: its
-  `0: stop all` is a label, and `0` is pressed by key, from the menu or with `/tg stop`.
+  Two exceptions, both kept free of ring stops by rule 1:
+  - the dock's running strip: its `0: stop all` is a label, and `0` is pressed by key, from the
+    menu or with `/tg stop`;
+  - the folder strip's tabs. A pass changes their counts, and inline the header's summary changes
+    their room, so how many fit changes while the cursor stays. The digits are hidden Buttons, and
+    a click reaches a folder through `h`'s Folders list.
 - **Focus** — the header says `● keys` or `ctrl+x tab: keys`; the action bar dims without the keys.
 
 ### 4.4 Discoverability
@@ -315,8 +321,9 @@ for: a hard stop waiting (`$.ui.notify` too), stops skipped while delegate runs,
 
 **The rule.** A key lives with its object, and shows only in the chats where it can do its job.
 
-- **Never here**: it cannot work in this kind of chat, or must not. Not drawn, not in the menu, no
-  hotkey. Recording in a person chat, writing in a channel, delegate in a group.
+- **Never here**: it cannot work in this kind of chat, or must not. Not drawn and not in the menu;
+  its letter only says where it works, so it never falls through to the prompt (§6). Recording in
+  a person chat, writing in a channel, delegate in a group.
 - **Not now**: it works after one step. Listed in the menu, dim, with the step:
   `f: diff · needs a reply with an earlier pair`; on the card, `4: auto · needs allow.toml`.
 - **Here and now**: in the action bar when it is one of this kind of chat's common verbs, in the
@@ -1261,6 +1268,16 @@ The engine presses hidden Buttons, but its docs do not promise it (§1). If a re
 keys work from the menu only until the frame draws them on a dim second row under the bar.
 Appendix A's check after every engine upgrade finds that; no unit test can, since
 `claude-code/testing` presses a Button by its key, not by its hotkey.
+
+While the pane holds the keys, no letter or digit reaches the prompt. A printable key with no hotkey
+in a focused pane hands the keys back to the prompt and is typed there (§1). After one stray
+letter, every key after it lands in the prompt, and a ⏎ sends it to main. So every view binds a–z
+and 0–9: to the key's action where it works, and otherwise to a one-line notice that says where it
+does (`r: recording works in a bot chat`, `c: not a key · m lists them`) and keeps the keys in the
+pane. These Buttons live in the hidden Box. They are never drawn and never in the menu, so §4.6's
+never-here keys stay unseen. A field that holds the ring (the send box, search, Ask) takes printable
+keys itself, as the engine has it. The test: in every view of the sweep, each of a–z and 0–9 has
+exactly one Button.
 
 Band (after ctrl+x tab): ⏎ the item's action · `e` edit · `d` drop or dismiss · `o` open in the
 pane · `u` undo · `j` `k` next and previous item.
