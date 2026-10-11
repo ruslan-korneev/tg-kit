@@ -75,6 +75,8 @@ type World = {
   toasts: string[]
   commands: CommandSpec[]
   store: Map<string, unknown>
+  /** The pane's opens ($.ui.open): the pane asks for the keys back after the engine's dialog. */
+  opens: { id: string; focus: boolean }[]
   /** The engine dialog's questions, with their options in order. */
   questions: { question: string; options: string[] }[]
   /** What `tg read` on the group answers (oldest first); tests append to it. */
@@ -89,7 +91,7 @@ function world(
     /** What a dry run answers, when it is not the plain allow (it may wait on something meanwhile). */
     dryRun?: (ran: Ran) => Promise<ProcessRunResult>
     /** What the engine's dialog answers the card's allow.toml question: a label, a dismissal, or `-p` (ask rejects). */
-    ask?: 'Yes, add it' | 'No' | 'dismiss'
+    ask?: 'Yes, add it' | 'No' | 'yes' | 'dismiss'
     /** Runs while the dialog is up, before it is answered. */
     whileAsked?: () => Promise<void>
     /** What `tg allow add` answers in place of adding (a refusal, or an add the list then lacks). */
@@ -99,7 +101,7 @@ function world(
     send?: (ran: Ran) => ProcessRunResult
   } = {},
 ): World {
-  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], store: new Map(), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
+  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], opens: [], store: new Map(), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
@@ -174,7 +176,10 @@ function world(
     seen.commands.push(e)
     return { value: { command: e.name } }
   })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', (_$, e) => {
+    seen.opens.push({ id: e.id, focus: e.focus === true })
+    return { value: { isPlaced: true } }
+  })
   on('ui.close', () => ({ value: undefined }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.focus', () => ({}))
@@ -397,8 +402,10 @@ describe('auto', () => {
     expect(await ui.find({ type: 'Text', text: '✗ Dev Team is not in allow.toml, and auto sends alone' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '⏎ asks you, and your Yes adds 1002 with tg allow add' })).toBeDefined()
     expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ add to allow.toml…')
+    const opens = seen.opens.length
     await ui.press({ key: 'key:start' })
     await clock.settle()
+    expect(seen.opens.slice(opens)).toEqual([{ id: 'tg', focus: true }])
     // The argv is built once: the dialog shows it verbatim, and it is what runs.
     expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ?', options: ['No', 'Yes, add it'] }])
     expect(adds(seen)).toEqual([['tg', 'allow', 'add', '1002', '--yes']])
@@ -482,15 +489,19 @@ describe('auto', () => {
     await band.unmount()
   })
 
-  for (const ask of ['No', 'dismiss'] as const) {
-    test(`a 4 ⏎ outside allow.toml, the dialog ${ask === 'No' ? 'answered No' : 'dismissed (as under -p, where ask rejects)'}: nothing runs, nothing starts`, async ($, on) => {
+  const WORDS = { No: 'answered No', yes: "answered with free text under Other, 'yes'", dismiss: 'dismissed (as under -p, where ask rejects)' } as const
+  for (const ask of ['No', 'yes', 'dismiss'] as const) {
+    test(`a 4 ⏎ outside allow.toml, the dialog ${WORDS[ask]}: nothing runs, nothing starts, and the pane takes the keys back`, async ($, on) => {
       const clock = mock.clock(on, { now: NOW })
       const seen = world(on, { allow: [], ask })
       const { ui } = await openCard($, on, clock)
       await ui.press({ key: 'ap:level:auto' })
+      const opens = seen.opens.length
       await ui.press({ key: 'key:start' })
       await clock.settle()
       expect(seen.questions).toHaveLength(1)
+      // When the dialog closes the keys fall to the prompt: the pane's own open asks for them back (the review's F1).
+      expect(seen.opens.slice(opens)).toEqual([{ id: 'tg', focus: true }])
       expect(adds(seen)).toEqual([])
       expect(seen.children).toHaveLength(0)
       expect((await ui.find({ key: 'ap:card' }))).toBeDefined()

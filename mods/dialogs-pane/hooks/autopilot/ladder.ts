@@ -5,7 +5,7 @@
 // every `$` call.
 import type { ApRung, CardStep } from '../../types'
 import type { ChatKind } from '../ui/keys'
-import { GLYPH } from '../ui/model'
+import { GLYPH, oneLine } from '../ui/model'
 import { LEVEL_GLYPH } from './config'
 
 /** follow → summarize → draft → auto → delegate; the digits keep their rungs, so 2 is summarize everywhere. */
@@ -177,7 +177,8 @@ export function allowArgv(arg: string): readonly string[] {
 
 /** The dialog's question: the exact command a Yes runs, verbatim (§9 decision 1). */
 export function allowQuestion(label: string, rung: ApRung, argv: readonly string[]): string {
-  return `${RUNG_NAME[rung]} sends in ${label} without you, so ${label} must be in allow.toml. Run  ${argv.join(' ')}  ?`
+  const name = oneLine(label, 40)
+  return `${RUNG_NAME[rung]} sends in ${name} without you, so ${name} must be in allow.toml. Run  ${argv.join(' ')}  ?`
 }
 
 /** Activity's line for the add: the audit trail of who changed allow.toml. */

@@ -143,6 +143,12 @@ const THREAD_LIMIT = 30
 const DOCK_COLUMNS = 64
 const INLINE_ROWS = 12
 const MODES: readonly Mode[] = ['open', 'hidden']
+/**
+ * The pane's one open call, shared: opening an id that is open already resets
+ * its title and options, so every place that opens it (setMode, and taking the
+ * keys back after the engine's dialog) passes these.
+ */
+const PANE_OPEN = { id: PANE, title: 'tg · dialogs', focus: true, columns: DOCK_COLUMNS, rows: INLINE_ROWS } as const
 
 const isMode = (value: unknown): value is Mode => MODES.some(one => one === value)
 
@@ -359,7 +365,7 @@ async function setMode($: $, next: Mode): Promise<void> {
     await $.ui.close({ id: PANE })
     await armNext($) // ── folders ── every 5 min while hidden
   } else {
-    await $.ui.open({ id: PANE, title: 'tg · dialogs', focus: true, columns: DOCK_COLUMNS, rows: INLINE_ROWS })
+    await $.ui.open(PANE_OPEN)
     await openFolders($) // ── folders ──
   }
   await refreshStatus($)
@@ -3772,20 +3778,28 @@ async function apCardEnter($: $): Promise<void> {
  */
 async function apAskAllow($: $, peer: PeerRef, rung: ApRung): Promise<boolean> {
   const argv = allowArgv(peer.arg)
-  let answer: string
+  let answer: string | null
   try {
     answer = await $.ui.ask(allowQuestion(peer.label, rung, argv), { options: [ALLOW_NO, ALLOW_YES], header: 'allow.toml' })
   } catch {
     // Dismissed, timed out, or a -p run: no answer is a no.
+    answer = null
+  }
+  await takeKeysBack($)
+  if (answer === null) {
     await apNotice($, `Not added: nobody said yes, so ${peer.label} stays out of allow.toml.`)
     return false
   }
   const view = (await read($, autopilot)).view
-  if (view.kind !== 'card' || view.dialogId !== peer.id) return false
+  if (view.kind !== 'card' || view.dialogId !== peer.id) {
+    $.ui.toast(`tg: not added: the card had moved on from ${peer.label} when you answered.`)
+    return false
+  }
   if (answer !== ALLOW_YES) {
     await apNotice($, `Not added: ${peer.label} stays out of allow.toml.`)
     return false
   }
+  await apNotice($, `${GLYPH.working}adding ${peer.label}: ${argv.join(' ')}`)
   let ran: ProcessRunResult
   try {
     ran = await $.process.run(argv, { timeoutMs: TG_TIMEOUT_MS })
@@ -3803,6 +3817,22 @@ async function apAskAllow($: $, peer: PeerRef, rung: ApRung): Promise<boolean> {
   await apNotice($, null)
   await loadAllow($)
   return true
+}
+
+/**
+ * When the engine's dialog settles, the keys go to the prompt, not back to
+ * the pane (seen live on 2.1.296: after `a 4 ⏎ 2` the header read
+ * `ctrl+x tab: keys`, and `j j ⏎` would have sent "jj" to main). The pane's
+ * own open call asks for them back; the engine grants focus only while the
+ * prompt holds the keys over an empty box, so a draft the owner typed keeps
+ * them. $.ui.focus would not do: it is denied while the site lacks the keys.
+ */
+async function takeKeysBack($: $): Promise<void> {
+  try {
+    await $.ui.open(PANE_OPEN)
+  } catch {
+    // Refused (no surface, or the engine kept the keys): the owner's ctrl+x tab still brings them back.
+  }
 }
 
 /** Stops whatever rung runs in the chat: its follow, or its autopilot (and with it its Worker, apUnlisten → dgStopTasksOf). */
