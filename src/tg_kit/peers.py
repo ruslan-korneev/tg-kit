@@ -1,8 +1,8 @@
 """Peer specs: parse (pure) and resolve (network, cache first).
 
 Accepted: me/self · @username · username · t.me/username[/ID] · t.me/c/123/45 ·
-numeric user id · -100… channel · -… basic group · +phone (contacts only) ·
-title:Some Chat (unique dialog title match; writes need --yes).
+numeric user id, else the bare group/channel id apps show · -100… channel · -… basic group ·
++phone (contacts only) · title:Some Chat (unique dialog title match; writes need --yes).
 """
 
 from __future__ import annotations
@@ -12,14 +12,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from tg_kit.errors import NotFoundError, UsageError
+from tg_kit.model import TopicView
 
 __all__ = [
+    "TOPICS_PAGE",
     "Peer",
     "PeerSpec",
+    "list_topics",
     "message_id_in",
     "parse_message_ref",
     "parse_peer",
     "resolve",
+    "resolve_topic",
 ]
 
 _USERNAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{2,31}$")  # 3+: old bots like @gif are short
@@ -29,6 +33,9 @@ _TME = re.compile(
 _PHONE = re.compile(r"^\+[\d\s()-]{6,20}$")
 # Channel ids are marked as -(10**12 + id) by Telethon/Bot API.
 _CHANNEL_MARK = 10**12
+
+# Topics per messages.getForumTopics call: the most Telegram returns in one.
+TOPICS_PAGE = 100
 
 # Dialogs scanned when a numeric id or title is not in the entity cache. Bounds
 # the one-off cost (one GetDialogs page is 100) so a miss never walks thousands.
@@ -192,18 +199,7 @@ async def resolve(  # noqa: C901 — one branch per spec kind
 
     if spec.kind == "id":
         assert spec.peer_id is not None  # noqa: S101 — narrows a type already fixed by the parser for this kind
-        row = session.find(peer_id=spec.peer_id)
-        if row is None:
-            await _scan_dialogs(client)
-            row = session.find(peer_id=spec.peer_id)
-        if row is None:
-            msg = (
-                f"id {spec.peer_id} is not in the local cache "
-                f"or the latest {DIALOG_SCAN_LIMIT} dialogs"
-            )
-            raise NotFoundError(
-                msg, hint="resolve it by @username first (tg resolve @name), then use the id"
-            )
+        row = await _by_id(client, session, spec.peer_id)
         if self_id is not None and row.id == self_id:
             return await _self_peer(client, session, self_id)
         return _peer_from_row(row, utils, types)
@@ -221,6 +217,57 @@ async def resolve(  # noqa: C901 — one branch per spec kind
 
     assert spec.title is not None  # noqa: S101 — narrows a type already fixed by the parser for this kind
     return await _by_title(client, spec.title, utils)
+
+
+async def _by_id(client: Any, session: Any, peer_id: int) -> Any:
+    """The cached row for a numeric id; a miss costs one dialogs scan, as before.
+
+    A marked id (negative) is looked up as given. A bare positive id is first a
+    user id; Telegram apps also show groups and channels by their bare id, so it
+    is then tried as the channel `-100<id>` and the basic group `-<id>`. A user
+    wins; a channel and a group sharing the bare id is refused, never guessed.
+    """
+    candidates = _id_forms(peer_id)
+    rows = _find_each(session, candidates)
+    if rows[0] is None:
+        await _scan_dialogs(client)
+        rows = _find_each(session, candidates)
+    if rows[0] is not None:
+        return rows[0]
+    hits = [r for r in rows if r is not None]
+    if len(hits) > 1:
+        listing = "; ".join(f"{r.kind or 'chat'} {r.id} ({r.name})" for r in hits)
+        msg = f"id {peer_id} matches more than one chat: {listing}"
+        raise UsageError(msg, hint=f"pass the marked id: {' or '.join(str(r.id) for r in hits)}")
+    if hits:
+        return hits[0]
+    if len(candidates) == 1:
+        msg = f"id {peer_id} is not in the local cache or the latest {DIALOG_SCAN_LIMIT} dialogs"
+        raise NotFoundError(
+            msg, hint="resolve it by @username first (tg resolve @name), then use the id"
+        )
+    msg = (
+        f"id {peer_id} is not in the local cache or the latest {DIALOG_SCAN_LIMIT} dialogs "
+        f"(tried as user {peer_id}, channel {candidates[1]}, group {candidates[2]})"
+    )
+    raise NotFoundError(
+        msg,
+        hint=(
+            "pass its @username or t.me/name link, or pin the chat in a Telegram app "
+            f"so the {DIALOG_SCAN_LIMIT}-dialog scan reaches it"
+        ),
+    )
+
+
+def _id_forms(peer_id: int) -> tuple[int, ...]:
+    """The marked ids a typed id may mean: as given if negative, else user, channel, group."""
+    if peer_id <= 0:
+        return (peer_id,)
+    return (peer_id, -(_CHANNEL_MARK + peer_id), -peer_id)
+
+
+def _find_each(session: Any, ids: tuple[int, ...]) -> list[Any]:
+    return [session.find(peer_id=i) for i in ids]
 
 
 async def _self_peer(client: Any, session: Any, self_id: int | None) -> Peer:
@@ -283,3 +330,90 @@ async def _by_title(client: Any, title: str, utils: Any) -> Peer:
         input=utils.get_input_peer(entity),
         fuzzy=True,
     )
+
+
+# --- forum topics ---------------------------------------------------------------
+
+
+def _forum_only(peer: Peer) -> None:
+    # Only a supergroup can be a forum; asking Telegram about anything else is wasted.
+    if peer.kind != "supergroup":
+        msg = f"{peer.label()} is a {peer.kind}, not a forum: it has no topics"
+        raise UsageError(msg, hint="topics exist in supergroups with Topics turned on")
+
+
+def _not_a_forum(peer: Peer) -> UsageError:
+    msg = f"{peer.label()} is a supergroup without topics, not a forum"
+    return UsageError(msg, hint="drop --topic: the chat is one stream")
+
+
+async def resolve_topic(client: Any, peer: Peer, topic_id: int) -> TopicView:
+    """The topic `topic_id` of the forum `peer`; refuses a non-forum or a missing topic."""
+    from telethon import errors
+    from telethon.tl import functions
+
+    from tg_kit.convert import convert_topic
+
+    _forum_only(peer)
+    if topic_id < 1:
+        raise UsageError(f"--topic must be a topic id (1 is General), not {topic_id}")
+    try:
+        r = await client(functions.messages.GetForumTopicsByIDRequest(peer.input, [topic_id]))
+    except errors.ChannelForumMissingError as exc:
+        raise _not_a_forum(peer) from exc
+    except errors.TopicDeletedError as exc:
+        raise _no_topic(peer, topic_id) from exc
+    last = {int(m.id): m for m in r.messages}
+    for t in r.topics:
+        view = convert_topic(t, last)
+        if view is not None and view.id == topic_id:
+            return view
+    raise _no_topic(peer, topic_id)
+
+
+def _no_topic(peer: Peer, topic_id: int) -> NotFoundError:
+    return NotFoundError(
+        f"{peer.label()} has no topic {topic_id} (deleted, or never there)",
+        hint=f"list the topics: tg topics {peer.id}",
+    )
+
+
+async def list_topics(
+    client: Any, peer: Peer, *, limit: int, query: str | None = None
+) -> list[TopicView]:
+    """The forum's topics in Telegram's order (pinned first, then by last message)."""
+    from telethon import errors
+    from telethon.tl import functions
+
+    from tg_kit.convert import convert_topic
+
+    _forum_only(peer)
+    found: list[TopicView] = []
+    seen: set[int] = set()
+    offset_date, offset_id, offset_topic = None, 0, 0
+    while len(found) < limit:
+        want = min(TOPICS_PAGE, limit - len(found))
+        try:
+            r = await client(
+                functions.messages.GetForumTopicsRequest(
+                    peer.input, offset_date, offset_id, offset_topic, want, q=query
+                )
+            )
+        except errors.ChannelForumMissingError as exc:
+            raise _not_a_forum(peer) from exc
+        last = {int(m.id): m for m in r.messages}
+        fresh = [t for t in r.topics if int(t.id) not in seen]
+        for t in fresh:
+            seen.add(int(t.id))
+            view = convert_topic(t, last)
+            if view is not None:
+                found.append(view)
+        if len(r.topics) < want or not fresh:
+            break
+        # The next page starts after the last topic: its id and its last message.
+        tail = fresh[-1]
+        tail_msg = last.get(int(getattr(tail, "top_message", 0)))
+        offset_date = getattr(tail_msg, "date", None)
+        offset_id = int(getattr(tail, "top_message", 0))
+        offset_topic = int(tail.id)
+    return found[:limit]

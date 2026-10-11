@@ -180,7 +180,8 @@ every button. Pressing a button depends on its type:
 # read
 tg dialogs [-n 30] [--unread] [--query TEXT] [--archived | --folder ID|TITLE]
 tg folders [--counts | --chats]          # Telegram folders in Telegram's order
-tg read PEER [-n 20] [--before ID] [--after ID] [--since 2h|2026-09-01] [--from PEER] [--reverse] [--full]
+tg topics PEER [-n 30] [-q TEXT]         # a forum's topics (see Forum topics)
+tg read PEER [-n 20] [--before ID] [--after ID] [--since 2h|2026-09-01] [--from PEER] [--reverse] [--topic ID] [--full]
 tg msg PEER ID [ID…]                     # full messages, never truncated
 tg search PEER QUERY [--filter photo|video|doc|link|voice|music|gif|round|…] [--since …] [--from PEER]
 tg search --global QUERY
@@ -189,34 +190,37 @@ tg info PEER                             # bio / description / bot commands / me
 tg download PEER ID [--out DIR] [--max-size 200]   # prints the path; never overwrites
 tg drafts
 tg transcribe PEER ID                    # voice → text (Premium or its trial)
-tg watch PEER… [--jsonl] [--events message,edit,typing,delete] [--after ID | --since 2h] [--idle-exit 30s]
+tg watch PEER… [--jsonl] [--events message,edit,typing,delete] [--after ID | --since 2h] [--idle-exit 30s] [--topic ID]
 
 # write: every command supports --dry-run and goes through the guard
-tg send PEER TEXT|- [--reply-to ID] [--no-preview] [--md|--html|--plain] [--silent] [--wait 10s]
-tg send-file PEER PATH|URL [--caption TEXT] [--as-doc] [--wait …]
+tg send PEER TEXT|- [--reply-to ID] [--topic ID] [--no-preview] [--md|--html|--plain] [--silent] [--wait 10s]
+tg send-file PEER PATH|URL [--caption TEXT] [--as-doc] [--topic ID] [--wait …]
 tg edit PEER ID TEXT|-
 tg delete PEER ID… [--only-me] --yes
-tg forward FROM ID… --to PEER
+tg forward FROM ID… --to PEER [--topic ID]
 tg react PEER ID 👍                      # "" removes the reaction
-tg draft PEER TEXT|-
+tg draft PEER TEXT|- [--topic ID]
 tg mark-read PEER
 
 # bots
 tg press PEER ID (BUTTON | --row R --col C | --data STR | --data-hex HEX) [--wait 5s]
 tg start @bot [PAYLOAD] [--wait …]       # /start, or messages.StartBot with a deep-link payload
 tg inline @bot QUERY [--peer PEER]       # list results
-tg inline @bot QUERY --pick N --to PEER  # send result N
+tg inline @bot QUERY --pick N --to PEER [--topic ID]  # send result N
 
 # allowlist (writes to these peers skip --yes)
 tg allow add PEER… --yes   ·   tg allow list   ·   tg allow remove ID|PEER…
 
 # anything else
 tg raw METHOD [PARAMS_JSON|-]
+tg themes [NAME]                          # preview the colour themes (piped: their names)
 ```
 
 Global options work before or after the command: `--account/-a NAME`, `--json`,
 `--timeout SECONDS` (default 30, plus any `--wait`, plus `flood_sleep_threshold` so that an
-allowed flood-wait sleep is never cut short), `-v` (debug logs and tracebacks).
+allowed flood-wait sleep is never cut short), `-v` (debug logs and tracebacks). `--color
+auto|always|never` and `--theme NAME` go before the command only (`tg --color never read …`);
+see Colour.
 
 For multi-line text, use `-` with stdin instead of shell escaping:
 
@@ -242,6 +246,10 @@ A numeric id needs an access hash. tg looks it up in the local entity cache firs
 scans the latest 500 dialogs once. If it's still missing, the command exits 4 and suggests
 resolving by `@username`.
 
+A bare positive id that is not a known user is also tried as the channel `-100<id>` and the basic
+group `-<id>`, so the "peer id" a Telegram app shows for a group or channel works as typed. A
+user wins; if a channel and a group both match, tg refuses (exit 2) and lists the marked ids.
+
 ## Output
 
 The default is compact, one line per message, with buttons on indented lines below it:
@@ -253,10 +261,12 @@ The default is compact, one line per message, with buttons on indented lines bel
 #677792 09-29 14:02 me ↩677791: /start
 #677793 09-29 14:03 Alex K. [photo 1280×720 214KB] caption text
 #677794 09-29 14:05 @example_bot ✎×2: updated text {👍3 ❤️1}
+#812 09-29 14:06 [topic:12] @example_bot ↩809: a reply inside forum topic 12
 ```
 
-Legend: `#id`, local time (with the year if it isn't the current one), then the sender (`me`,
-`@username`, a display name, or the channel title). Markers: `↩ID` reply, `⤳X` forwarded from
+Legend: `#id`, local time (with the year if it isn't the current one), `[topic:N]` in a forum
+(see Forum topics), then the sender (`me`, `@username`, a display name, or the channel title).
+Markers: `↩ID` reply, `⤳X` forwarded from
 X, `via @bot`, `✎` edited (`✎×N` edits seen while waiting), `📌` pinned. `⏎` stands for a newline
 in the text. Media tags: `[photo W×H SIZE]`, `[video …]`, `[gif …]`, `[voice 0:12]`,
 `[videonote 0:09]`, `[audio NAME 3:05]`, `[sticker 😀]`, `[document NAME SIZE]`, `[poll "…"]`,
@@ -268,6 +278,53 @@ JSON is the last edit time, and `edits` counts only the edits seen during a `--w
 Listings cut text at 300 characters and append `… (+N chars, tg msg PEER ID)`. `--full` and
 `tg msg` never cut. Each call prints at most 200 messages.
 
+### Colour
+
+On a terminal the text output has colour; it is presentation only. Ids, times and markers are
+dim, `[topic:N]` and `me` are the accent, bots pink, other senders a colour by id (like Telegram's
+name colours), media tags teal, unread counts red and mentions orange, `error:` red, `fix:` green.
+Stripping the colour gives the exact plain line, and the plain line is what a pipe, a file,
+`--json` and `--jsonl` always get. Colour is on when the stream (stdout or stderr, each on its
+own) is a terminal, `NO_COLOR` is unset and `TERM` is not `dumb`. `FORCE_COLOR=1` turns it on
+anyway, and `--color never|always` or `TG_COLOR=never|always` overrides all of these.
+`COLORTERM=truecolor` gives the colours of a named theme (see Themes); otherwise it uses the 16
+ANSI colours, the same for every theme.
+
+### Themes
+
+The theme is `--theme NAME`, else `TG_THEME=NAME`, else `theme = "NAME"` in `config.toml`, else
+`tokyo-night`. An unknown name exits 2 and lists the themes (from `config.toml`, the message
+names the file). `tg themes` shows every theme on a terminal, and `tg themes NAME` shows one: the
+same sample of messages, dialogs, a topic and an error, on the theme's own background, in
+truecolor even without `COLORTERM`. Piped, it prints only the names; `--json` gives each name,
+`appearance` (dark or light), and which is the default and which is current.
+
+| | |
+|---|---|
+| <img src="docs/media/themes/catppuccin-mocha.svg" alt="Catppuccin Mocha preview" width="380"><br>`catppuccin-mocha` · dark | <img src="docs/media/themes/catppuccin-latte.svg" alt="Catppuccin Latte preview" width="380"><br>`catppuccin-latte` · light |
+| <img src="docs/media/themes/tokyo-night.svg" alt="Tokyo Night preview" width="380"><br>`tokyo-night` · dark | <img src="docs/media/themes/rose-pine-moon.svg" alt="Rosé Pine Moon preview" width="380"><br>`rose-pine-moon` · dark |
+| <img src="docs/media/themes/gruvbox-dark.svg" alt="Gruvbox Dark preview" width="380"><br>`gruvbox-dark` · dark | <img src="docs/media/themes/nord.svg" alt="Nord preview" width="380"><br>`nord` · dark |
+| <img src="docs/media/themes/dracula.svg" alt="Dracula preview" width="380"><br>`dracula` · dark | <img src="docs/media/themes/kanagawa.svg" alt="Kanagawa Wave preview" width="380"><br>`kanagawa` · dark |
+
+Seven themes also come as `NAME256` (all but `tokyo-night`): the same colours, with the few
+moved that would land on one cell where tmux draws 256 colours. Use one of those when your tmux
+does not pass truecolor through.
+
+The colours are each upstream's published values, mapped onto tg's roles. Where a colour was too
+faint on its own background (below 3:1), or would read as an unread count, a mention or `me`,
+it was moved by lightness or hue; `palettes/themes.json` records every such change (`adjusted`).
+The pictures are rendered from `tg themes NAME` by `dev/theme_previews.py`. The themes, with
+thanks:
+
+- Catppuccin Mocha (`catppuccin-mocha`): [catppuccin/palette](https://github.com/catppuccin/palette/blob/main/palette.json), MIT
+- Catppuccin Latte (`catppuccin-latte`): [catppuccin/palette](https://github.com/catppuccin/palette/blob/main/palette.json), MIT
+- Tokyo Night (`tokyo-night`): [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim/blob/main/lua/tokyonight/colors/storm.lua), Apache-2.0
+- Rosé Pine Moon (`rose-pine-moon`): [rose-pine/palette](https://github.com/rose-pine/palette/blob/main/palette.json), MIT
+- Gruvbox Dark (`gruvbox-dark`): [morhetz/gruvbox](https://github.com/morhetz/gruvbox/blob/master/colors/gruvbox.vim), MIT
+- Nord (`nord`): [nordtheme/nord](https://github.com/nordtheme/nord/blob/develop/src/nord.css), MIT
+- Dracula (`dracula`): [dracula/dracula-theme](https://github.com/dracula/dracula-theme/blob/main/README.md), MIT
+- Kanagawa Wave (`kanagawa`): [rebelot/kanagawa.nvim](https://github.com/rebelot/kanagawa.nvim/blob/master/lua/kanagawa/colors.lua), MIT
+
 ### JSON (`--json`)
 
 stdout carries a single JSON document and nothing else. Each message has this shape:
@@ -276,7 +333,7 @@ stdout carries a single JSON document and nothing else. Each message has this sh
 {
   "id": 677791, "chat_id": 123456, "date": "2026-09-29T11:02:00Z",
   "sender": {"id": 123456, "kind": "bot", "username": "example_bot", "name": "Example"},
-  "out": false, "text": "Choose an option", "reply_to": null,
+  "out": false, "text": "Choose an option", "reply_to": null, "topic_id": null,
   "forward": {"from_id": -1000000000777, "from_name": "@example_news", "date": "…"} ,
   "edited": null, "edits": 0, "pinned": false, "service": null, "via_bot": null,
   "media": {"type": "photo", "size": 219136, "name": null, "mime": "image/jpeg",
@@ -294,6 +351,8 @@ stdout carries a single JSON document and nothing else. Each message has this sh
   or a new kind's TL name.
 - Button objects may also carry `url`, `query` + `same_peer`, `user_id`, `copy_text` and
   `requires_password`.
+- `topic_id` is the message's forum topic: `1` for General, `null` outside forums (see Forum
+  topics).
 - Global search adds `chat_title`.
 
 Per command:
@@ -303,22 +362,25 @@ Per command:
 | `read`, `msg`, `search` | a list of messages |
 | `dialogs` | a list of chats (below) |
 | `folders` | a list of folders (below) |
+| `topics` | a list of forum topics (below) |
 | `send`, `send-file`, `edit`, `forward`, `start` | `{"sent": [...]}`, plus `"replies": [...]` with `--wait` |
 | `press` | `{"button": {...}, "answer": {"alert", "toast", "url"} \| null, "replies": [...]}` |
 | `raw` | the TL result's `to_dict()`, with bytes as base64 and dates as ISO |
-| `--dry-run` | the plan: `{"action", "target", "steps": [{"method", "params"}], "guard"}` |
+| `--dry-run` | the plan: `{"action", "target", "topic", "steps": [{"method", "params"}], "guard"}` |
 
 `tg watch` streams, so it takes `--jsonl` instead of `--json` (see below).
 
 ### Dialogs and folders
 
-`tg dialogs` prints one chat per line: id, kind, `@username` or title, `📌` pinned, `🔕` muted,
-`[N unread, M mentions]`, then the last message. With `--json` each chat is:
+`tg dialogs` prints one chat per line: id, kind, `@username` or title, `(forum)` for a
+supergroup with topics, `📌` pinned, `🔕` muted, `[N unread, M mentions]`, then the last
+message. With `--json` each chat is:
 
 ```json
 {"id": 123456, "kind": "bot", "title": "Example", "username": "example_bot",
  "unread": 2, "mentions": 0, "pinned": true, "muted": false,
- "last_id": 677791, "last_date": "2026-09-29T11:02:00+00:00", "last_text": "Choose an option"}
+ "last_id": 677791, "last_date": "2026-09-29T11:02:00+00:00", "last_text": "Choose an option",
+ "forum": false}
 ```
 
 - `kind` is one of `self` `user` `bot` `group` `supergroup` `channel` `unknown`.
@@ -328,6 +390,8 @@ Per command:
   not muted and a note goes to stderr.
 - `pinned` is pinned in the list shown: the chat list, the archive (`--archived`), or the folder
   (`--folder`).
+- `forum` is true for a supergroup with topics: `tg topics` lists them, `--topic` reads, writes
+  and watches one.
 
 `tg folders` lists your Telegram folders in Telegram's order, All chats wherever you put it:
 
@@ -382,6 +446,57 @@ Per command:
   Telegram refuses (left, banned, deleted) is left out and not asked for again for 6 hours.
 - `--archived` is the Archive, which is not a folder, so it does not combine with `--folder`.
 
+### Forum topics
+
+A forum is a supergroup with topics. Every message in it belongs to one topic, and every forum
+has General, topic `1`. Other topics' ids are the ids of the messages that opened them.
+
+`tg topics PEER` lists a forum's topics in Telegram's order, pinned first: id, title, `📌`
+pinned, `🔒` closed, `(hidden)` (only General can be hidden), `[N unread, M mentions]`, then the
+last message:
+
+```
+12 Releases 📌 [5 unread, 1 mention] — v2.3 is out
+1 General — welcome
+```
+
+`-q TEXT` is Telegram's search by title. With `--json` each topic is:
+
+```json
+{"id": 12, "title": "Releases", "icon_color": 7322096, "unread": 5, "mentions": 1,
+ "pinned": true, "closed": false, "hidden": false,
+ "last_id": 810, "last_date": "2026-09-29T11:02:00+00:00", "last_text": "v2.3 is out"}
+```
+
+- A chat that is not a forum exits 2: a user, bot, basic group or channel without a request, a
+  supergroup without topics on Telegram's answer.
+- Each message's `topic_id` (`[topic:N]` in text) comes from the message itself, with no extra
+  request. In a forum, `reply_to` stays what Telegram says: a message posted straight into a
+  topic replies to the topic's id, so its `reply_to` equals its `topic_id`. The text line then
+  shows no `↩`; a reply to another message inside the topic shows `↩ID` as usual.
+- `--topic ID` on `read`, `watch`, `send`, `send-file`, `forward`, `inline --to` and `draft`
+  works in that topic. It looks the topic up first: one that does not exist exits 4, and a chat that is
+  not a forum exits 2.
+- `read --topic ID` reads that topic's messages (Telegram's replies to the topic). General keeps
+  no list of its own, so `read --topic 1` picks General's messages out of the latest 1000 of the
+  forum, and a note on stderr says where to go on (`--before ID`) if it found fewer than `-n`.
+- `send --topic ID` posts into the topic; with `--reply-to MSG` it replies to MSG inside the
+  topic (Telegram's `top_msg_id`). Every part of a long text goes into the topic. `--wait`
+  collects only that topic's replies.
+- `send --reply-to MSG` in a forum needs no `--topic`: tg reads MSG (one request, only for a
+  reply in a supergroup) and replies inside MSG's topic, which the plan and the stderr target
+  line then name. A `--topic` that is not MSG's topic exits 2; MSG in a closed topic exits 7.
+- `draft --topic ID` saves the draft in that topic.
+- Known gap: `press` takes no `--topic`. Pressing a reply-keyboard button sends its text into
+  the chat, which in a forum is General.
+- `watch --topic ID` takes one PEER and prints only that topic's messages, edits and typing.
+  Telegram does not say which topic a deletion was in, so deletions are reported only for
+  messages this watch has printed. A replay of General looks at up to 200 messages of the forum.
+- A write into a closed topic exits 7 before anything is sent, even with `--yes`. The allowlist
+  holds chats: an allowlisted forum is allowed in all its topics, and a topic never allows a
+  chat that is not. The plan (`--dry-run`) names the topic as `"topic": {"id", "title",
+  "closed"}`, `null` without `--topic`, and the first stderr line of the write ends with it.
+
 ### `tg watch` (`--jsonl`)
 
 `tg watch PEER…` stays connected and prints each event in the watched chats as it arrives: one
@@ -416,6 +531,7 @@ or until the process reading its stdout pipe exits (exit 0). It is read-only.
   first, as `message` events. Lines after it are live. A message that shows up in both is printed
   once. `chat_id` in `ready` is the id that events carry: for `me` that is your own user id.
 - `--events message,edit,typing,delete` picks the kinds (default all). `ready` is always printed.
+- `--topic ID` keeps one forum topic (one PEER; see Forum topics).
 - Connecting, resolving and the replay must finish within `--timeout`; after `ready` there is no
   deadline. A lost connection exits 1 with `error: lost the connection to Telegram`; rerun with
   `--after LAST_ID` to replay what was missed.
@@ -455,6 +571,7 @@ unless you pass `-v`. Ctrl-C exits 130 and SIGTERM exits 143, both after a clean
 default_account = "main"          # needed only with several accounts
 readonly = false                  # true → every write exits 7 (allowlist changes and logout too)
 flood_sleep_threshold = 30        # sleep through FLOOD_WAITs up to this many seconds
+theme = "tokyo-night"             # the colour theme (tg themes); --theme and TG_THEME beat it
 ```
 
 The write allowlist lives in `~/.config/tg-kit/allow.toml`, and `tg allow` is its only writer:
@@ -493,6 +610,8 @@ added = "2026-09-29"
 - A `title:` target always needs `--yes`.
 - The first stderr line of every write names its target: `→ @example_bot (bot, id 123456)`.
 - `--dry-run` prints the plan object that the real run would execute, then sends nothing.
+- A forum topic never widens the allowlist: the allowlisted chat covers its topics. A write into
+  a closed topic is refused (exit 7) whatever the flags.
 - There's no "allow all my own bots" switch. No reliable API says which bots the account owns,
   so add them with `tg allow add`.
 

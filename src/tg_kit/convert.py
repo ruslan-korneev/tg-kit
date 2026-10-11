@@ -17,6 +17,7 @@ from telethon.tl import types
 from tg_kit.buttons import Button, ButtonGrid
 from tg_kit.folders import ALL_CHATS, Folder
 from tg_kit.model import (
+    GENERAL_TOPIC,
     DeleteEvent,
     DialogView,
     Forward,
@@ -24,6 +25,7 @@ from tg_kit.model import (
     MessageView,
     Reaction,
     Sender,
+    TopicView,
     TypingEvent,
 )
 from tg_kit.session import EntityRow, entity_kind
@@ -35,8 +37,10 @@ __all__ = [
     "convert_dialog",
     "convert_folder",
     "convert_message",
+    "convert_topic",
     "convert_typing",
     "folder_input_peers",
+    "is_forum",
     "mute_scope",
     "typing_action",
 ]
@@ -63,7 +67,14 @@ _REPLY_TYPES: dict[type, str] = {
 }
 
 
-def convert_message(msg: Any, *, self_id: int | None, chat_title: str | None = None) -> MessageView:
+def convert_message(
+    msg: Any, *, self_id: int | None, chat_title: str | None = None, forum: bool | None = None
+) -> MessageView:
+    """`forum` overrides what the message's chat entity says (None: ask the entity).
+
+    A caller that has checked the chat is a forum passes True, so a General message
+    whose update came without the chat entity still lands in General.
+    """
     service = None
     text = msg.message or ""
     if isinstance(msg, types.MessageService):
@@ -83,6 +94,7 @@ def convert_message(msg: Any, *, self_id: int | None, chat_title: str | None = N
         out=bool(msg.out),
         text=text,
         reply_to=reply.reply_to_msg_id if isinstance(reply, types.MessageReplyHeader) else None,
+        topic_id=_topic_id(msg, reply, forum=is_forum(msg.chat) if forum is None else forum),
         forward=_forward(msg),
         edited=_utc(edited) if edited else None,
         pinned=bool(getattr(msg, "pinned", False)),
@@ -101,6 +113,30 @@ def convert_message(msg: Any, *, self_id: int | None, chat_title: str | None = N
         via_bot=getattr(via, "username", None),
         chat_title=chat_title,
     )
+
+
+def is_forum(entity: Any) -> bool:
+    """A supergroup with topics. (Bots' private-chat topics are not read as a forum yet.)"""
+    return bool(getattr(entity, "forum", False))
+
+
+def _topic_id(msg: Any, reply: Any, *, forum: bool) -> int | None:
+    """The message's forum topic, the way the apps place it.
+
+    A message in a topic other than General carries `forum_topic` in its reply
+    header: `reply_to_top_id` is the topic when it replies to a message inside
+    it, else `reply_to_msg_id` is (the topic's id is its creation message's id).
+    The creation message is its topic's first message. Anything else in a forum
+    is in General, which has no header at all.
+    """
+    if isinstance(reply, types.MessageReplyHeader) and reply.forum_topic:
+        top = reply.reply_to_top_id or reply.reply_to_msg_id
+        return int(top) if top else GENERAL_TOPIC
+    if isinstance(msg, types.MessageService) and isinstance(
+        msg.action, types.MessageActionTopicCreate
+    ):
+        return int(msg.id)
+    return GENERAL_TOPIC if forum else None
 
 
 def _utc(value: datetime) -> datetime:
@@ -332,6 +368,7 @@ def convert_typing(
         sender=_cached_sender(from_id, self_id, find),
         action=typing_action(update.action),
         date=_utc(now),
+        top_msg_id=getattr(update, "top_msg_id", None),
     )
 
 
@@ -454,4 +491,35 @@ def convert_dialog(
         contact=bool(getattr(entity, "contact", False)),
         marked_unread=bool(raw.unread_mark),
         archived=d.folder_id == 1,
+        forum=is_forum(entity),
+    )
+
+
+# --- `tg topics` ----------------------------------------------------------------
+# Layer 229 shapes (checked against the installed telethon.tl.types):
+#   forumTopic flags my closed pinned short hidden title_missing id date peer title
+#     icon_color icon_emoji_id? top_message read_inbox_max_id read_outbox_max_id
+#     unread_count unread_mentions_count unread_reactions_count unread_poll_votes_count
+#     from_id notify_settings draft?
+#   forumTopicDeleted id
+#   messages.forumTopics order_by_create_date count topics messages chats users pts
+
+
+def convert_topic(t: Any, last: Mapping[int, Any]) -> TopicView | None:
+    """A ForumTopic → row; None for a deleted one. `last` maps message id → its message."""
+    if not isinstance(t, types.ForumTopic):
+        return None
+    msg = last.get(int(t.top_message))
+    return TopicView(
+        id=int(t.id),
+        title=t.title,
+        icon_color=t.icon_color,
+        unread=int(t.unread_count),
+        mentions=int(t.unread_mentions_count),
+        pinned=bool(t.pinned),
+        closed=bool(t.closed),
+        hidden=bool(t.hidden),
+        last_id=int(t.top_message) or None,
+        last_date=_utc(msg.date) if msg is not None and msg.date else None,
+        last_text=(getattr(msg, "message", None) or "") if msg is not None else "",
     )

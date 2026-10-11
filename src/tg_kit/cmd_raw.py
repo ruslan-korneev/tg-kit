@@ -115,7 +115,7 @@ def register(app: typer.Typer) -> None:
                     )
                 for spec, p in resolved.items():
                     if not read_only:
-                        note(f"{p.target_line()}  [{spec}]")
+                        note(f"{p.target_line()}  [{spec}]", role="accent")
                 with telegram_errors():
                     result = await conn.client(request)
             emit_json(to_jsonable(result))

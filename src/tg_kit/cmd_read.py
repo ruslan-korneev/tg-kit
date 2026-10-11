@@ -1,5 +1,5 @@
-"""Read commands: dialogs, folders, read, msg, search, resolve, info, download, drafts,
-transcribe."""
+"""Read commands: dialogs, folders, topics, read, msg, search, resolve, info, download,
+drafts, transcribe."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from tg_kit.app import (
     JsonOpt,
     Runtime,
     TimeoutOpt,
+    TopicOpt,
     VerboseOpt,
     emit_json,
     globals_from,
@@ -27,7 +28,7 @@ from tg_kit.app import (
     run,
 )
 from tg_kit.client import Connected, rpc_error_name, telegram_errors
-from tg_kit.common import HARD_MAX, print_views, resolve_spec, self_id, view_of
+from tg_kit.common import HARD_MAX, print_views, resolve_spec, resolve_topic_id, self_id, view_of
 from tg_kit.convert import MUTE_SCOPES, convert_dialog, convert_folder, folder_input_peers
 from tg_kit.errors import NotFoundError, RefusedError, TgError, UsageError
 from tg_kit.folders import (
@@ -38,9 +39,9 @@ from tg_kit.folders import (
     folder_order,
     folder_pass,
 )
-from tg_kit.model import DialogView
+from tg_kit.model import GENERAL_TOPIC, DialogView
 from tg_kit.parsing import parse_since
-from tg_kit.peers import message_id_in, parse_peer
+from tg_kit.peers import list_topics, message_id_in, parse_peer
 from tg_kit.render import (
     LIST_TRUNCATE,
     dialog_json,
@@ -48,6 +49,8 @@ from tg_kit.render import (
     folder_json,
     folder_line,
     folders_pass_json,
+    topic_json,
+    topic_line,
 )
 
 __all__ = ["register"]
@@ -82,6 +85,11 @@ PEER_DIALOGS_CHUNK = 100
 # banned from rarely comes back; one that does is in the latest-chats scan anyway,
 # and a hand-picked folder shows it again within this time.
 REFUSED_FOR = timedelta(hours=6)
+
+# How far back `tg read --topic 1` looks for General's messages. Telegram keeps
+# no separate list of them (they carry no topic), so they are picked out of the
+# forum's whole history: 1000 messages is 10 history pages, a bounded cost.
+GENERAL_SCAN = 1000
 
 # Default download dir and size guard (MB): big enough for voice/photos/short
 # videos, small enough that a stray 2 GB file is never pulled by accident.
@@ -160,7 +168,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                 emit_json([dialog_json(r) for r in rows])
             else:
                 for r in rows:
-                    out(dialog_line(r))
+                    out(dialog_line(r, rt.style), color=rt.style.on)
             return 0
 
         run(g, body)
@@ -198,14 +206,48 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                     emit_json(folders_pass_json(rt.now, SCAN, entries, rows))
                 else:
                     for e in entries:
-                        out(folder_line(e.folder, e.unread, len(e.chats)))
+                        out(
+                            folder_line(e.folder, e.unread, len(e.chats), rt.style),
+                            color=rt.style.on,
+                        )
                 return 0
             unread = {e.folder.id: e.unread for e in entries}
             if rt.json:
                 emit_json([folder_json(f, unread.get(f.id)) for f in found])
             else:
                 for f in found:
-                    out(folder_line(f, unread.get(f.id)))
+                    out(folder_line(f, unread.get(f.id), style=rt.style), color=rt.style.on)
+            return 0
+
+        run(g, body)
+
+    @app.command()
+    def topics(
+        ctx: typer.Context,
+        peer: Annotated[str, typer.Argument(help="A forum: @username, id, t.me link, title:…")],
+        limit: LimitOpt = 30,
+        query: Annotated[
+            str | None, typer.Option("--query", "-q", help="Title contains (Telegram's search).")
+        ] = None,
+        account: AccountOpt = None,
+        json_out: JsonOpt = False,
+        timeout: TimeoutOpt = None,
+        verbose: VerboseOpt = False,
+    ) -> None:
+        """A forum's topics: id, title, unread, mentions, pinned, closed, last message."""
+        g = globals_from(ctx, account, json_out, timeout, verbose)
+        n = _limit(limit)
+
+        async def body(rt: Runtime) -> int:
+            async with rt.connect() as conn:
+                target = await resolve_spec(conn, peer)
+                with telegram_errors():
+                    rows = await list_topics(conn.client, target, limit=n, query=query)
+            if rt.json:
+                emit_json([topic_json(r) for r in rows])
+            else:
+                for r in rows:
+                    out(topic_line(r, rt.style), color=rt.style.on)
             return 0
 
         run(g, body)
@@ -229,6 +271,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
             str | None, typer.Option("--from", help="Only from this sender.")
         ] = None,
         reverse: Annotated[bool, typer.Option("--reverse", help="Flip the output order.")] = False,
+        topic: TopicOpt = None,
         full: FullOpt = False,
         account: AccountOpt = None,
         json_out: JsonOpt = False,
@@ -244,23 +287,40 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
             async with rt.connect() as conn:
                 target = await resolve_spec(conn, peer)
                 sender = await resolve_spec(conn, from_peer) if from_peer else None
+                await resolve_topic_id(conn, target, topic)
+                # A topic's messages are the replies to its first message; General's
+                # carry no topic, so they are picked out of the whole history.
+                general = topic == GENERAL_TOPIC
+                fetch = n if since_at is None or after is not None else HARD_MAX
                 views = []
+                scanned, last_seen = 0, 0
                 with telegram_errors():
                     async for msg in conn.client.iter_messages(
                         target.input,
-                        limit=n if since_at is None or after is not None else HARD_MAX,
+                        limit=GENERAL_SCAN if general else fetch,
                         offset_id=before or 0,
                         min_id=after or 0,
                         reverse=after is not None,
                         from_user=sender.input if sender else None,
+                        reply_to=None if topic is None or general else topic,
                     ):
+                        scanned, last_seen = scanned + 1, msg.id
                         if since_at is not None and msg.date < since_at:
                             if after is None:
                                 break  # newest first: everything further is older
                             continue
-                        views.append(view_of(conn, msg))
+                        view = view_of(conn, msg, forum=True if topic is not None else None)
+                        if general and view.topic_id != GENERAL_TOPIC:
+                            continue
+                        views.append(view)
                         if len(views) >= n:
                             break
+                if general and scanned >= GENERAL_SCAN and len(views) < n:
+                    more = f"--after {last_seen}" if after is not None else f"--before {last_seen}"
+                    note(
+                        f"note: General's messages are picked out of the forum's history; "
+                        f"looked at {GENERAL_SCAN} messages, for the next ones: {more}"
+                    )
             if reverse:
                 views.reverse()
             print_views(rt, views, truncate=None if full else LIST_TRUNCATE, peer_hint=peer)
@@ -402,15 +462,17 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
             if rt.json:
                 emit_json(doc)
             else:
+                st = rt.style
                 for key, value in doc.items():
                     if value in (None, "", False, []):
                         continue
                     if isinstance(value, list):
-                        out(f"{key}:")
+                        out(st("dim", f"{key}:"), color=st.on)
                         for item in value:
-                            out(f"  {item}")
+                            out(f"  {item}", color=st.on)
                     else:
-                        out(f"{key}: {str(value).replace(chr(10), ' ⏎ ')}")
+                        text = str(value).replace(chr(10), " ⏎ ")
+                        out(f"{st('dim', f'{key}:')} {text}", color=st.on)
             return 0
 
         run(g, body)

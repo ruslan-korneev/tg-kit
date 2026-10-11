@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from tg_kit.guard import Target, Verdict
+from tg_kit.model import TopicView
 from tg_kit.peers import Peer
 
 __all__ = ["CLIENT_METHODS", "Step", "WritePlan", "execute_step", "target_of"]
@@ -43,11 +44,16 @@ class WritePlan:
     target: Peer | None
     steps: tuple[Step, ...]
     verdict: Verdict
+    topic: TopicView | None = None  # the forum topic the write posts into
 
     def to_json(self) -> dict[str, object]:
+        topic = self.topic
         return {
             "action": self.action,
             "target": self.target.summary() if self.target else None,
+            "topic": (
+                {"id": topic.id, "title": topic.title, "closed": topic.closed} if topic else None
+            ),
             "steps": [s.to_json() for s in self.steps],
             "guard": {"allowed": self.verdict.allowed, "reason": self.verdict.reason},
         }
@@ -74,6 +80,8 @@ async def execute_step(client: Any, step: Step) -> Any:
     with telegram_errors():
         if step.method in CLIENT_METHODS:
             kwargs = {k: (v.input if isinstance(v, Peer) else v) for k, v in step.params.items()}
+            if step.method == "send_message" and "top_msg_id" in kwargs:
+                return await _send_in_topic(client, kwargs)
             return await getattr(client, step.method)(**kwargs)
 
         async def no_resolve(spec: str) -> Peer:
@@ -82,3 +90,26 @@ async def execute_step(client: Any, step: Step) -> Any:
 
         request = await build_object(find_method(step.method), step.params, no_resolve)
         return await client(request)
+
+
+async def _send_in_topic(client: Any, params: dict[str, Any]) -> Any:
+    """`send_message` replying to a message inside a forum topic.
+
+    Telegram wants the topic in `top_msg_id` then (core.telegram.org/api/forum),
+    and Telethon's send_message only takes a message id. Otherwise the same
+    request, built the way send_message builds it.
+    """
+    from telethon.tl import functions, types
+
+    peer = await client.get_input_entity(params["entity"])
+    text, entities = await client._parse_message_text(params["message"], params["parse_mode"])  # noqa: SLF001 — what send_message does
+    request = functions.messages.SendMessageRequest(
+        peer=peer,
+        message=text,
+        entities=entities,
+        no_webpage=not params["link_preview"],
+        reply_to=types.InputReplyToMessage(params["reply_to"], top_msg_id=params["top_msg_id"]),
+        silent=params["silent"],
+    )
+    result = await client(request)
+    return client._get_response_message(request, result, peer)  # noqa: SLF001 — what send_message does

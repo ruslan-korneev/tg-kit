@@ -6,7 +6,8 @@ The rules, which agents rely on:
    or a fast bot's reply races the subscription and is lost.
 2. Until the first event, wait up to the whole budget. After any event, stop
    once `quiet` seconds pass with nothing new — or when the budget ends.
-3. Only incoming messages count; own outgoing echoes are ignored.
+3. Only incoming messages count; own outgoing echoes are ignored. After a post
+   into a forum topic, only that topic's messages count.
 4. A message edited several times is reported once, in its final state, with
    the number of edits seen (✎×N).
 5. Nothing collected → the caller exits 6.
@@ -103,12 +104,20 @@ async def run_and_collect[T](
 
 
 class TelethonSource:
-    """Feeds a chat's incoming new/edited messages into a queue."""
+    """Feeds a chat's incoming new/edited messages into a queue (only `topic`'s, if given)."""
 
-    def __init__(self, client: Any, chat_id: int, *, convert: Callable[[Any], MessageView]) -> None:
+    def __init__(
+        self,
+        client: Any,
+        chat_id: int,
+        *,
+        convert: Callable[[Any], MessageView],
+        topic: int | None = None,
+    ) -> None:
         self._client = client
         self._chat_id = chat_id
         self._convert = convert
+        self._topic = topic
         self._queue: asyncio.Queue[Event | None] = asyncio.Queue()
         self._handlers: list[tuple[Any, Any]] = []
         self._failure: BaseException | None = None
@@ -134,6 +143,8 @@ class TelethonSource:
                 self._failure = exc
                 self._queue.put_nowait(None)
                 return
+            if self._topic is not None and view.topic_id != self._topic:
+                return  # another topic of the same forum
             self._queue.put_nowait(Event(view=view, edit=edit))
 
         return handler

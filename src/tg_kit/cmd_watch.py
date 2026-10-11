@@ -16,15 +16,26 @@ from typing import Annotated
 
 import typer
 
-from tg_kit.app import AccountOpt, JsonOpt, Runtime, TimeoutOpt, VerboseOpt, globals_from, note, run
+from tg_kit.app import (
+    AccountOpt,
+    JsonOpt,
+    Runtime,
+    TimeoutOpt,
+    TopicOpt,
+    VerboseOpt,
+    globals_from,
+    note,
+    run,
+)
 from tg_kit.client import Connected, telegram_errors
-from tg_kit.common import HARD_MAX, resolve_spec, self_id, view_of
+from tg_kit.common import HARD_MAX, resolve_spec, resolve_topic_id, self_id, view_of
 from tg_kit.convert import convert_delete, convert_typing
 from tg_kit.errors import TgError, UsageError
-from tg_kit.model import MessageEvent, WatchEvent
+from tg_kit.model import GENERAL_TOPIC, MessageEvent, WatchEvent
 from tg_kit.parsing import parse_duration, parse_since
 from tg_kit.peers import Peer
 from tg_kit.render import event_json, event_lines, ready_json
+from tg_kit.style import PLAIN
 from tg_kit.watch import EVENT_KINDS, Follower, TelethonWatchSource, follow, parse_events
 
 __all__ = ["register"]
@@ -61,6 +72,7 @@ def register(app: typer.Typer) -> None:
             str | None,
             typer.Option("--idle-exit", help="Exit 0 after this long with nothing printed."),
         ] = None,
+        topic: TopicOpt = None,
         account: AccountOpt = None,
         json_out: JsonOpt = False,
         timeout: TimeoutOpt = None,
@@ -71,7 +83,7 @@ def register(app: typer.Typer) -> None:
         Lines before `ready` are the replay; Ctrl-C or SIGTERM exits 0.
         """
         g = globals_from(ctx, account, json_out, timeout, verbose)
-        kinds, idle = _check_options(g.json, peers, events, after, since, idle_exit)
+        kinds, idle = _check_options(g.json, peers, events, after, since, idle_exit, topic)
 
         async def body(rt: Runtime) -> int:
             since_at = parse_since(since, now=rt.now) if since else None
@@ -82,7 +94,14 @@ def register(app: typer.Typer) -> None:
             _on_reader_gone(loop, stop.set)
             work = asyncio.ensure_future(
                 _watch(
-                    rt, peers, kinds=kinds, after=after, since_at=since_at, idle=idle, jsonl=jsonl
+                    rt,
+                    peers,
+                    kinds=kinds,
+                    after=after,
+                    since_at=since_at,
+                    idle=idle,
+                    jsonl=jsonl,
+                    topic=topic,
                 )
             )
             stopper = asyncio.ensure_future(stop.wait())
@@ -111,6 +130,7 @@ def _check_options(
     after: int | None,
     since: str | None,
     idle_exit: str | None,
+    topic: int | None,
 ) -> tuple[frozenset[str], float | None]:
     if json_out:
         raise UsageError("tg watch streams; --json prints one document", hint="use --jsonl")
@@ -119,6 +139,8 @@ def _check_options(
     if after is not None and len(peers) > 1:
         # Channel message ids are per channel, so one id means nothing across chats.
         raise UsageError("--after takes one PEER", hint="use --since for several chats")
+    if topic is not None and len(peers) > 1:
+        raise UsageError("--topic takes one PEER: a topic belongs to one forum")
     kinds = parse_events(events)
     idle = parse_duration(idle_exit) if idle_exit is not None else None
     if idle is not None and idle <= 0:
@@ -135,17 +157,21 @@ async def _watch(
     since_at: datetime | None,
     idle: float | None,
     jsonl: bool,
+    topic: int | None,
 ) -> int:
     # Connect, resolve, subscribe and replay within --timeout; following has no deadline.
     setup = rt.globals.timeout + rt.config.flood_sleep_threshold
     async with asyncio.timeout(setup) as deadline, rt.connect(updates=True) as conn:
         targets = [await resolve_spec(conn, spec) for spec in specs]
+        for target in targets:
+            await resolve_topic_id(conn, target, topic)
         chat_ids = {_chat_id(conn, t): t for t in targets}
         me = self_id(conn)
+        forum = True if topic is not None else None  # resolve_topic_id proved it is a forum
         source = TelethonWatchSource(
             conn.client,
             chat_ids,
-            convert=lambda msg: view_of(conn, msg),
+            convert=lambda msg: view_of(conn, msg, forum=forum),
             typing=lambda update, now: convert_typing(
                 update, self_id=me, find=lambda pid: conn.session.find(peer_id=pid), now=now
             ),
@@ -154,9 +180,9 @@ async def _watch(
         emit = _Printer(rt, jsonl=jsonl, chat_ids=chat_ids)
         await source.start()  # rule 1: subscribe before the replay
         try:
-            follower = Follower(chat_ids=frozenset(chat_ids), kinds=kinds)
+            follower = Follower(chat_ids=frozenset(chat_ids), kinds=kinds, topic=topic)
             if after is not None or since_at is not None:
-                replayed = await _replay(conn, targets, after=after, since_at=since_at)
+                replayed = await _replay(conn, targets, after=after, since_at=since_at, topic=topic)
                 follower.mark_replayed(replayed)
                 for event in replayed:
                     if "message" in kinds:
@@ -200,20 +226,30 @@ async def _follow_until_disconnected(
 
 
 async def _replay(
-    conn: Connected, targets: list[Peer], *, after: int | None, since_at: datetime | None
+    conn: Connected,
+    targets: list[Peer],
+    *,
+    after: int | None,
+    since_at: datetime | None,
+    topic: int | None,
 ) -> list[MessageEvent]:
-    """Each chat's messages after the id/date, oldest first, merged by date."""
+    """Each chat's messages after the id/date, oldest first, merged by date.
+
+    In a topic: its messages only. General's are picked out of the forum's history,
+    so its replay looks at HARD_MAX messages and keeps General's."""
     events: list[MessageEvent] = []
+    general = topic == GENERAL_TOPIC
     for target in targets:
         with telegram_errors():
             views = [
-                view_of(conn, msg)
+                view_of(conn, msg, forum=True if topic is not None else None)
                 async for msg in conn.client.iter_messages(
                     target.input,
                     limit=HARD_MAX,
                     min_id=after or 0,
                     offset_date=since_at,
                     reverse=True,
+                    reply_to=None if topic is None or general else topic,
                 )
             ]
         if len(views) >= HARD_MAX:
@@ -221,7 +257,7 @@ async def _replay(
                 f"note: replay of {target.label()} capped at {HARD_MAX} messages; "
                 f"the rest: tg read {target.id} --after {views[-1].id}"
             )
-        events.extend(MessageEvent(view=v) for v in views)
+        events.extend(MessageEvent(view=v) for v in views if topic is None or v.topic_id == topic)
     events.sort(key=lambda e: e.view.date)
     return events
 
@@ -237,6 +273,7 @@ class _Printer:
     def __init__(self, rt: Runtime, *, jsonl: bool, chat_ids: dict[int, Peer]) -> None:
         self._now = rt.now
         self._jsonl = jsonl
+        self._style = PLAIN if jsonl else rt.style
         self._chat_ids = chat_ids
         # Compact lines name the chat only when several chats share the stream.
         multi = len(chat_ids) > 1
@@ -244,7 +281,8 @@ class _Printer:
 
     def ready(self) -> None:
         if not self._jsonl:
-            _write("ready: watching " + ", ".join(t.label() for t in self._chat_ids.values()))
+            labels = ", ".join(t.label() for t in self._chat_ids.values())
+            _write(self._style("ok", "ready:") + " watching " + labels)
             return
         peers: list[dict[str, object]] = [
             {"chat_id": cid, "kind": t.kind, "username": t.username, "title": t.title}
@@ -258,7 +296,7 @@ class _Printer:
             return
         chat_id = event.view.chat_id if isinstance(event, MessageEvent) else event.chat_id
         chat = self._labels.get(chat_id) if chat_id is not None else None
-        for line in event_lines(event, now=self._now, chat=chat):
+        for line in event_lines(event, now=self._now, chat=chat, style=self._style):
             _write(line)
 
 
