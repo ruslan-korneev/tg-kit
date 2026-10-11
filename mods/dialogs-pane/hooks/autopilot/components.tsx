@@ -1,16 +1,16 @@
 // The autopilot's components (docs/design/dialogs-pane.md §6 mockups): the
-// card that hands a dialog over, its ledger tab, and the band rows for a
+// card that hands a dialog over, and the band rows for a
 // draft, an undoable auto reply and a `listen` summary. Plain functions over
 // the surface's element table, as ../ui/components.tsx. Their letters are
 // ../ui/keys' (one meaning each, the band's included); the card's digits pick
 // a level, and its other controls are reached by the ring until T3.
 import type { RenderElement } from 'claude-code'
 
-import type { ApDialog, ApDraft, ApEntry, ApLevel, ApNote, ApPhase, ApTopic, ApUndoWindow } from '../../types'
+import type { ApDialog, ApDraft, ApLevel, ApNote, ApPhase, ApTopic, ApUndoWindow } from '../../types'
 import type { Els } from '../ui/components'
-import { GLYPH, TOKEN, oneLine } from '../ui/model'
+import { GLYPH, TOKEN, cells, oneLine } from '../ui/model'
 import { AP_LEVELS, AP_TOPICS, LEVEL_GLYPH, TOPIC_LABEL, quietText, rateText } from './config'
-import { entryLines, undoLeft } from './ledger'
+import { undoLeft } from './ledger'
 
 /** What the card says about allow.toml for the dialog. */
 export type AllowView = { kind: 'loading' } | { kind: 'ok'; isAllowed: boolean } | { kind: 'error'; text: string }
@@ -170,30 +170,6 @@ export function AutopilotCard(
   )
 }
 
-/** The autopilot ledger tab: newest first, two lines a burst. */
-export function AutopilotLedger(
-  { Box, Text }: Els,
-  props: { ledger: readonly ApEntry[]; now: number; rows: number; width: number },
-): RenderElement {
-  const shown = [...props.ledger].reverse().slice(0, Math.max(1, Math.floor((props.rows - 2) / 2)))
-  return (
-    <Box key="ap:ledger" flexDirection="column">
-      <Text color={TOKEN.accent} bold>{`autopilot ledger · ${props.ledger.length} burst${props.ledger.length === 1 ? '' : 's'}`}</Text>
-      {shown.length === 0 ? <Text dimColor>Nothing yet: a burst shows here once the autopilot handled it.</Text> : null}
-      {...shown.map(entry => {
-        const [head, tail] = entryLines(entry, props.now, props.width)
-        const color = entry.outcome.kind === 'failed' ? TOKEN.danger : entry.outcome.kind === 'drafted' ? TOKEN.warn : undefined
-        return (
-          <Box key={`ap:entry:${entry.seq}`} flexDirection="column">
-            <Text wrap="truncate-end">{head}</Text>
-            <Text color={color} dimColor={color === undefined} wrap="truncate-end">{tail}</Text>
-          </Box>
-        )
-      })}
-    </Box>
-  )
-}
-
 /**
  * The band's line for a draft, and whether it shows the whole draft. Decision 9
  * (design doc §9): ⏎ sends only a draft the owner has read, so a draft cut short
@@ -204,21 +180,6 @@ export function draftLine(draft: Pick<ApDraft, 'peer' | 'incoming' | 'text'>, wi
   const shown = oneLine(draft.text, room)
   const body = `${draft.peer.label}: "${oneLine(draft.incoming, room)}"  → draft: "${shown}"`
   return { body, isWhole: shown === oneLine(draft.text, Infinity) && cells(`${LEVEL_GLYPH.draft} ${body}`) <= width }
-}
-
-/**
- * Terminal cells, erring wide: `truncate-end` cuts by cells. Everything from U+2000 up
- * counts two (CJK, emoji, and wide symbols such as ✅ ⭐ ⌚ ☕ among narrow arrows and
- * punctuation), as does Hangul Jamo; Latin and Cyrillic stay one. Too wide only opens
- * a draft that would have fit; too narrow would send one the owner never saw whole.
- */
-function cells(text: string): number {
-  let count = 0
-  for (const char of text) {
-    const point = char.codePointAt(0) ?? 0
-    count += (point >= 0x1100 && point <= 0x115f) || point >= 0x2000 ? 2 : 1
-  }
-  return count
 }
 
 /**

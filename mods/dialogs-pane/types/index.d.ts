@@ -259,7 +259,6 @@ export type Overlay =
    */
   | { kind: 'sheet'; ids: number[]; sender: SenderClass; step: SheetStep; to: Recipient; isRedacted: boolean }
   | { kind: 'broadcast'; rows: BroadcastRow[]; ids: number[]; sender: SenderClass; isRedacted: boolean }
-  | { kind: 'ledger'; cursor: number }
 
 /** Who a ledger entry went to; a spawned agent is known once it started. */
 export type Delivered = { kind: 'main' } | ({ kind: 'agent'; isNew: boolean } & AgentRef)
@@ -463,7 +462,7 @@ export type ApNote = { seq: number; peer: PeerRef; text: string }
 
 export type ApPhase = 'listening' | 'gathering' | 'typing' | 'thinking' | 'checking' | 'sending'
 
-export type ApView = { kind: 'none' } | { kind: 'card'; dialogId: number; notice: string | null } | { kind: 'ledger' }
+export type ApView = { kind: 'none' } | { kind: 'card'; dialogId: number; notice: string | null }
 
 /** The newest auto reply while `u` may still delete it. */
 export type ApUndoWindow = { seq: number; peer: PeerRef; ids: number[]; text: string; confidence: number | null; until: number }
@@ -578,6 +577,23 @@ export type GuardArmed = { at: number; taskIds: number[] }
 
 // ── /delegate ──
 
+// ── running ──
+// dialogs-pane-ux.md §5.6 and §5.7 (T4): what runs, what the kill switch
+// stopped, and Activity. Pure rules in hooks/ui/running.ts.
+
+/**
+ * Activity (`l`): its running rows, one per chat, in the order they were first
+ * drawn, and the cursor among them. A row that stops stays, drawn stopped, until
+ * the view closes, and a row that starts goes last: the rows above the cursor
+ * never change while it stays (dialogs-pane-ux.md §4.3 rule 1).
+ */
+export type ActivityView = { rows: PeerRef[]; cursor: number }
+
+/** What the kill switch stopped, by name: the dock's strip row says it until `until`. */
+export type StopNotice = { text: string; until: number }
+
+// ── /running ──
+
 declare module 'claude-code' {
   interface PluginState {
     'dialogs-pane': {
@@ -603,6 +619,9 @@ declare module 'claude-code' {
       bottest: BotTest
       autopilot: Autopilot
       delegate: Delegate
+      // ── running ──
+      activity: ActivityView | null
+      lastStop: StopNotice | null
     }
   }
 }

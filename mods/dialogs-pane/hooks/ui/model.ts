@@ -115,10 +115,33 @@ export function shortTime(iso: string | null, now: number): string {
   return `${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
 }
 
+/** `14:02`, local time, from epoch milliseconds. */
+export function clockText(at: number): string {
+  const date = new Date(at)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 /** One line of text: newlines become `⏎`, as tg's own listing draws them. */
 export function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s*\n\s*/g, ' ⏎ ')
   return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1))}…` : flat
+}
+
+/**
+ * Terminal cells, erring wide: `truncate-end` cuts by cells. Everything from U+2000 up
+ * counts two (CJK, emoji, and wide symbols such as ✅ ⭐ ⌚ ☕ among narrow arrows and
+ * punctuation), as does Hangul Jamo; Latin and Cyrillic stay one. Too wide only opens
+ * a draft that would have fit (the band) or shows one fewer name (the running strip);
+ * too narrow would send a draft the owner never saw whole.
+ */
+export function cells(text: string): number {
+  let count = 0
+  for (const char of text) {
+    const point = char.codePointAt(0) ?? 0
+    count += (point >= 0x1100 && point <= 0x115f) || point >= 0x2000 ? 2 : 1
+  }
+  return count
 }
 
 export function mediaTag(message: Pick<TgMessage, 'media'>): string {

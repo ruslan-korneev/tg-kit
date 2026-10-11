@@ -336,6 +336,19 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     { name: 'card', props: DOCK, steps: ['dialog:1004', 'key:agent'] },
     { name: 'card menu', props: DOCK, steps: ['dialog:1004', 'key:agent', 'key:menu'] },
     { name: 'activity', props: INLINE, steps: ['key:activity'] },
+    // Something runs (T4): the dock's strip says 0 and the bar does not; inline the bar does.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        { name: `following ${seat}`, props, steps: ['dialog:1001', 'key:follow'] },
+        { name: `following, chats ${seat}`, props, steps: ['dialog:1001', 'key:follow', 'key:back'] },
+        { name: `following, menu ${seat}`, props, steps: ['dialog:1001', 'key:follow', 'key:menu'] },
+        { name: `following, sheet ${seat}`, props, steps: ['dialog:1001', 'key:follow', 'msg:677791'] },
+        { name: `following, activity ${seat}`, props, steps: ['dialog:1001', 'key:follow', 'key:activity'] },
+        { name: `following, activity menu ${seat}`, props, steps: ['dialog:1001', 'key:follow', 'key:activity', 'key:menu'] },
+        { name: `following, card ${seat}`, props, steps: ['dialog:1001', 'key:follow', 'key:agent'] },
+      ]
+    }),
     { name: 'search', props: DOCK, steps: ['key:search'] },
     { name: 'lens editor', props: DOCK, steps: ['key:lenses'] },
     { name: 'lens editor inline', props: INLINE, steps: ['key:lenses'] },
@@ -390,30 +403,32 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
   })
 })
 
-describe('long lists scroll at the edges (the ring keeps its place among the Buttons)', () => {
-  const fixture = <T,>(one: T | undefined): T => {
-    if (one === undefined) throw new Error('a fixture is missing')
-    return one
-  }
-  const LONG: TgMessage[] = Array.from({ length: 40 }, (_, index) => ({
-    ...fixture(MESSAGES.at(-1)),
-    id: 700001 + index,
-    text: `reply ${index + 1}`,
-    date: `2026-10-10T11:${String(index).padStart(2, '0')}:00Z`,
-  }))
-  const MANY: TgDialog[] = [
-    ...KINDS,
-    ...Array.from({ length: 54 }, (_, index) => ({ ...fixture(KINDS[3]), id: 3000 + index, title: `Contact ${index + 10}` })),
-  ]
-  const long = (argv: readonly string[]) => (argv[1] === 'read' ? json(LONG) : argv[1] === 'dialogs' ? json(MANY) : happy(argv))
+const fixture = <T,>(one: T | undefined): T => {
+  if (one === undefined) throw new Error('a fixture is missing')
+  return one
+}
+/** A thread and a list longer than their windows: both scroll. */
+const LONG: TgMessage[] = Array.from({ length: 40 }, (_, index) => ({
+  ...fixture(MESSAGES.at(-1)),
+  id: 700001 + index,
+  text: `reply ${index + 1}`,
+  date: `2026-10-10T11:${String(index).padStart(2, '0')}:00Z`,
+}))
+const MANY: TgDialog[] = [
+  ...KINDS,
+  ...Array.from({ length: 54 }, (_, index) => ({ ...fixture(KINDS[3]), id: 3000 + index, title: `Contact ${index + 10}` })),
+]
+const long = (argv: readonly string[]) => (argv[1] === 'read' ? json(LONG) : argv[1] === 'dialogs' ? json(MANY) : happy(argv))
 
-  /** The ids of the rows drawn as `prefix:<id>` Buttons, in order. */
-  async function rows(ui: Ui, prefix: string): Promise<string[]> {
-    return (await ui.findAll({ type: 'Button' })).flatMap(button => {
-      const key = String(button.props.key ?? '')
-      return key.startsWith(prefix) ? [key] : []
-    })
-  }
+/** The ids of the rows drawn as `prefix:<id>` Buttons, in order. */
+async function rows(ui: Ui, prefix: string): Promise<string[]> {
+  return (await ui.findAll({ type: 'Button' })).flatMap(button => {
+    const key = String(button.props.key ?? '')
+    return key.startsWith(prefix) ? [key] : []
+  })
+}
+
+describe('long lists scroll at the edges (the ring keeps its place among the Buttons)', () => {
 
   for (const list of [
     { name: 'a thread', prefix: 'msg:', open: true, step: 'key:up' },
@@ -439,24 +454,38 @@ describe('long lists scroll at the edges (the ring keeps its place among the But
   }
 })
 
-describe('a layer opening or closing keeps the ring stops above the chat (the ring keeps its place)', () => {
-  /** Ring stops (Buttons, Inputs, Selects) drawn above the dock's divider, in document order. */
-  async function stopsAbove(ui: Ui): Promise<number> {
-    let count = 0
-    let isDone = false
-    const walk = (node: unknown) => {
-      if (isDone || typeof node !== 'object' || node === null) return
-      const { type, children } = node as { type?: unknown; children?: unknown }
-      if (type === 'Text' && Array.isArray(children) && typeof children[0] === 'string' && children[0].startsWith('─ ')) {
-        isDone = true
-        return
-      }
-      if (type === 'Button' || type === 'Input' || type === 'Select') count += 1
-      if (Array.isArray(children)) for (const child of children) walk(child)
+/**
+ * Ring stops (Buttons, Inputs, Selects) drawn before the first node `isEnd`
+ * picks, in document order: the engine keeps the ring at that place.
+ */
+async function stopsBeforeNode(ui: Ui, isEnd: (node: { type?: unknown; props?: { key?: unknown }; children?: unknown }) => boolean): Promise<number> {
+  let count = 0
+  let isDone = false
+  const walk = (node: unknown) => {
+    if (isDone || typeof node !== 'object' || node === null) return
+    const one = node as { type?: unknown; props?: { key?: unknown }; children?: unknown }
+    if (isEnd(one)) {
+      isDone = true
+      return
     }
-    walk(await ui.drawn())
-    return count
+    if (one.type === 'Button' || one.type === 'Input' || one.type === 'Select') count += 1
+    if (Array.isArray(one.children)) for (const child of one.children) walk(child)
   }
+  walk(await ui.drawn())
+  return count
+}
+
+/** Ring stops above the dock's divider (`─ @example_bot · bot ─`). */
+async function stopsAbove(ui: Ui): Promise<number> {
+  return stopsBeforeNode(ui, node => node.type === 'Text' && Array.isArray(node.children) && typeof node.children[0] === 'string' && node.children[0].startsWith('─ '))
+}
+
+/** Ring stops above the element keyed `key`: where the ring is while it sits there. */
+async function stopsBefore(ui: Ui, key: string): Promise<number> {
+  return stopsBeforeNode(ui, node => node.props?.key === key)
+}
+
+describe('a layer opening or closing keeps the ring stops above the chat (the ring keeps its place)', () => {
 
   // More chats than the list's window, so a list sized by what the sheet leaves would lose rows.
   const many = (argv: readonly string[]) =>
@@ -478,6 +507,123 @@ describe('a layer opening or closing keeps the ring stops above the chat (the ri
       }
       expect(await stopsAbove(ui)).toBe(base)
     }
+    await ui.unmount()
+  })
+})
+
+describe('the running strip comes and goes over the same ring stops (§4.3 rule 1, §5.6)', () => {
+  /** What the ring's place depends on: the stops above the cursor row and the divider, and both windows. */
+  async function place(ui: Ui) {
+    const cursor = (await ui.findAll({ type: 'Button' })).find(button => button.props.autoFocus === true)
+    const key = String(cursor?.props.key ?? '')
+    return { key, before: await stopsBefore(ui, key), above: await stopsAbove(ui), messages: await rows(ui, 'msg:'), chats: await rows(ui, 'dialog:') }
+  }
+
+  // Several dock heights: the windows' rounding hides a lost row at some of them.
+  const HEIGHTS = [30, 31, 32, 33].map(bodyRows => ({ ...DOCK, scroll: { offset: 0, bodyRows } }))
+
+  for (const props of HEIGHTS) test(`${props.scroll.bodyRows} rows, the cursor in a long thread: p starts a follow, p stops it, /tg stop stops it; nothing above the cursor moves`, async ($, on) => {
+    const { ui } = await openPane($, on, props, long)
+    await openChat(ui, 1001)
+    for (let i = 0; i < 4; i++) await ui.press({ key: 'key:up' })
+    const base = await place(ui)
+    expect(base.key).toBe('msg:700036')
+    expect(await ui.find({ key: 'running' })).toBeUndefined()
+    await ui.press({ key: 'key:follow' })
+    const strip = await ui.find({ key: 'running' })
+    expect(strip?.text).toContain('⌁ @example_bot → main')
+    expect(strip?.text).toContain('0: stop all')
+    expect(await place(ui)).toEqual(base)
+    await ui.press({ key: 'key:follow' })
+    expect(await ui.find({ key: 'running' })).toBeUndefined()
+    expect(await place(ui)).toEqual(base)
+    await ui.press({ key: 'key:follow' })
+    await $.command.run(runTg('stop'))
+    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: @example_bot (follow). p follows a chat again.')
+    expect(await place(ui)).toEqual(base)
+    await ui.unmount()
+  })
+
+  for (const props of HEIGHTS) test(`${props.scroll.bodyRows} rows, the cursor in a long Chats list: the strip going away keeps the rows above it`, async ($, on) => {
+    const { ui, clock } = await openPane($, on, props, long)
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    await ui.press({ key: 'key:back' })
+    for (let i = 0; i < 5; i++) await ui.press({ key: 'key:down' })
+    const base = await place(ui)
+    expect(base.key).toBe('dialog:1006')
+    await $.command.run(runTg('stop'))
+    expect(await place(ui)).toEqual(base)
+    // The notice goes after its 15 s; nothing moves then either.
+    await clock.advance(15_000)
+    expect(await ui.find({ key: 'running' })).toBeUndefined()
+    expect(await place(ui)).toEqual(base)
+    await ui.unmount()
+  })
+
+  test('the strip draws no ring stop: 0 is the hidden key and the menu’s, never the bar’s in the dock', async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    const strip = await ui.find({ key: 'running' })
+    expect(strip).toBeDefined()
+    expect(await ui.findAll({ type: 'Button' }).then(all => all.filter(one => String(one.props.key ?? '').startsWith('running')))).toEqual([])
+    expect(await barKeys(ui)).not.toContain('stop')
+    expect((await ui.find({ key: 'keys:hidden' }))?.text).toContain('stop all')
+    expect((await hotkeys(ui)).filter(key => key === '0')).toEqual(['0'])
+    await ui.press({ key: 'key:menu' })
+    expect((await ui.find({ key: 'menu:stop' }))?.text).toBe('stop every agent and Worker · /tg stop')
+    await ui.unmount()
+  })
+
+  test('inline: no strip, the header counts ⌁1 and the bar carries 0', async ($, on) => {
+    const { ui } = await openPane($, on, INLINE)
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    expect(await ui.find({ key: 'running' })).toBeUndefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('⌁1')
+    expect(await barKeys(ui)).toContain('stop')
+    await ui.unmount()
+  })
+})
+
+describe('Activity (l, §5.7)', () => {
+  test('running rows, the ring on the first; j moves it; ⏎ opens that chat; a row that stops stays, drawn stopped', async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    await ui.press({ key: 'key:back' })
+    await openChat(ui, 1002)
+    await ui.press({ key: 'key:follow' })
+    await ui.press({ key: 'key:activity' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › activity')
+    expect((await ui.find({ key: 'act:1001' }))?.text).toMatch(/^▸ ⌁ {2}@example_bot {3}follows → main · /)
+    expect((await ui.find({ key: 'act:1001' }))?.props.autoFocus).toBe(true)
+    expect(await barKeys(ui)).toEqual(['open', 'back', 'menu'])
+    const above = await stopsBefore(ui, 'act:1002')
+    await $.command.run(runTg('stop'))
+    // Both rows stay, so nothing above the second one moved.
+    expect((await ui.find({ key: 'act:1001' }))?.text).toContain('■  @example_bot   stopped')
+    expect(await stopsBefore(ui, 'act:1002')).toBe(above)
+    await ui.press({ key: 'key:down' })
+    expect((await ui.find({ key: 'act:1002' }))?.props.autoFocus).toBe(true)
+    await ui.press({ key: 'act:1002' })
+    expect(await ui.find({ key: 'activity' })).toBeUndefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › Dev Team')
+    await ui.unmount()
+  })
+
+  test('h closes it; from the agent card, l closes the card and opens it', async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1004)
+    await ui.press({ key: 'key:agent' })
+    expect(await ui.find({ key: 'ap:card' })).toBeDefined()
+    await ui.press({ key: 'key:activity' })
+    expect(await ui.find({ key: 'ap:card' })).toBeUndefined()
+    expect((await ui.find({ key: 'activity' }))?.text).toContain('Nothing runs.')
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'activity' })).toBeUndefined()
+    expect(await ui.find({ key: 'msg:92' })).toBeDefined()
     await ui.unmount()
   })
 })

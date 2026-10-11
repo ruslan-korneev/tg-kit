@@ -36,7 +36,7 @@ import type { BroadcastRow, LedgerEntry, Leg, Overlay, Pin, PinWatch, Recipient,
 import { buildPacket, type Packet } from './packet/build'
 import { expandReplyChain } from './packet/expand'
 import { Redactor, redactMessage } from './packet/redact'
-import { BroadcastPicker, DraftRow, Inspect, Ledger, SendSheet, TargetList } from './routing/components'
+import { BroadcastPicker, DraftRow, Inspect, SendSheet, TargetList } from './routing/components'
 import {
   addEntry,
   addNewLeg,
@@ -189,7 +189,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'tg' }, async ($, e) => {
     const asked = e.args.trim()
     if (asked === 'autopilot' || asked.startsWith('autopilot ')) return autopilotCommand($, asked.slice('autopilot'.length).trim()) // ── autopilot ──
-    if (asked === 'stop') return autopilotCommand($, 'off') // ── autopilot ── the kill switch
+    if (asked === 'stop') return { text: stopAnswer(await stopEverything($)) } // ── running ── the kill switch
     // The layout follows the seat (design decision 4): `wide` and `compact` stay as
     // aliases of `/tg`, `hidden` of `/tg hide`.
     const isHide = asked === 'hide' || asked === 'hidden'
@@ -512,6 +512,8 @@ async function followRing($: $, element: string): Promise<void> {
     const messages = await threadMessages($)
     const index = messages.findIndex(message => message.id === id)
     if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'messages', index, messages.length), view: 'thread' }))
+  } else if (kind === 'act') {
+    await followActivity($, id) // ── running ──
   }
 }
 
@@ -528,7 +530,9 @@ async function moveRing($: $, key: string): Promise<void> {
 /** The ring back on the cursor row (design §3.3), after any action that drew rows over it. */
 async function ringCursor($: $): Promise<void> {
   const where = await underWhere($)
-  if (where === 'chat') {
+  if (where === 'activity') {
+    await ringActivity($) // ── running ──
+  } else if (where === 'chat') {
     const message = await cursorMessage($)
     if (message !== undefined) await moveRing($, `msg:${message.id}`)
   } else if (where === 'chats') {
@@ -555,17 +559,14 @@ async function selectAtCursor($: $, how: 'toggle' | 'range'): Promise<void> {
 // --- keys: what each one does (./ui/keys says where it exists and when it works) ---
 
 /**
- * The view the keys act on, under the menu: a layer (card, its ledger, the
- * route picker, the packet ledger, a diff, the lens editor) or the column the
- * cursor is in.
+ * The view the keys act on, under the menu: a layer (the card, Activity, the
+ * send sheet, a diff, the lens editor) or the column the cursor is in.
  */
 async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
-  const view = (await read($, autopilot)).view // ── autopilot ──
-  if (view.kind === 'card') return 'card'
-  if (view.kind === 'ledger') return 'activity'
+  if ((await read($, autopilot)).view.kind === 'card') return 'card' // ── autopilot ──
+  if ((await read($, activity)) !== null) return 'activity' // ── running ──
   const shown = (await read($, overlay)).kind // ── routing ──
   if (shown === 'sheet' || shown === 'broadcast') return 'sheet'
-  if (shown === 'ledger') return 'activity'
   if ((await read($, bottest)).diff !== null) return 'diff'
   if ((await read($, triage)).editor !== null) return 'editor'
   return (await read($, nav)).view === 'thread' && (await read($, thread)) !== null ? 'chat' : 'chats'
@@ -594,13 +595,16 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
   const tri = await read($, triage)
   const pilot = await read($, autopilot)
   const view = pilot.view
+  const tasks = (await read($, delegate)).tasks
   return {
     where,
     seat,
     kind: peer === undefined ? null : chatKind(peer.kind, isBotFather(peer.arg)),
     facts: {
-      rows: where === 'chats' ? (await shownDialogs($)).length : messages.length,
-      isRunning: pilot.running.length > 0 || (await read($, delegate)).tasks.some(isLive),
+      rows: where === 'chats' ? (await shownDialogs($)).length : where === 'activity' ? (await activityRows($)).length : messages.length,
+      // ── running ── what 0 stops: every follow, autopilot and Worker (§5.6).
+      isRunning: pilot.running.length > 0 || (await read($, pins)).length > 0 || tasks.some(isLive),
+      hasFinished: tasks.some(task => !isLive(task)),
       undoLeft: undoLeft(pilot.undo, Math.max(pilot.now, await $.clock.now())),
       hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null,
       marks: chosen.ids.length,
@@ -625,12 +629,13 @@ async function runKey($: $, id: RunKey): Promise<void> {
   switch (id) {
     case 'down':
     case 'up': {
-      const row = await moveCursor($, id === 'down' ? 1 : -1)
+      const by = id === 'down' ? 1 : -1
+      const row = where === 'activity' ? await moveActivity($, by) : await moveCursor($, by)
       if (row !== undefined) await moveRing($, row)
       return
     }
     case 'open':
-      return openAtCursor($)
+      return where === 'activity' ? openActivityRow($, (await read($, activity))?.cursor ?? 0) : openAtCursor($)
     case 'send':
       return openSheet($)
     case 'start': {
@@ -688,17 +693,14 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return moveRing($, 'ap:tone')
     case 'dismiss':
       if (where === 'card') return apNotice($, null)
+      if (where === 'activity') return dismissEnded($)
       await update($, bottest, value => ({ ...value, notice: null }))
       return
     case 'undo':
       await apUndo($)
       return ringCursor($)
     case 'activity':
-      if (where === 'card') {
-        await update($, autopilot, value => ({ ...value, view: { kind: 'ledger' } }))
-        return
-      }
-      return openLedger($)
+      return openActivity($)
     case 'reload':
       return reload($)
     case 'back':
@@ -709,8 +711,8 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'hide':
       return setMode($, 'hidden')
     case 'stop': {
-      const stopped = await apStopAll($) // ── autopilot ── the kill switch
-      $.ui.toast(`tg: stopped ${stopped} dialog${stopped === 1 ? '' : 's'} and every task. Settings are kept.`)
+      // ── running ── the kill switch; the dock's strip row and the toast say what stopped.
+      $.ui.toast(stopAnswer(await stopEverything($)).replace('\n', ' '))
       return ringCursor($)
     }
   }
@@ -727,7 +729,7 @@ async function back($: $): Promise<void> {
   const where = await underWhere($)
   if ((await read($, nav)).isMenuOpen) {
     await update($, nav, value => ({ ...value, isMenuOpen: false }))
-  } else if (where === 'card' || (where === 'activity' && (await read($, autopilot)).view.kind === 'ledger')) {
+  } else if (where === 'card') {
     await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
   } else if (where === 'sheet') {
     const shown = await read($, overlay)
@@ -739,7 +741,7 @@ async function back($: $): Promise<void> {
     if (shown.kind === 'sheet' && shown.step !== 'intents') return setStep($, 'intents')
     await closeOverlay($)
   } else if (where === 'activity') {
-    await closeOverlay($)
+    await update($, activity, () => null)
   } else if (where === 'diff') {
     await update($, bottest, value => ({ ...value, diff: null }))
   } else if (where === 'editor') {
@@ -807,21 +809,26 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   // one row above the cursor while `s` came back), so the strip draws the same Buttons in every view.
   const search = seat === 'inline' ? 'none' : isBase ? 'key' : 'click'
   const strip = isMenu || where === 'editor' || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search })
+  // ── running ── the dock's strip comes and goes as things start and stop, mostly while the cursor
+  // stays: it draws no ring stop, and its row is kept whether it shows or not, so neither the stops
+  // above the cursor nor the lists' windows change with it (§4.3 rule 1). Inline the header counts.
+  const running = seat === 'dock' && !isMenu ? await drawRunningStrip($, els, width) : null
+  const runningRows = seat === 'dock' ? RUNNING_ROWS : 0
   const none = { elements: [], rows: 0 }
-  // What runs on top stays over every layer: it sits above the cursor row, which keeps its ring (see search).
-  const top = isMenu || where === 'editor' ? none : await drawTop($, els, seat, width)
+  // The search field stays over every layer: it sits above the cursor row, which keeps its ring (see search).
+  const top = isMenu || where === 'editor' ? none : await drawTop($, els)
   const temps = isMenu || !isBase ? none : await drawTemps($, els, where, width)
   // The send sheet's intents and Ask field take the bar's place (§5.1): four rows docked, two inline.
   const shown = await read($, overlay)
   const sheetBar = isMenu || where !== 'sheet' ? null : await drawSheetBar($, els, seat, width, seating.isFocused)
   const isAsking = shown.kind === 'sheet' && shown.step === 'ask'
   const sheetRows = sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
-  const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + top.rows + temps.rows
+  const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + runningRows + top.rows + temps.rows
   const room = Math.max(3, rows - chrome)
   const slot = isMenu
     ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
     : seat === 'dock'
-      ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - top.rows))
+      ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - runningRows - top.rows))
       : await drawInline($, els, where, width, room)
   const drawn = new Set(sheetBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
   if (strip !== null && search === 'key') drawn.add('s')
@@ -843,6 +850,7 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
       chips: await chipsOf($),
       isFocused: seating.isFocused,
     }),
+    running,
     strip: isInlineChats ? null : strip,
     top: top.elements,
     slot,
@@ -937,16 +945,15 @@ async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key'
   })
 }
 
-/** What runs, on top: the search field while it is up, and the delegate task cards. */
-async function drawTop($: $, els: Els, seat: Seat, width: number): Promise<{ elements: RenderElement[]; rows: number }> {
+/** On top: the search field while it is up. A task's card sits on top of its chat's thread (T4). */
+async function drawTop($: $, els: Els): Promise<{ elements: RenderElement[]; rows: number }> {
   const where = await read($, nav)
   const Input = 'Input' in els ? els.Input : undefined
   const search =
     where.isSearching && Input !== undefined
       ? [<Input key="search" label="search" placeholder="title or @name; empty clears" value={where.query} submitLabel="filter" onSubmit={value => submitSearch($, value)} />]
       : []
-  const tasks = await drawTaskCards($, els, width, seat === 'dock' ? 'wide' : 'compact') // ── delegate ──
-  return { elements: [...search, ...tasks.elements], rows: search.length + tasks.rows }
+  return { elements: search, rows: search.length }
 }
 
 /** Rows that come and go under the view: a drafted reply, the marks, the send box, one notice. */
@@ -1000,32 +1007,32 @@ async function drawDock($: $, els: Els, where: Where, width: number, room: numbe
   const list = where === 'editor' ? [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one])) : await drawDialogList($, els, width, listRows, where === 'chats')
   if (where === 'editor') return list
   const lower = Math.max(1, room - listRows - 1)
-  return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, where, width, lower, open !== null))]
+  return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, 'dock', where, width, lower, open !== null))]
 }
 
 /** Inline: one view at a time. */
 async function drawInline($: $, els: Els, where: Where, width: number, room: number): Promise<RenderElement[]> {
   if (where === 'chats') return drawDialogList($, els, width, room, true)
   if (where === 'editor') return [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one]))
-  return drawLower($, els, where, width, room, true)
+  return drawLower($, els, 'inline', where, width, room, true)
 }
 
 /** The slot T2–T6 fill: the chat, the card, the picker (the send sheet's place), activity, a diff. */
-async function drawLower($: $, els: Els, where: Where, width: number, rows: number, isOpen: boolean): Promise<RenderElement[]> {
+async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number, rows: number, isOpen: boolean): Promise<RenderElement[]> {
   const { Text } = els
   switch (where) {
-    case 'card':
-    case 'activity': {
-      const view = await drawAutopilotView($, els, width, rows) // ── autopilot ──
-      if (view !== null) return [view]
-      const over = await drawOverlay($, els, width, rows) // ── routing ── the packet ledger
-      return over === null ? [] : [over]
+    case 'card': {
+      const view = await drawAutopilotView($, els, width) // ── autopilot ──
+      return view === null ? [] : [view]
     }
+    case 'activity':
+      return [await drawActivity($, els, width, rows)] // ── running ──
     case 'sheet': {
       // Targets, inspect and the legs take the lower part; the intents leave the chat on screen above them.
       const over = await drawOverlay($, els, width, rows)
       if (over !== null) return [over]
-      return drawThread($, els, width, rows, 'static')
+      const task = await drawChatTask($, els, width, seat) // ── delegate ──
+      return [...task.elements, ...(await drawThread($, els, width, Math.max(1, rows - task.rows), 'static'))]
     }
     case 'diff': {
       const diff = await drawBottestDiff($, els, width, rows)
@@ -1035,7 +1042,13 @@ async function drawLower($: $, els: Els, where: Where, width: number, rows: numb
     case 'chat': {
       if (!isOpen) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
       const summary = await drawSummary($, els, width)
-      return [...(summary.element === null ? [] : [summary.element]), ...(await drawThread($, els, width, Math.max(1, rows - summary.rows), where === 'chat' ? 'active' : 'idle'))]
+      // ── delegate ── the chat's task card, on top of its thread; a delegate chat keeps its rows (see drawChatTask).
+      const task = await drawChatTask($, els, width, seat)
+      return [
+        ...(summary.element === null ? [] : [summary.element]),
+        ...task.elements,
+        ...(await drawThread($, els, width, Math.max(1, rows - summary.rows - task.rows), where === 'chat' ? 'active' : 'idle')),
+      ]
     }
     case 'editor':
     case 'menu':
@@ -1753,6 +1766,8 @@ const draft = atom({ plugin: 'dialogs-pane', key: 'draft' } as const, null)
  * their `tg watch` children do not, so each is started again from its lastId.
  */
 async function startRouting($: $): Promise<void> {
+  // The packet ledger was an overlay before Activity (T4): a reload across that change may still hold it.
+  await update($, overlay, value => (value.kind === 'sheet' || value.kind === 'broadcast' ? value : { kind: 'none' }))
   const kept = await update($, pins, value => value.map(pin => ({ ...pin, watch: { status: 'starting' } })))
   await Promise.all(kept.map((pin: Pin) => startPinWatch($, pin)))
   $.clock.every(RADAR_MS, () => {
@@ -1778,22 +1793,23 @@ async function refreshRadar($: $): Promise<void> {
   await update($, ledger, value => onRadar(value, entries, at))
 }
 
-/** Keeps the radar fresh while the sheet is up or a packet is with an agent, and the ages moving. */
+/** Keeps the radar fresh while the sheet is up or a packet is with an agent, and Activity's ages moving. */
 async function routingTick($: $): Promise<void> {
   const shown = (await read($, overlay)).kind
+  const isActivity = (await read($, activity)) !== null // ── running ──
   const isWaiting = (await read($, ledger)).some(
     entry => entry.to.kind === 'agent' && (entry.state.kind === 'sent' || entry.state.kind === 'working'),
   )
-  if (shown === 'none' && !isWaiting) return
+  if (shown === 'none' && !isActivity && !isWaiting) return
   await refreshRadar($)
-  if (shown === 'ledger') {
+  if (isActivity) {
     const at = await $.clock.now()
     await update($, now, () => at)
   }
   await refreshStatus($)
 }
 
-// --- the overlay: the send sheet and its steps, broadcast, ledger ---
+// --- the overlay: the send sheet and its steps, broadcast ---
 
 const STORE_INTENTS = 'send.intents'
 
@@ -1907,30 +1923,6 @@ async function finishBroadcast($: $): Promise<void> {
   await sendIds($, shown.ids, chosen.legs, { sender: shown.sender, isRedacted: shown.isRedacted, words: '' })
 }
 
-async function openLedger($: $): Promise<void> {
-  const at = await $.clock.now()
-  await update($, now, () => at)
-  await update($, overlay, () => ({ kind: 'ledger', cursor: 0 }))
-  await refreshRadar($)
-  const newest = (await read($, ledger)).at(-1)
-  if (newest !== undefined) await moveRing($, `ledger:${newest.seq}`)
-}
-
-/** Enter on a ledger row: open its dialog with the cursor on the message. */
-async function jumpTo($: $, entry: LedgerEntry): Promise<void> {
-  await closeOverlay($)
-  const list = loaded(await read($, dialogs)) ?? []
-  await openThread($, list.find(one => one.id === entry.peer.id) ?? dialogOfPeer(entry.peer))
-  const target = entry.messageIds.at(-1)
-  const index = (await threadMessages($)).findIndex(message => message.id === target)
-  if (target === undefined || index < 0) {
-    $.ui.toast(`tg: #${target ?? '?'} is older than the ${THREAD_LIMIT} messages loaded.`)
-    return
-  }
-  await update($, nav, value => ({ ...value, view: 'thread', messageCursor: index }))
-  await moveRing($, `msg:${target}`)
-}
-
 /** What the sheet is about: its messages, the parents at hand, and the packet they make now. */
 async function sheetFacts($: $, shown: Extract<Overlay, { kind: 'sheet' }>, intentNow: RouteIntent) {
   const open = await read($, thread)
@@ -1980,7 +1972,7 @@ async function drawSheetBar($: $, els: Els, seat: Seat, width: number, isFocused
   })
 }
 
-/** The steps of the sheet that take the lower part (targets, inspect, the legs), and the ledger. */
+/** The steps of the sheet that take the lower part: targets, inspect, the legs. */
 async function drawOverlay($: $, els: Els, width: number, rows: number): Promise<RenderElement | null> {
   const shown = await read($, overlay)
   switch (shown.kind) {
@@ -2037,14 +2029,6 @@ async function drawOverlay($: $, els: Els, width: number, rows: number): Promise
           editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, intent: nextLegIntent(shown.sender, leg.intent) } : leg))),
         onAdd: () => editLegs($, legs => addNewLeg(legs, legSplit(shown.sender))),
         onDone: () => finishBroadcast($),
-      })
-    case 'ledger':
-      return Ledger(els, {
-        ledger: await read($, ledger),
-        now: await read($, now),
-        rows,
-        width,
-        onJump: entry => jumpTo($, entry),
       })
   }
 }
@@ -2733,7 +2717,7 @@ async function drawBottestDiff($: $, els: Els, width: number, rows: number): Pro
 import type { PluginOptions } from 'claude-code'
 
 import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
-import { AutopilotCard, AutopilotLedger, DraftBand, NoteBand, UndoBand, type AllowView } from './autopilot/components'
+import { AutopilotCard, DraftBand, NoteBand, UndoBand, type AllowView } from './autopilot/components'
 import {
   AP_LEVELS,
   LEVEL_GLYPH,
@@ -2809,7 +2793,8 @@ async function startAutopilot($: $): Promise<void> {
     dialogs,
     running: value.running.filter(id => dialogs[String(id)] !== undefined),
     phase: {},
-    view: value.view.kind === 'card' && dialogs[String(value.view.dialogId)] === undefined ? { kind: 'none' } : value.view,
+    // A card for a dialog no longer stored closes; so does the ledger tab a reload across T4 may still hold.
+    view: value.view.kind === 'card' && dialogs[String(value.view.dialogId)] !== undefined ? value.view : { kind: 'none' },
   }))
   // ── delegate ── a reload keeps this session's leases; one another session took meanwhile stops here.
   const kept = await apKeepLeases($, state.running)
@@ -3348,9 +3333,9 @@ async function drawAutopilotBand($: $, els: Els, width: number): Promise<RenderE
   })
 }
 
-// --- the card, the ledger tab, the pane's row, the list marks ---
+// --- the card, the pane's row, the list marks ---
 
-/** `q`: the card for the open thread's dialog, or the one at the cursor; again closes it. */
+/** `a`: the card for the open thread's dialog, or the one at the cursor; again closes it. */
 async function apToggleCard($: $): Promise<void> {
   if ((await read($, autopilot)).view.kind !== 'none') {
     await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
@@ -3361,6 +3346,11 @@ async function apToggleCard($: $): Promise<void> {
     $.ui.toast('tg: put the cursor on a chat, then press a for its agent card.')
     return
   }
+  await apOpenCard($, peer)
+}
+
+/** The agent card of `peer` (from `a`, or ⏎ on a running row in Activity). */
+async function apOpenCard($: $, peer: PeerRef): Promise<void> {
   await update($, autopilot, value => ({
     ...value,
     dialogs: value.dialogs[String(peer.id)] === undefined ? { ...value.dialogs, [String(peer.id)]: defaultDialog(peer) } : value.dialogs,
@@ -3429,7 +3419,7 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
   await refreshStatus($)
 }
 
-/** The kill switch: every dialog stops listening, every timer and model call is cut. */
+/** The autopilot's half of the kill switch (stopEverything): every dialog stops listening, every timer and model call is cut. */
 async function apStopAll($: $): Promise<number> {
   const running = (await read($, autopilot)).running
   await Promise.all(running.map(id => apUnlisten($, id)))
@@ -3439,12 +3429,9 @@ async function apStopAll($: $): Promise<number> {
   return running.length
 }
 
-/** `/tg autopilot [off]`. */
+/** `/tg autopilot [off]`; `off` is `/tg stop`'s old name and does the same. */
 async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
-  if (args === 'off') {
-    const stopped = await apStopAll($)
-    return { text: stopped === 0 ? 'tg autopilot: nothing was running.' : `tg autopilot off: ${stopped} dialog${stopped === 1 ? '' : 's'} stopped.` }
-  }
+  if (args === 'off') return { text: stopAnswer(await stopEverything($)) } // ── running ──
   if (args.startsWith(SKIP_FLAG)) return dgSkipCommand($, args) // ── delegate ──
   if (args !== '') return { text: `Usage: /tg autopilot [off | ${SKIP_FLAG}[=publish,delete]]` }
   const state = await read($, autopilot)
@@ -3456,16 +3443,11 @@ async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
   return { text: lines.length === 0 ? 'tg autopilot: off. Open a chat in the pane and press a.' : ['tg autopilot:', ...lines].join('\n') }
 }
 
-/** The card or the ledger tab in place of the pane while one is open. */
-async function drawAutopilotView($: $, els: Els, width: number, rows: number): Promise<RenderElement | null> {
+/** The card in the lower part (dock) or the body (inline) while it is open. */
+async function drawAutopilotView($: $, els: Els, width: number): Promise<RenderElement | null> {
   const state = await read($, autopilot)
   const view = state.view
   if (view.kind === 'none') return null
-  if (view.kind === 'ledger') {
-    const at = await $.clock.now()
-    const ledger = await dgLedger($, state.ledger, state.dialogs) // ── delegate ── with the guard's stop events
-    return AutopilotLedger(els, { ledger, now: Math.max(at, state.now), rows, width })
-  }
   const dialog = state.dialogs[String(view.dialogId)]
   if (dialog === undefined) return null
   const id = dialog.peer.id
@@ -3511,10 +3493,15 @@ async function autopilotMarks($: $): Promise<(dialogId: number) => { glyph: stri
   return dialogId => {
     const dialog = state.dialogs[String(dialogId)]
     if (dialog === undefined || !state.running.includes(dialogId)) return undefined
-    const tail = dialog.level === 'auto' ? `auto ${sentLastHour(state.ledger, dialogId, at)}/${dialog.perHour ?? '∞'}` : dialog.level
+    const tail = apLevelTail(state, dialog, at)
     const warn = dialog.level === 'delegate' ? noStopsOf(dialogId) : null // ── delegate ──
     return warn === null ? { glyph: LEVEL_GLYPH[dialog.level], tail } : { glyph: LEVEL_GLYPH[dialog.level], tail, warn }
   }
+}
+
+/** `auto 3/50` (sent this hour / the limit) for auto, the level's name for the others. */
+function apLevelTail(state: Autopilot, dialog: ApDialog, at: number): string {
+  return dialog.level === 'auto' ? `auto ${sentLastHour(state.ledger, dialog.peer.id, at)}/${dialog.perHour ?? '∞'}` : dialog.level
 }
 
 /** The status line: an open undo window owns it (`tg ⟳ … u undo 28s`); waiting drafts add a tail. */
@@ -3551,7 +3538,7 @@ async function autopilotStatus($: $): Promise<{ line: string | null; tail: strin
 // leases in $.store keep a dialog to one session, at every level.
 import type { ApEntry, DgDialog, DgGrant, DgStop, DgTask, DgWorktree, Delegate, GuardEvent, GuardHold, GuardWork } from '../types'
 import type { Peer } from './packet/types'
-import { DelegateRows, HoldBand, TaskCard, TaskRow, warningText } from './delegate/components'
+import { DelegateRows, HoldBand, TaskCard, TaskRow, taskCardRows, warningText } from './delegate/components'
 import { armedOf, eventsOf, holdsOf as guardHoldsOf, workOf } from './delegate/guard'
 import { CHECK_FILES, DEFAULT_DG_DIALOG, checksOf, nextWeb, parseDgDialogs, parseDuration, parseRepos, workerTools } from './delegate/grant'
 import { HEARTBEAT_MS, holder, leaseKey, leaseOf } from './delegate/lease'
@@ -3561,10 +3548,11 @@ import { delegateInstructions, delegateSystem, parseDelegate, relayPrompt, type 
 import { partition, stopQuestion, textHits, type StopHit } from './delegate/stops'
 import {
   branchOf,
-  cardLines,
+  elapsedText,
   isLive,
   parseWorker,
   taskLine,
+  taskWhere,
   workerAnswer,
   workerSystem,
   workerTask,
@@ -3581,9 +3569,11 @@ const WORKER_PREFIX = 'dialogs-pane:worker-'
 /** The dialog lists No first, so a stray Enter is a no (seen live: an Enter meant for the prompt took the first option). */
 const ASK_YES = 'Yes, allow it'
 const ASK_NO = 'No'
-/** Steps shown in a Wide task card; finished cards stay until dismissed. */
-const CARD_STEPS = 4
-const CARDS_MAX = 2
+/**
+ * Lines of a task card on top of its chat's thread in the dock (the oldest steps
+ * give way first); a finished card stays until `d` in Activity.
+ */
+const CARD_LINES = 6
 /** The guard heartbeats every 10 s; three missed and it counts as gone. */
 const GUARD_TTL_MS = 30_000
 const GUARD = 'dialogs-pane-guard'
@@ -4340,35 +4330,40 @@ async function drawHoldBand($: $, els: Els, width: number): Promise<RenderElemen
   return null
 }
 
-/** Task cards under the autopilot row: Wide draws the card, Compact one line per running task. */
-async function drawTaskCards($: $, els: Els, width: number, kind: 'wide' | 'compact'): Promise<{ elements: RenderElement[]; rows: number }> {
-  const state = await read($, delegate)
-  if (state.tasks.length === 0) return { elements: [], rows: 0 }
+/**
+ * The open chat's task, on top of its thread: the card docked, one line inline.
+ * A delegate chat keeps the card's rows whether a task runs or not, so a task
+ * that starts while the cursor is in the thread does not shrink the thread's
+ * window, which would move rows above the cursor (§4.3 rule 1). Text only.
+ */
+async function drawChatTask($: $, els: Els, width: number, seat: Seat): Promise<{ elements: RenderElement[]; rows: number }> {
+  const open = await read($, thread)
+  if (open === null || (await apDialog($, open.peer.id))?.level !== 'delegate') return { elements: [], rows: 0 }
+  const rows = seat === 'dock' ? taskCardRows(CARD_LINES) : 1
+  const tasks = (await read($, delegate)).tasks.filter(task => task.peer.id === open.peer.id)
+  const task = tasks.findLast(isLive) ?? tasks.at(-1)
+  if (task === undefined) return { elements: [], rows }
   const guard = await dgGuardView($)
-  const live = state.tasks.filter(isLive)
-  const stop = (task: DgTask) => () => dgStopTask($, task.id, 'stopped from the task card')
-  const noStopsOf = await dgNoStopsOf($)
-  if (kind === 'compact') {
-    const rows = live.slice(0, CARDS_MAX).map(task => TaskRow(els, { task, view: viewOf(task, guard), noStops: noStopsOf(task.peer.id), onStop: stop(task) }))
-    return { elements: rows, rows: rows.length }
-  }
-  const shown = [...live, ...state.tasks.filter(task => !isLive(task)).reverse()].slice(0, CARDS_MAX)
-  const at = await $.clock.now()
-  const elements = shown.map(task =>
-    TaskCard(els, {
-      task,
-      view: viewOf(task, guard),
-      now: at,
-      width,
-      rows: CARD_STEPS,
-      noStops: noStopsOf(task.peer.id),
-      onStop: stop(task),
-      onDismiss: () => dgUpdate($, value => ({ ...value, tasks: value.tasks.filter(one => one.id !== task.id) })),
-    }),
-  )
-  // Border (2) and header (1), then one row a line of the card.
-  const rows = shown.reduce((sum, task) => sum + 3 + cardLines(task, viewOf(task, guard), CARD_STEPS).length, 0)
-  return { elements, rows }
+  const noStops = (await dgNoStopsOf($))(task.peer.id)
+  const view = viewOf(task, guard)
+  const element = seat === 'dock' ? TaskCard(els, { task, view, now: await $.clock.now(), width, lines: CARD_LINES, noStops }) : TaskRow(els, { task, view, noStops })
+  return { elements: [element], rows }
+}
+
+/** Every task not dismissed, for the running rows (../ui/running): live or ended, held, and where it is. */
+async function dgTaskRuns($: $, at: number): Promise<RunInput['tasks']> {
+  const guard = await dgGuardView($)
+  return (await read($, delegate)).tasks.map(task => ({
+    peer: task.peer,
+    isLive: isLive(task),
+    isHeld: holdsOfView(task, guard).length > 0,
+    tail: `task ${elapsedText(task.startedAt, at)} · ${taskWhere(task, viewOf(task, guard))}`,
+  }))
+}
+
+/** `d` in Activity: the tasks that ended leave it, and their cards leave their chats. */
+async function dgDismissEnded($: $): Promise<void> {
+  await dgUpdate($, value => ({ ...value, tasks: value.tasks.filter(isLive) }))
 }
 
 /** One line per task for `/tg autopilot`. */
@@ -4383,3 +4378,165 @@ async function dgLedger($: $, ledger: readonly ApEntry[], dialogs: Record<string
   return [...ledger, ...events].sort((a, b) => a.at - b.at)
 }
 // ── /delegate ──
+
+// ── running ──
+// dialogs-pane-ux.md §5.6 and §5.7 (T4): what runs, read as one row per chat
+// (./ui/running), for the dock's running strip, Activity (`l`) and the kill
+// switch (`0`, `/tg stop`), which stops every follow, autopilot and Worker
+// and says what it stopped, by name. Every `$` call of it is here.
+import { Activity, RunningStrip } from './ui/activity'
+import {
+  activityOrder,
+  activityTarget,
+  activityText,
+  fitStrip,
+  isRunning,
+  mergedLog,
+  runRows,
+  stopAnswer,
+  stopNotice,
+  stoppedOf,
+  stripItems,
+  type RunInput,
+  type RunRow,
+  type Stopped,
+} from './ui/running'
+
+const activity = atom({ plugin: 'dialogs-pane', key: 'activity' } as const, null)
+const lastStop = atom({ plugin: 'dialogs-pane', key: 'lastStop' } as const, null)
+
+/** The dock keeps the strip's row whether it shows or not (see drawPane). */
+const RUNNING_ROWS = 1
+/** How long the dock's strip row says what `0` stopped. */
+const STOP_NOTICE_MS = 15_000
+
+let stopTimer: Timer | null = null
+
+/** What runs now, a row per chat: the autopilot's dialogs, the follows, the tasks not dismissed. */
+async function runRowsNow($: $): Promise<RunRow[]> {
+  const pilot = await read($, autopilot)
+  const at = Math.max(pilot.now, await $.clock.now())
+  const agents = pilot.running.flatMap(id => {
+    const dialog = pilot.dialogs[String(id)]
+    return dialog === undefined ? [] : [{ peer: dialog.peer, level: dialog.level, tail: apLevelTail(pilot, dialog, at), phase: pilot.phase[String(id)] ?? 'listening' }]
+  })
+  const follows = (await read($, pins)).map(pin => ({ peer: pin.peer, to: pin.to.kind === 'main' ? 'main' : pin.to.label, state: pin.watch.status }))
+  return runRows({ agents, follows, tasks: await dgTaskRuns($, at) })
+}
+
+/**
+ * The kill switch (§5.6): every follow, autopilot and Worker (TaskStop) stops;
+ * the settings stay, so the card restarts one. What stopped is read first, so
+ * the answer names it.
+ */
+async function stopEverything($: $): Promise<Stopped[]> {
+  const report = stoppedOf(await runRowsNow($))
+  for (const pin of await read($, pins)) await unpin($, pin.peer.id)
+  await apStopAll($)
+  if (report.length > 0) {
+    const at = await $.clock.now()
+    stopTimer?.cancel()
+    await update($, lastStop, () => ({ text: stopNotice(report), until: at + STOP_NOTICE_MS }))
+    stopTimer = $.clock.after(STOP_NOTICE_MS, () => {
+      stopTimer = null
+      update($, lastStop, () => null).catch(() => {
+        // The strip draws a notice only before its `until`, so one left behind shows nothing.
+      })
+    })
+  }
+  await refreshStatus($)
+  return report
+}
+
+/** The dock's strip: what runs, `0: stop all` beside it; after `0`, what stopped. Null: nothing to say. */
+async function drawRunningStrip($: $, els: Els, width: number): Promise<RenderElement | null> {
+  const items = stripItems(await runRowsNow($))
+  if (items.length > 0) return RunningStrip(els, { ...fitStrip(items, width), notice: null })
+  const notice = await read($, lastStop)
+  if (notice === null || notice.until <= (await $.clock.now())) return null
+  return RunningStrip(els, { shown: [], more: 0, notice: notice.text })
+}
+
+// --- Activity ---
+
+/** Activity's rows as drawn: the ones it had, then the chats that started since. */
+async function activityRows($: $): Promise<PeerRef[]> {
+  const view = await read($, activity)
+  return view === null ? [] : activityOrder(view, await runRowsNow($))
+}
+
+/** `l`, from the chats, a chat or the card (which it closes): running rows on top, the log below. */
+async function openActivity($: $): Promise<void> {
+  await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
+  const rows = await runRowsNow($)
+  await update($, activity, () => ({ rows: activityOrder({ rows: [], cursor: 0 }, rows), cursor: 0 }))
+  const at = await $.clock.now()
+  await update($, now, () => at)
+  // The radar settles the packets' states (… working, ✓ done) the log shows.
+  await refreshRadar($)
+  await ringActivity($)
+}
+
+async function ringActivity($: $): Promise<void> {
+  const view = await read($, activity)
+  const row = view?.rows[view.cursor]
+  if (row !== undefined) await moveRing($, `act:${row.id}`)
+}
+
+/** j and k among the running rows; the rows that started since are kept in their order first. */
+async function moveActivity($: $, by: number): Promise<string | undefined> {
+  const rows = await activityRows($)
+  const view = await update($, activity, value => (value === null ? null : { rows, cursor: clamp(value.cursor + by, rows.length) }))
+  const row = view?.rows[view.cursor]
+  return row === undefined ? undefined : `act:${row.id}`
+}
+
+/** The ring moved onto a running row (arrows, a click): the cursor follows. */
+async function followActivity($: $, chatId: number): Promise<void> {
+  const rows = await activityRows($)
+  const index = rows.findIndex(row => row.id === chatId)
+  if (index >= 0) await update($, activity, value => (value === null ? null : { rows, cursor: index }))
+}
+
+/** ⏎ on a running row: its agent card, or its chat, where a task's card sits on top of the thread. */
+async function openActivityRow($: $, index: number): Promise<void> {
+  const rows = await activityRows($)
+  const peer = rows[index]
+  if (peer === undefined) return
+  const row = (await runRowsNow($)).find(one => one.peer.id === peer.id) ?? null
+  await update($, activity, () => null)
+  if (activityTarget(row) === 'card') return apOpenCard($, peer)
+  await apOpen($, peer)
+}
+
+/** `d` in Activity: the tasks that ended go; their rows stay, drawn stopped, until it closes. */
+async function dismissEnded($: $): Promise<void> {
+  const rows = await activityRows($)
+  await update($, activity, value => (value === null ? null : { ...value, rows }))
+  await dgDismissEnded($)
+  await ringActivity($)
+}
+
+async function drawActivity($: $, els: Els, width: number, rows: number): Promise<RenderElement> {
+  const view = await read($, activity)
+  const live = await runRowsNow($)
+  const order = view === null ? [] : activityOrder(view, live)
+  const byId = new Map(live.map(row => [row.peer.id, row]))
+  const pilot = await read($, autopilot)
+  const at = Math.max(pilot.now, await read($, now), await $.clock.now())
+  const watched = (await read($, triage)).watched.map(peer => peer.label)
+  const entries = await dgLedger($, pilot.ledger, pilot.dialogs) // ── delegate ── with the guard's stop events
+  return Activity(els, {
+    rows: order.map(peer => {
+      const row = byId.get(peer.id) ?? null
+      return { id: peer.id, text: activityText(row, peer.label), isStopped: row === null || !isRunning(row) }
+    }),
+    cursor: clamp(view?.cursor ?? 0, order.length),
+    watching: watched.length === 0 ? null : watched.join(' · '),
+    log: mergedLog(await read($, ledger), entries, at, width),
+    rowsLeft: rows,
+    width,
+    onOpen: index => openActivityRow($, index),
+  })
+}
+// ── /running ──

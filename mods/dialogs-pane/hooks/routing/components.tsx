@@ -1,14 +1,14 @@
 // The routing components of design §4 and dialogs-pane-ux.md §5.1: the send
-// sheet (⏎ on a message), its targets, inspect, the broadcast legs, the packet
-// ledger and the drafted reply. Plain functions over the
-// surface's element table, as ../ui/components.tsx draws; handlers come in as
+// sheet (⏎ on a message), its targets, inspect, the broadcast legs and the
+// drafted reply (the packet ledger is in Activity, ../ui/activity). Plain
+// functions over the surface's element table, as ../ui/components.tsx draws; handlers come in as
 // closures. Their letters are ../ui/keys'; digits pick what is numbered here.
 import type { RenderElement } from 'claude-code'
 
-import type { BroadcastRow, LedgerEntry, RadarEntry, Recipient, ReplyDraft, RouteIntent } from '../../types'
+import type { BroadcastRow, RadarEntry, Recipient, ReplyDraft, RouteIntent } from '../../types'
 import type { Els } from '../ui/components'
 import { GLYPH, TOKEN, oneLine } from '../ui/model'
-import { agentChip, intentLabel, ledgerRowText, recipientLabel } from './route'
+import { agentChip, intentLabel, recipientLabel } from './route'
 import { intentText, type InspectView } from './sheet'
 
 export type DraftHandlers = { onCheck: () => void; onSend: () => void; onDrop: () => void; onEdit: (text: string) => void }
@@ -331,35 +331,6 @@ export function BroadcastPicker(
         </Button>
       </Box>
       <Text dimColor>digits turn a leg on or off; ⏎ on an intent cycles it</Text>
-    </Box>
-  )
-}
-
-/** The packet ledger: what went to whom, its state and age; Enter jumps to the message. */
-export function Ledger(
-  els: Els,
-  props: {
-    ledger: readonly LedgerEntry[]
-    now: number
-    rows: number
-    width: number
-    onJump: (entry: LedgerEntry) => void
-  },
-): RenderElement {
-  const { Box, Text, Button } = els
-  const shown = props.ledger.slice(-Math.max(1, props.rows - 2)).reverse()
-  const color = (entry: LedgerEntry) =>
-    entry.state.kind === 'done' ? TOKEN.ok : entry.state.kind === 'failed' ? TOKEN.danger : undefined
-  return (
-    <Box flexDirection="column">
-      <Text color={TOKEN.accent} bold>{`ledger · ${props.ledger.length} packet${props.ledger.length === 1 ? '' : 's'}`}</Text>
-      {shown.length === 0 ? <Text dimColor>Nothing sent yet: select messages, then send.</Text> : null}
-      {shown.map(entry => (
-        <Button key={`ledger:${entry.seq}`} plain onPress={() => props.onJump(entry)}>
-          <Text color={color(entry)}>{oneLine(ledgerRowText(entry, props.now), Math.max(20, props.width - 2))}</Text>
-        </Button>
-      ))}
-      <Text dimColor>⏎ on a row jumps to the message</Text>
     </Box>
   )
 }

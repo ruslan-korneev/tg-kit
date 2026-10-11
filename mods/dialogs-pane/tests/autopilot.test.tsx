@@ -233,8 +233,9 @@ describe('auto', () => {
 
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
+    // l from the card: Activity's log, one line a burst (§5.7).
     const ledger = await ui.find({ type: 'Text', text: /→ "Merged, thanks"/ })
-    expect(ledger?.text).toBe('  → "Merged, thanks" · conf 0.93 · ✓ sent · undone')
+    expect(ledger?.text).toMatch(/^ {2}\d\d:\d\d ⟳ Dev Team · → "Merged, thanks" · conf 0\.93 · ✓ sent · undone$/)
     await band.unmount()
     await ui.unmount()
   })
@@ -473,7 +474,8 @@ describe('kill switch', () => {
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(5_000)
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot:\n⟳ Dev Team: auto, 50/h, gathering')
-    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg autopilot off: 1 dialog stopped.')
+    // `autopilot off` is /tg stop's old name: the same answer, naming what stopped (§5.6).
+    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg: stopped Dev Team (auto).\nSettings are kept; /tg, then a, restarts one.')
     await clock.settle()
     expect(child?.isKilled).toBe(true)
     await clock.advance(60_000)
@@ -491,14 +493,14 @@ describe('kill switch', () => {
     await $.turn.start({ text: 'working on something', turnId: 't-0' })
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(5_000)
-    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg autopilot off: 1 dialog stopped.')
+    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg: stopped Dev Team (auto).\nSettings are kept; /tg, then a, restarts one.')
     await clock.settle()
     expect(child?.isKilled).toBe(true)
     await clock.advance(60_000)
     expect(seen.asked).toEqual([])
     expect(sends(seen)).toHaveLength(0)
     await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't-0', reason: 'answer' })
-    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg autopilot: nothing was running.')
+    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg: nothing was running.')
   })
 
   test('0 is stop all, and no other key in the pane, in either seat', async ($, on) => {
@@ -513,6 +515,18 @@ describe('kill switch', () => {
     await clock.settle()
     expect(child?.isKilled).toBe(true)
     expect(await zeros()).toEqual([])
+    await ui.unmount()
+  })
+
+  test('Activity: ⏎ on a running dialog’s row opens its card', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const { ui } = await handOver($, clock, seen, '3')
+    await ui.press({ key: 'key:activity' })
+    expect((await ui.find({ key: 'act:1002' }))?.text).toBe('▸ ⟳  Dev Team       auto 0/50 · listening')
+    await ui.press({ key: 'act:1002' })
+    expect(await ui.find({ key: 'ap:card' })).toBeDefined()
+    expect(await ui.find({ key: 'activity' })).toBeUndefined()
     await ui.unmount()
   })
 
