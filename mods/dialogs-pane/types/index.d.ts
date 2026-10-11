@@ -172,8 +172,28 @@ export type Thread = { peer: PeerRef; load: Load<TgMessage[]> }
 /** Selected message ids, and where a `v` range started. */
 export type Selection = { ids: number[]; anchor: number | null }
 
-/** What the Hidden band reports: a dialog whose unread count grew. */
-export type BandEvent = { dialogId: number; label: string; kind: TgPeerKind; text: string }
+/**
+ * A watched chat's news for the band (§8 T5): its live reply, or its unread
+ * count grown between two passes. `sender` is the class of the message's
+ * sender when the band knows the message (a live reply), so in a group a
+ * bot's reply gets bot intents and a member's people intents (§4.6); null when
+ * only the chat is known (a count that grew).
+ */
+export type BandEvent = { dialogId: number; label: string; kind: TgPeerKind; text: string; sender: SenderClass | null }
+
+/**
+ * The band's queue (§4.5, §8 T5): which item it shows, and what the owner put
+ * away. The items themselves are read from the state they belong to (drafts,
+ * undo, holds, tasks, the watched reply), so nothing is kept twice.
+ */
+export type BandQueue = {
+  /** The key of the item shown (`j`, `k`); null, or a key no longer queued: the first. */
+  at: string | null
+  /** Task news dismissed with `d`, by item key. */
+  dismissed: string[]
+  /** Hard stops already raised with `$.ui.notify`, by item key: one notification each. */
+  notified: string[]
+}
 
 // ── triage ──
 // Live updates, watched dialogs, summaries and needs-you ranking (design §5
@@ -648,6 +668,7 @@ declare module 'claude-code' {
       thread: Thread | null
       selection: Selection
       band: BandEvent | null
+      queue: BandQueue
       now: number
       triage: Triage
       // ── routing ──

@@ -4,9 +4,10 @@
 import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
-import { KEYS, STRAY_KEYS, hotkeyTable } from '../hooks/ui/keys'
-import type { TgDialog, TgMessage } from '../types'
+import { KEYS, STRAY_KEYS, helpLines, hotkeyTable } from '../hooks/ui/keys'
+import type { ApDraft, Autopilot, PeerRef, TgDialog, TgMessage } from '../types'
 import { DIALOGS, MESSAGES, PERSON_MESSAGES, chatIds, chatKey, findChat, folderRun, messagesFor } from './fixtures'
+import { FOOTER, HINT, bandKeyProblems, engineSites, siteText } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -37,6 +38,8 @@ type World = {
   status: (string | undefined)[]
   toasts: string[]
   store: Map<string, unknown>
+  /** What /tg registered: its description and argument hint list the subcommands. */
+  registered: { description: string; argumentHint?: string }[]
 }
 
 const json = (value: unknown): ProcessRunResult => ({
@@ -57,7 +60,7 @@ const failure = (exitCode: number, stderr: string): ProcessRunResult => ({
 
 /** The engine beneath the plugin: tg, panes, the ring, status line, toasts, store, clock. */
 function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store: Record<string, unknown> = {}): World {
-  const seen: World = { opened: [], closed: [], status: [], toasts: [], store: new Map(Object.entries(store)) }
+  const seen: World = { opened: [], closed: [], status: [], toasts: [], store: new Map(Object.entries(store)), registered: [] }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
   on('store.set', (_$, e) => {
@@ -66,7 +69,10 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
   })
   // `tg folders`: the chats `tg dialogs` answers, as one All chats folder (an account without folders).
   on('process.run', (_$, e) => ({ value: e.argv[1] === 'folders' ? folderRun(e.argv, tg(['tg', 'dialogs', '--limit', '50', '--json'])) : tg(e.argv) }))
-  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('command.register', (_$, e) => {
+    seen.registered.push(e)
+    return { value: { command: e.name } }
+  })
   on('ui.open', (_$, e) => {
     seen.opened.push(e.id)
     return { value: { isPlaced: true } }
@@ -667,6 +673,54 @@ describe('Activity (l, §5.7)', () => {
   })
 })
 
+/**
+ * What the autopilot would have written, put into the pane's next write of
+ * it: only the owner writes its state (host rule), and a hook beneath its
+ * `state.set` may rewrite the value. `/tg stop` with nothing running is that
+ * write, and changes nothing else.
+ */
+function autopilotWriter(on: On) {
+  let change: ((value: Autopilot) => Autopilot) | null = null
+  on('state.set', (_$, e, next) =>
+    // The pane's own value, typed by its contract: Autopilot for this key.
+    next(change !== null && e.plugin === PLUGIN && e.key === 'autopilot' ? { ...e, value: change(e.value as Autopilot) } : e),
+  )
+  return async ($: Engine, fn: (value: Autopilot) => Autopilot) => {
+    change = fn
+    await $.command.run(runTg('stop'))
+    change = null
+  }
+}
+
+/** Contact A's and Dev Team's drafts, Dev Team's undo window and summary: four items of the band, as the autopilot writes them. */
+async function fillBand($: Engine, write: ReturnType<typeof autopilotWriter>): Promise<void> {
+  const contact: PeerRef = { id: 1004, arg: '1004', label: 'Contact A', kind: 'user' }
+  const group: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
+  const draft = (seq: number, peer: PeerRef, text: string): ApDraft => ({ seq, peer, incoming: 'Can we call tomorrow at 10?', text, confidence: 0.62, reasons: ['dates'], state: { kind: 'ready' } })
+  const now = Date.parse('2026-10-10T12:00:00Z')
+  await write($, value => ({
+    ...value,
+    drafts: [draft(1, contact, 'Tomorrow is packed, can I write after 18?'), draft(2, group, 'Merging after lunch.')],
+    undo: { seq: 3, peer: group, ids: [900], text: 'Merged, thanks', confidence: 0.93, until: now + 30_000 },
+    notes: [{ seq: 4, peer: group, text: 'Release moved to Friday.' }],
+    now,
+  }))
+}
+
+const BAND_SITE: RenderPropsOf['AbovePrompt'] = { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 100, scroll: { offset: 0, bodyRows: 6 }, view: {} }
+
+/** The band's Buttons in document order, and the rows it draws (a `display: none` Box draws none). */
+async function bandShape(band: Mounted<'terminal', 'AbovePrompt'>) {
+  const buttons = await band.findAll({ type: 'Button' })
+  const root = (await band.drawn()) as { children?: { props?: { display?: string } }[] }
+  return {
+    first: buttons[0]?.props.key,
+    isFirstRinged: buttons[0]?.props.autoFocus === true,
+    hotkeys: buttons.flatMap(button => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : [])),
+    rows: (root.children ?? []).filter(child => child.props?.display !== 'none').length,
+  }
+}
+
 describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () => {
   /** Contact A's thread, 40 messages long, theirs: Draft reply is one of its intents. */
   const PERSON_LONG: TgMessage[] = LONG.map(message => ({ ...message, chat_id: 1004, sender: fixture(PERSON_MESSAGES[1]).sender, out: false }))
@@ -835,7 +889,164 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       expect(await place(ui)).toEqual(base)
       await ui.unmount()
     })
+
+    test(`${seat.name}, the cursor on the newest of 40 messages: the band filling and the footer changing move nothing above it (T5)`, async ($, on) => {
+      engineSites(on)
+    const write = autopilotWriter(on)
+      const { ui } = await openStable($, on, seat.props)
+      await openChat(ui, 1004)
+      const base = await place(ui)
+      const footer = await siteText($, FOOTER)
+      // What lands outside the pane while the cursor stays: two drafts, an undo window, a summary.
+      await fillBand($, write)
+      expect(await siteText($, FOOTER)).not.toBe(footer)
+      expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 2 for you · ctrl+x tab')
+      expect(await place(ui)).toEqual(base)
+      // The window keeps its first row and the ring its stop as the band empties again.
+      await write($, value => ({ ...value, drafts: [], undo: null, notes: [] }))
+      expect(await siteText($, HINT)).toBe('? for shortcuts')
+      expect(await place(ui)).toEqual(base)
+      await ui.unmount()
+    })
   }
+})
+
+describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §4.5, §8 T5)', () => {
+  test('the band is one queue: an item at a time, most urgent first, two rows each; j and k walk it and ⏎ is always the first stop', async ($, on) => {
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const { ui } = await openPane($, on)
+    await fillBand($, write)
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_SITE })
+    const seen: string[] = []
+    // j round the whole queue and back to the first.
+    for (let step = 0; step <= 5; step++) {
+      const shape = await bandShape(band)
+      seen.push(String(shape.first))
+      // The ring keeps its place among the Buttons (§1): ⏎'s Button first in every item, so it stays on ⏎ (§4.3).
+      expect(shape.isFirstRinged).toBe(true)
+      expect(shape.rows).toBe(2)
+      // One Button per hotkey, each the table's band meaning; no digits in the band (§10).
+      expect(await bandKeyProblems(band)).toEqual([])
+      expect(await band.find({ type: 'Text', text: `${(step % 4) + 1}/4  j: next` })).toBeDefined()
+      await band.press({ key: 'band:next' })
+    }
+    // Drafts first (for you), then the undo window, then the summary; j wraps.
+    expect(seen).toEqual(['ap:draft:send', 'ap:draft:send', 'ap:band:undo-press', 'ap:note:open', 'ap:draft:send', 'ap:draft:send'])
+    // Six j's put it on the undo window; k goes back one, j forward two to the summary.
+    expect((await bandShape(band)).first).toBe('ap:band:undo-press')
+    await band.press({ key: 'band:prev' })
+    expect(await band.find({ type: 'Text', text: '2/4  j: next' })).toBeDefined()
+    await band.press({ key: 'band:next' })
+    await band.press({ key: 'band:next' })
+    expect(await band.find({ type: 'Text', text: 'Dev Team: Release moved to Friday.' })).toBeDefined()
+    // d on the summary: it leaves, the queue shrinks, and ⏎ is the first stop of what shows next.
+    await band.press({ key: 'ap:note:dismiss' })
+    expect(await band.find({ type: 'Text', text: '1/3  j: next' })).toBeDefined()
+    expect((await bandShape(band)).isFirstRinged).toBe(true)
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test('what the pane draws leaves the band: For you holds the drafts and the undo window', async ($, on) => {
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const { ui } = await openPane($, on)
+    await fillBand($, write)
+    expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 2 for you · ctrl+x tab')
+    await ui.press({ key: 'key:foryou' })
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_SITE })
+    expect((await bandShape(band)).first).toBe('ap:note:open')
+    expect(await band.find({ type: 'Text', text: /j: next/ })).toBeUndefined()
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test('the footer label per state: the summary with the unread chats that are not muted; the status line stays clear', async ($, on) => {
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const { ui, seen } = await openPane($, on)
+    expect(await siteText($, FOOTER)).toBe('focus & tg 3')
+    await fillBand($, write)
+    expect(await siteText($, FOOTER)).toBe('focus & tg 3 · 2 for you')
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    expect(await siteText($, FOOTER)).toBe('focus & tg 3 · ⌁1 · 2 for you')
+    expect(seen.status.filter(text => text !== undefined)).toEqual([])
+    await ui.unmount()
+  })
+
+  test("only this plugin's packets become one row; ctrl+o shows the whole packet", async ($, on) => {
+    engineSites(on)
+    const prompts: string[] = []
+    on('prompt.submit', (_$, e) => {
+      prompts.push(e.text)
+      return { text: e.text }
+    })
+    const { ui, clock } = await openPane($, on)
+    await openChat(ui, 1001)
+    await ui.press({ key: 'msg:677791' })
+    await ui.press({ key: 'sheet:intent:fix' })
+    await clock.settle()
+    const packet = prompts[0] ?? ''
+    expect(packet).toMatch(/^<tg-packet /)
+    const row = (props: RenderPropsOf['UserMessage']) => $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'UserMessage', props })
+    const ours: RenderPropsOf['UserMessage'] = { text: packet, origin: { kind: 'plugin', name: PLUGIN }, isExpanded: false }
+    const one = await row(ours)
+    expect((await one.find({ type: 'Text' }))?.text).toBe('▣ tg packet → main · Fix · @example_bot #677791 (+1 parent, 3 masked)   ctrl+o shows it')
+    await one.unmount()
+    for (const props of [
+      { ...ours, isExpanded: true },
+      { ...ours, origin: { kind: 'plugin', name: 'another-plugin' } },
+      { ...ours, origin: { kind: 'plugin', name: PLUGIN, asUser: true } },
+      { ...ours, origin: { kind: 'composer' } },
+    ] satisfies RenderPropsOf['UserMessage'][]) {
+      const shown = await row(props)
+      expect((await shown.find({ type: 'Text' }))?.text).toBe(packet)
+      await shown.unmount()
+    }
+    await ui.unmount()
+  })
+
+  test('/tg help is the key table, /tg status the summary and what runs, each a card; the command lists them', async ($, on) => {
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const { ui, seen } = await openPane($, on)
+    expect(seen.registered[0]?.argumentHint).toContain('status|help')
+    expect(seen.registered[0]?.description).toContain('/tg status · /tg help')
+    const help = await $.command.run(runTg('help'))
+    expect(help.text).toBe(helpLines().join('\n'))
+    await fillBand($, write)
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    const status = await $.command.run(runTg('status'))
+    expect(status.text?.split('\n')).toEqual([
+      'tg status',
+      'tg 3 · ⌁1 · 2 for you',
+      'running',
+      // The test's world spawns no `tg watch`, so the follow reads failed.
+      '  ⌁  @example_bot   follows → main · failed',
+      'watching  nothing',
+      'waiting',
+      '  ✎ draft for Contact A: "Tomorrow is packed, can I write after 18?"',
+      '  ✎ draft for Dev Team: "Merging after lunch."',
+      '  ⟳ Dev Team replied "Merged, thanks" · u: undo 30s',
+      '  ◉ Dev Team: Release moved to Friday.',
+    ])
+    // The engine hands the row its text under the plugin's name (seen live); the card's title is the command's own.
+    for (const args of ['help', 'status']) {
+      const card = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'CommandOutput', props: { command: 'tg', args, text: `dialogs-pane: ${args === 'help' ? (help.text ?? '') : (status.text ?? '')}`, isErrored: false } })
+      const drawn = await card.drawn()
+      expect(drawn).toMatchObject({ type: 'Box', props: { borderStyle: 'round' } })
+      expect(await card.find({ type: 'Text', text: args === 'help' ? 'tg keys · one meaning per letter, in every view and in the band' : 'tg status' })).toBeDefined()
+      await card.unmount()
+    }
+    // Any other /tg answer is the engine's own row.
+    const other = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'CommandOutput', props: { command: 'tg', args: 'stop', text: 'tg: nothing was running.', isErrored: false } })
+    expect((await other.find({ type: 'Text' }))?.text).toBe('tg: nothing was running.')
+    await other.unmount()
+    await ui.unmount()
+  })
 })
 
 describe('states', () => {
@@ -892,45 +1103,62 @@ describe('states', () => {
 })
 
 describe('hidden mode', () => {
-  test('/tg hidden before any list loaded shows the real status, not tg …', async ($, on) => {
+  const BAND: RenderPropsOf['AbovePrompt'] = { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 80, scroll: { offset: 0, bodyRows: 6 }, view: {} }
+
+  test('/tg hidden before any list loaded: the footer counts unread chats that are not muted, the status line stays clear', async ($, on) => {
     const clock = mock.clock(on, { now: 0 })
-    const { status } = world(on, argv => (argv[1] === 'dialogs' ? json(DIALOGS) : json([])), { mode: 'open' })
+    engineSites(on)
+    // A muted chat's unread would bury the rest (§4.5): Dev Team, muted, is left out.
+    const { status } = world(on, argv => (argv[1] === 'dialogs' ? json(DIALOGS.map(d => (d.id === 1002 ? { ...d, muted: true } : d))) : json([])), { mode: 'open' })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    expect(await siteText($, FOOTER)).toBe('focus & tg …')
     await $.command.run(runTg('hidden'))
     await clock.settle()
-    expect(status.at(-1)).toBe('tg ● 7 unread')
+    expect(await siteText($, FOOTER)).toBe('focus & tg 1')
+    expect(status.at(-1)).toBeUndefined()
   })
 
-  test('a dialog whose unread count grows raises the band; d dismisses it', async ($, on) => {
-    let unread = 5
+  test('not logged in: the footer says so and the status line holds the alarm; a later answer clears it', async ($, on) => {
+    let isOut = true
     const clock = mock.clock(on, { now: 0 })
-    const { status } = world(on, () => json(DIALOGS.map(d => (d.id === 1002 ? { ...d, unread } : d))), { mode: 'hidden' })
+    engineSites(on)
+    const { status } = world(on, argv => (argv[1] === 'dialogs' && isOut ? failure(3, 'error: not logged in\n') : happy(argv)), { mode: 'hidden' })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await clock.settle()
-    expect(status.at(-1)).toBe('tg ● 7 unread')
+    expect(status.at(-1)).toBe('tg ⚠ not logged in: ! tg login')
+    expect(await siteText($, FOOTER)).toBe('focus & tg ⚠ not logged in')
+    isOut = false
+    await clock.advance(300_000)
+    expect(status.at(-1)).toBeUndefined()
+    expect(await siteText($, FOOTER)).toBe('focus & tg 3')
+  })
+
+  test("a watched chat whose unread count grows raises the band; a group's news opens (who wrote is unknown); d dismisses it", async ($, on) => {
+    let unread = 5
+    const clock = mock.clock(on, { now: 0 })
+    engineSites(on)
+    const watched = [{ id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }]
+    const { status } = world(on, argv => (argv[1] === 'dialogs' ? json(DIALOGS.map(d => (d.id === 1002 || d.id === 1001 ? { ...d, unread: d.unread + (unread - 5) } : d))) : json([])), {
+      mode: 'hidden',
+      'triage.watched': watched,
+    })
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    expect(await siteText($, HINT)).toBe('? for shortcuts')
     unread = 6
     // The slow poll: watched dialogs are live through tg watch, the rest every 5 min.
     await clock.advance(300_000)
-    expect(status.at(-1)).toBe('tg ● 8 unread · Dev Team wrote')
-    const band = await $.ui.mount({
-      plugin: PLUGIN,
-      surface: 'terminal',
-      component: 'AbovePrompt',
-      props: {
-        hasSurvey: false,
-        isWorking: false,
-        maxRows: 6,
-        bodyColumns: 80,
-        scroll: { offset: 0, bodyRows: 6 },
-        view: {},
-      },
-    })
-    expect(await band.find({ type: 'Text', text: 'Dev Team: "deploy is green"' })).toBeDefined()
+    expect(status.at(-1)).toBeUndefined()
+    expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 1 waiting · ctrl+x tab')
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    // The bot's count grew too, but it is not watched: only Dev Team's news reaches the band.
+    expect(await band.find({ type: 'Text', text: '● Dev Team: "deploy is green"' })).toBeDefined()
+    expect((await band.find({ key: 'band:main' }))?.text).toBe('⏎ open')
     // o, d and ⏎ reach the band only once it holds the keys: the band says how.
-    expect(await band.find({ type: 'Text', text: 'ctrl+x tab:' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '  ctrl+x tab ›' })).toBeDefined()
     expect((await band.find({ key: 'band:dismiss' }))?.props.hotkey).toBe('d')
     await band.press({ key: 'band:dismiss' })
-    expect(status.at(-1)).toBe('tg ● 8 unread')
+    expect(await siteText($, HINT)).toBe('? for shortcuts')
     await band.unmount()
   })
 })

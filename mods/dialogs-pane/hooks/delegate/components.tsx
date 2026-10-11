@@ -179,15 +179,3 @@ export function TaskRow({ Box, Text }: Els, props: { task: DgTask; view: TaskVie
     </Box>
   )
 }
-
-/** A hard stop waiting in the engine's dialog, mirrored above the prompt. */
-export function HoldBand({ Box, Text }: Els, props: { label: string; stops: readonly string[]; what: string; width: number }): RenderElement {
-  return (
-    <Box key="dg:band:hold" flexDirection="row" gap={2}>
-      <Text color={TOKEN.warn} wrap="truncate-end">
-        {`⏸ HARD STOP ${props.stops.join(' + ')}: ${oneLine(props.what, Math.max(20, props.width - 60))}? (answer in the dialog)`}
-      </Text>
-      <Text dimColor>{`⚡ ${props.label}`}</Text>
-    </Box>
-  )
-}

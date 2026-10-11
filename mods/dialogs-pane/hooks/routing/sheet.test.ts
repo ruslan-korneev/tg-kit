@@ -96,10 +96,17 @@ describe('⏎ repeats the last intent per kind of sender', () => {
   })
 
   test('the band names a real intent: the last one, but Fix or Explain where that is Ask', () => {
-    expect(bandIntent('bot', FIRST_INTENT)).toEqual({ sender: 'bot', intent: 'fix' })
-    expect(bandIntent('user', FIRST_INTENT)).toEqual({ sender: 'person', intent: 'explain' })
-    expect(bandIntent('user', { ...FIRST_INTENT, person: 'do_it' })).toEqual({ sender: 'person', intent: 'do_it' })
-    expect(bandIntent('supergroup', FIRST_INTENT)).toEqual({ sender: 'other', intent: 'explain' })
+    expect(bandIntent({ kind: 'bot', sender: null }, FIRST_INTENT)).toEqual({ sender: 'bot', intent: 'fix' })
+    expect(bandIntent({ kind: 'user', sender: null }, FIRST_INTENT)).toEqual({ sender: 'person', intent: 'explain' })
+    expect(bandIntent({ kind: 'user', sender: null }, { ...FIRST_INTENT, person: 'do_it' })).toEqual({ sender: 'person', intent: 'do_it' })
+    expect(bandIntent({ kind: 'channel', sender: null }, FIRST_INTENT)).toEqual({ sender: 'other', intent: 'explain' })
+  })
+
+  test("the band's intents follow the reply's sender, not the chat (§4.6): in a group a bot gets bot intents, a member people intents", () => {
+    expect(bandIntent({ kind: 'supergroup', sender: 'bot' }, FIRST_INTENT)).toEqual({ sender: 'bot', intent: 'fix' })
+    expect(bandIntent({ kind: 'supergroup', sender: 'person' }, { ...FIRST_INTENT, person: 'draft_reply' })).toEqual({ sender: 'person', intent: 'draft_reply' })
+    // A group's grown count says nothing of who wrote: no send, ⏎ opens the chat.
+    expect(bandIntent({ kind: 'supergroup', sender: null }, FIRST_INTENT)).toBeNull()
   })
 })
 

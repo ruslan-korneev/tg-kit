@@ -4,7 +4,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { TgDialog } from '../../types'
 import { ME, REPLY, SENT, msg } from '../packet/fixtures'
-import { applyToDialogs, applyToMessages, hiddenStatus, latencyOf, repliesToYou, reportReply } from './live'
+import { applyToDialogs, applyToMessages, latencyOf, repliesToYou, replyText, reportReply } from './live'
 import { heuristic, parseVerdicts, rank, rankPrompt, toAsk, verdictKey } from './needs'
 import { summaryPrompt } from './summary'
 import { parseWatched } from './watch'
@@ -66,13 +66,11 @@ describe('live merges', () => {
     expect(repliesToYou(msg({ id: 9, reply_to: 3 }), [SENT])).toBe(false)
   })
 
-  test("Hidden's status line says the bot replied, with its latency", () => {
-    const load = { status: 'ok' as const, value: [dialog({ id: 1001, kind: 'bot', unread: 2 })] }
-    const { band, reply } = reportReply({ id: 1001, label: '@example_bot', kind: 'bot' }, REPLY, [SENT])
-    expect(band).toEqual({ dialogId: 1001, label: '@example_bot', kind: 'bot', text: '⚠ Something went wrong' })
-    expect(hiddenStatus(load, band, reply)).toBe('tg ● 2 unread · ◆ example_bot replied 1.0s')
-    expect(hiddenStatus(load, band, { ...reply, latencyMs: null })).toBe('tg ● 2 unread · ◆ example_bot replied')
-    expect(hiddenStatus(load, null, reply)).toBe('tg ● 2 unread')
+  test('the band reports a watched reply with its sender, and the bot reply with its latency', () => {
+    const { band, reply } = reportReply({ id: 1001, label: '@example_bot', kind: 'bot' }, REPLY, [SENT], 'bot')
+    expect(band).toEqual({ dialogId: 1001, label: '@example_bot', kind: 'bot', text: '⚠ Something went wrong', sender: 'bot' })
+    expect(replyText(reply)).toBe('◆ example_bot replied 1.0s')
+    expect(replyText({ ...reply, latencyMs: null })).toBe('◆ example_bot replied')
   })
 })
 

@@ -223,11 +223,14 @@ describe('auto', () => {
     expect(sends(seen)).toHaveLength(1)
     expect(sends(seen)[0]).toEqual({ argv: ['tg', 'send', '1002', '-', '--plain', '--json'], stdin: 'Merged, thanks' })
     expect(seen.runs.some(one => one.argv[1] === 'send' && one.argv.includes('--yes'))).toBe(false)
-    expect(seen.status.at(-1)).toBe('tg ⟳ Dev Team replied "Merged, thanks" · conf 0.93 · u undo 30s')
+    // The undo window is the band's (§8 T5): the status line keeps alarms only.
+    expect(seen.status.at(-1)).toBeUndefined()
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    expect(await band.find({ type: 'Text', text: 'Dev Team replied "Merged, thanks" · conf 0.93' })).toBeDefined()
+    expect((await band.find({ key: 'ap:band:undo-press' }))?.text).toContain('undo 30s')
 
     await clock.advance(2_000)
-    expect(seen.status.at(-1)).toBe('tg ⟳ Dev Team replied "Merged, thanks" · conf 0.93 · u undo 28s')
-    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    expect(seen.status.at(-1)).toBeUndefined()
     expect((await band.find({ key: 'ap:band:undo-press' }))?.text).toContain('undo 28s')
     await band.press({ key: 'ap:band:undo-press' })
     expect(seen.runs.at(-1)?.argv).toEqual(['tg', 'delete', '1002', '900', '--yes', '--json'])
@@ -298,7 +301,7 @@ describe('auto', () => {
     expect(checkCalls(seen)).toHaveLength(4)
     expect(sends(seen)).toHaveLength(0)
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect(await band.find({ type: 'Text', text: '  regenerated 3×, conf < 0.80 · conf 0.50' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: / · regenerated 3×, conf < 0\.80 · conf 0\.50$/ })).toBeDefined()
     await band.unmount()
   })
 
@@ -334,8 +337,9 @@ describe('auto', () => {
     await clock.settle()
     expect(sends(seen)).toHaveLength(0)
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect(await band.find({ type: 'Text', text: '  escalated: dates · conf 0.95' })).toBeDefined()
-    expect(seen.status.at(-1)).toBe('tg · ✎ 1 draft')
+    expect(await band.find({ type: 'Text', text: / · escalated: dates · conf 0\.95$/ })).toBeDefined()
+    // A waiting draft is the band's and the footer's "for you", never the status line's (§4.5).
+    expect(seen.status.at(-1)).toBeUndefined()
     await band.unmount()
   })
 
@@ -415,8 +419,9 @@ describe('draft and listen', () => {
     await clock.advance(20_000)
     await clock.settle()
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect(await band.find({ type: 'Text', text: 'Dev Team: "Can we call tomorrow at 10?"  → draft: "Tomorrow is packed, can I write after 18?"' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '  escalated: dates · conf 0.62' })).toBeDefined()
+    // Two rows (§8 T5): the message it answers and why it waits, then the draft alone at the full width.
+    expect(await band.find({ type: 'Text', text: 'Dev Team: "Can we call tomorrow at 10?" · escalated: dates · conf 0.62' })).toBeDefined()
+    expect((await band.find({ key: 'band:row2' }))?.text).toBe('  → Tomorrow is packed, can I write after 18?')
     expect(sends(seen)).toHaveLength(0)
     await band.press({ key: 'ap:draft:edit' })
     await band.input({ key: 'ap:draft:text', text: 'Tomorrow is packed, after 18?' })
@@ -427,7 +432,28 @@ describe('draft and listen', () => {
     await band.unmount()
   })
 
-  test('a draft the band cuts short: ⏎ opens its chat and shows it whole, sends nothing; ⏎ again sends it with --yes', async ($, on) => {
+  // §8 T5: the draft has its own row at the band's full width, so at 64 columns a draft that fits sends with one ⏎.
+  const NARROW: RenderPropsOf['AbovePrompt'] = { ...BAND_PROPS, bodyColumns: 64 }
+
+  test('at 64 columns a draft that fits its row sends with one ⏎, as the owner\'s own write (--yes)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    // 56 characters: under half a row the old band gave it, whole on a row of its own (60 cells after `  → `).
+    const fits = 'Tomorrow is packed with reviews, can I write after 18:00?'
+    const seen = world(on, { model: () => answer({ action: 'reply', text: fits, confidence: 0.62, topics: ['dates'], reason: '' }) })
+    const { ui, child } = await handOver($, clock, seen, '2')
+    watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: NARROW })
+    expect((await band.find({ key: 'band:row2' }))?.text).toBe(`  → ${fits}`)
+    expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ send')
+    await band.press({ key: 'ap:draft:send' })
+    expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: fits }])
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test('at 64 columns a longer draft never sends on the first ⏎: it opens its chat and unfolds; ⏎ again sends it with --yes', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const long = 'Tomorrow is packed with reviews until late, but I can write after 18 or call on Friday morning.'
     const seen = world(on, { model: () => answer({ action: 'reply', text: long, confidence: 0.62, topics: ['dates'], reason: '' }) })
@@ -437,14 +463,15 @@ describe('draft and listen', () => {
     await clock.settle()
     const reads = () => seen.runs.filter(one => one.argv[1] === 'read' && one.argv[2] === '1002').length
     const readsBefore = reads()
-    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect(await band.find({ type: 'Text', text: /→ draft: "Tomorrow is packed with reviews.*…"$/ })).toBeDefined()
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: NARROW })
+    // Its row cuts it (truncate-end): ⏎ opens instead of sending what was not read (decision 9).
+    expect((await band.find({ key: 'band:row2' }))?.text).toBe(`  → ${long}`)
     expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ open')
     await band.press({ key: 'ap:draft:send' })
     await clock.settle()
     expect(sends(seen)).toEqual([])
-    expect(await band.find({ type: 'Text', text: long })).toBeDefined()
-    // As `o`: the pane opened the chat (openThread reads it).
+    // Unfolded (T0d, until T3's rows): the whole draft wraps under its row; the pane opened the chat, as `o`.
+    expect((await band.find({ type: 'Text', text: `  → ${long}` }))?.props.wrap).toBe('wrap')
     expect(reads()).toBeGreaterThan(readsBefore)
     expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ send')
     await band.press({ key: 'ap:draft:send' })

@@ -173,8 +173,9 @@ const onRow =
 const onIntents = (c: KeyContext) => (c.facts.sheet === 'intents' ? null : 'needs the intents (h)')
 
 export const KEYS = [
-  { id: 'down', key: 'j', hotkey: 'j', group: 'move', where: MOVES, kinds: 'any', label: () => 'down' },
-  { id: 'up', key: 'k', hotkey: 'k', group: 'move', where: MOVES, kinds: 'any', label: () => 'up' },
+  // In the band, the queue's next and previous item (§6 "Band").
+  { id: 'down', key: 'j', hotkey: 'j', group: 'move', where: [...MOVES, 'band'], kinds: 'any', label: c => (c.where === 'band' ? 'next' : 'down') },
+  { id: 'up', key: 'k', hotkey: 'k', group: 'move', where: [...MOVES, 'band'], kinds: 'any', label: c => (c.where === 'band' ? 'previous' : 'up') },
   {
     id: 'open',
     key: 'o',
@@ -561,4 +562,46 @@ export function strayText(key: string, c: KeyContext): string {
   }
   if (def.where.includes(c.where) && def.kinds !== 'any') return `${key}: ${label} works in ${joinWords(def.kinds.map(kind => KIND_WORDS[kind]))}`
   return `${key}: ${label} works in ${joinWords(def.where.filter(where => where !== 'band' && where !== 'field').map(where => WHERE_WORDS[where]))}`
+}
+
+// --- /tg help (§4.4, §8 T5): the same table, as a card in the transcript ---
+
+const HELP_GROUPS: Record<MenuGroup, string> = { move: 'move', message: 'message', chat: 'chat', chats: 'chats', pane: 'pane', safety: 'safety' }
+
+/** Where a key works, in the help's words: its views, and the kinds of chat when not all. */
+function helpWhere(def: KeyDef): string {
+  const isEvery = PANE.every(where => def.where.includes(where))
+  const rest = def.where.filter(where => where !== 'field' && where !== 'menu' && (!isEvery || !PANE.includes(where)))
+  const views = joinWords([...(isEvery ? ['every view'] : []), ...rest.map(where => WHERE_WORDS[where])])
+  return def.kinds === 'any' ? views : `${views} · ${joinWords(def.kinds.map(kind => KIND_WORDS[kind]))} only`
+}
+
+/**
+ * `/tg help`: every key of the table, grouped as the menu groups them, with
+ * what it does and where it works, read from the table itself so the help can
+ * never say what the keys do not. Labels are read in the first view a key
+ * serves, with nothing marked, running or open.
+ */
+export function helpLines(): string[] {
+  const rows = MENU_GROUPS.flatMap(group =>
+    TABLE.filter(def => def.group === group && def.key !== '').map(def => {
+      const c: KeyContext = { where: def.where[0] ?? 'chats', seat: 'dock', kind: def.kinds === 'any' ? null : (def.kinds[0] ?? null), facts: NO_FACTS }
+      return { group: HELP_GROUPS[group], key: def.key, label: (def.menuLabel ?? def.label)(c), where: helpWhere(def) }
+    }),
+  )
+  const keyWidth = Math.max(...rows.map(row => row.key.length))
+  const labelWidth = Math.max(...rows.map(row => row.label.length))
+  let lastGroup = ''
+  const lines = rows.map(row => {
+    const group = row.group === lastGroup ? '' : row.group
+    lastGroup = row.group
+    return `${group.padEnd(8)}${row.key.padEnd(keyWidth + 2)}${row.label.padEnd(labelWidth + 2)}${row.where}`
+  })
+  return [
+    'tg keys · one meaning per letter, in every view and in the band',
+    'The pane holds the keys while ● keys shows: ctrl+x tab hands them over, Esc gives them back.',
+    ...lines,
+    'band    ⏎ the item\'s action · e edit · d drop or dismiss · o open in the pane · u undo · j k next, previous',
+    '/tg     /tg opens · /tg stop · /tg status · /tg help · /tg hide',
+  ]
 }

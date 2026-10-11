@@ -47,16 +47,6 @@ export function undoLeft(undo: ApUndoWindow | null, now: number): number {
 
 const confText = (confidence: number | null) => (confidence === null ? '' : ` · conf ${confidence.toFixed(2)}`)
 
-/** `tg ⟳ dev-team replied "Merged, thanks" · conf 0.93 · u undo 28s` (design §6 mockup). */
-export function undoStatus(undo: ApUndoWindow, now: number): string {
-  return `tg ${LEVEL_GLYPH.auto} ${undo.peer.label} replied "${oneLine(undo.text, 32)}"${confText(undo.confidence)} · u undo ${undoLeft(undo, now)}s`
-}
-
-/** The status line's autopilot tail: drafts waiting for you. */
-export function draftsTail(drafts: readonly ApDraft[]): string {
-  return drafts.length === 0 ? '' : ` · ${LEVEL_GLYPH.draft} ${drafts.length} draft${drafts.length === 1 ? '' : 's'}`
-}
-
 function outcomeText(outcome: ApOutcome): string {
   switch (outcome.kind) {
     case 'working':

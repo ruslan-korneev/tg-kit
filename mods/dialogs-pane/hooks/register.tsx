@@ -10,7 +10,6 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ModelCompleteResult, Register, RenderElement, Timer } from 'claude-code'
 
 import type {
-  BandEvent,
   Load,
   Mode,
   PeerRef,
@@ -20,7 +19,7 @@ import type {
   WatchHealth,
 } from '../types'
 import { SummaryBlock, watchMark } from './triage/components'
-import { EMPTY_TRIAGE, RECENT, applyToDialogs, applyToMessages, hiddenStatus, latencyText, repliesToYou, reportReply } from './triage/live'
+import { EMPTY_TRIAGE, RECENT, applyToDialogs, applyToMessages, repliesToYou, reportReply } from './triage/live'
 import { NO_ME, RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, toAsk, verdictKey, type Me } from './triage/needs'
 import { SUMMARY_LIMIT, SUMMARY_MAX_TOKENS, SUMMARY_SYSTEM, SUMMARY_TIMEOUT_MS, TRIAGE_MODEL, summaryPrompt } from './triage/summary'
 import { MAX_WATCHED, parseWatched } from './triage/watch'
@@ -39,7 +38,6 @@ import {
   draftArgv,
   draftOf,
   feedPin,
-  ledgerStatus,
   intentLabel,
   legsOf,
   onMainTurnStart,
@@ -64,6 +62,7 @@ import {
   isRemembered,
   legSplit,
   rememberedWith,
+  senderClass,
   mainLegIntent,
   nextLegIntent,
   parseLastIntents,
@@ -78,6 +77,7 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
+import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
   BAR_GAP,
@@ -86,6 +86,7 @@ import {
   strayText,
   actionBar,
   chatKind,
+  helpLines,
   hiddenKeys,
   menu as menuSections,
   type ChatKind,
@@ -109,10 +110,29 @@ import {
   stateSummary,
   toggleSelected,
 } from './ui/model'
+import {
+  NOTHING_ON_SCREEN,
+  bandQueue,
+  footerLabel,
+  draftFits,
+  hintTail,
+  itemLine,
+  packetRow,
+  shownIndex,
+  statusAlarm,
+  stepKey,
+  unreadChats,
+  type BandHold,
+  type BandItem,
+  type OnScreen,
+  type UnreadHead,
+} from './ui/queue'
 
 type $ = EngineInterface
 
 const PANE = 'tg'
+/** This plugin's name, as the engine stamps its prompts (`origin.name`). */
+const PLUGIN = 'dialogs-pane'
 const STORE_MODE = 'mode'
 // Watched dialogs and the open thread are live through `tg watch` (triage);
 // this slow poll keeps the unread counts of everything else.
@@ -145,6 +165,7 @@ const dialogs = atom({ plugin: 'dialogs-pane', key: 'dialogs' } as const, { stat
 const thread = atom({ plugin: 'dialogs-pane', key: 'thread' } as const, null)
 const selection = atom({ plugin: 'dialogs-pane', key: 'selection' } as const, NO_SELECTION)
 const band = atom({ plugin: 'dialogs-pane', key: 'band' } as const, null)
+const queue = atom({ plugin: 'dialogs-pane', key: 'queue' } as const, { at: null, dismissed: [], notified: [] })
 const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
 
 export const register: Register = (on, options) => {
@@ -156,8 +177,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'tg',
-      description: 'Telegram pane: chats, send to Claude, bots, agents · /tg stop stops every agent',
-      argumentHint: '[hide|stop|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
+      description: 'Telegram pane: chats, send to Claude, bots, agents · /tg stop · /tg status · /tg help',
+      argumentHint: '[hide|stop|status|help|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
       // The kill switch must not wait for main's turn to end, so every /tg runs
       // at once: opening the pane touches no turn state either.
       immediate: true,
@@ -192,10 +213,13 @@ export const register: Register = (on, options) => {
     const asked = e.args.trim()
     if (asked === 'autopilot' || asked.startsWith('autopilot ')) return autopilotCommand($, asked.slice('autopilot'.length).trim()) // ── autopilot ──
     if (asked === 'stop') return { text: stopAnswer(await stopEverything($)) } // ── running ── the kill switch
+    // §4.4: the key table and what runs, as cards in the transcript (the CommandOutput hook below).
+    if (asked === 'help') return { text: helpLines().join('\n') }
+    if (asked === 'status') return { text: (await statusLines($)).join('\n') }
     // The layout follows the seat (design decision 4): `wide` and `compact` stay as
     // aliases of `/tg`, `hidden` of `/tg hide`.
     const isHide = asked === 'hide' || asked === 'hidden'
-    if (!isHide && asked !== '' && asked !== 'wide' && asked !== 'compact') return { text: 'Usage: /tg [hide|stop|autopilot]' }
+    if (!isHide && asked !== '' && asked !== 'wide' && asked !== 'compact') return { text: 'Usage: /tg [hide|stop|status|help|autopilot]' }
     await setMode($, isHide ? 'hidden' : 'open')
     if (!isHide) await ringCursor($)
     // Hidden needs the list too: its status line counts the unread. Once a pass is held, it counts that.
@@ -227,48 +251,53 @@ export const register: Register = (on, options) => {
     return done
   }).catch(($, e, next) => next(e))
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) =>
-    drawPane($, $.ui.resolve(e), {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    // ── footer ── the band skips what the pane draws, and the dock draws the open chat under Chats.
+    lastSeat = e.props.placement
+    return drawPane($, $.ui.resolve(e), {
       seat: e.props.placement,
       width: e.props.bodyColumns,
       rows: e.props.scroll.bodyRows,
       isFocused: e.props.isFocused,
-    }),
+    })
+  })
+
+  // ── footer ── dialogs-pane-ux.md §4.1, §4.5, §8 T5: the band, the footer label,
+  // the hint tail, one transcript row per packet, /tg help and /tg status as cards.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
+    const drawn = await drawBand($, $.ui.resolve(e), e.props.bodyColumns)
+    return drawn ?? next(e)
+  })
+
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) =>
+    next({ ...e, props: { ...e.props, modes: [...e.props.modes, await footerText($)] } }),
   )
 
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    // ── autopilot ── drafts, undo and summaries show in every mode.
-    const pilot = e.props.hasSurvey ? null : await drawAutopilotBand($, $.ui.resolve(e), e.props.bodyColumns)
-    if (pilot !== null) return pilot
-    const event = await read($, band)
-    if (e.props.hasSurvey || event === null || (await read($, mode)) !== 'hidden') return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
-    const isBot = event.kind === 'bot'
-    const sendAs = intentLabel(bandIntent(event.kind, (await lastIntents($)).last).intent)
-    // The message's Text truncates in the row as drawn; T5's two-row band gives it the width.
-    const room = Math.max(10, e.props.bodyColumns - event.label.length - 52)
-    return (
-      <Box flexDirection="row" gap={2}>
-        <Text wrap="truncate-end">
-          <Text color={isBot ? TOKEN.bot : TOKEN.accent}>{isBot ? GLYPH.bot : GLYPH.unread} </Text>
-          {`${event.label}: "${oneLine(event.text, room)}"`}
-        </Text>
-        {await bandLatency($, $.ui.resolve(e), event)}
-        {/* The engine gives band hotkeys and ⏎ the keys only once the band holds
-            them (ctrl+x tab or a click); typed at the prompt they are text. */}
-        <Text dimColor>ctrl+x tab:</Text>
-        <Button key="band:main" plain autoFocus onPress={() => bandToMain($)}>
-          {`⏎ send to main as ${sendAs}`}
-        </Button>
-        <Button key="band:open" plain hotkey="o" onPress={() => openFromBand($)}>
-          open
-        </Button>
-        <Button key="band:dismiss" plain hotkey="d" dimColor onPress={() => dismissBand($)}>
-          dismiss
-        </Button>
-      </Box>
-    )
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const tail = hintTail((await bandNow($)).length, (await summaryCounts($)).forYou)
+    if (tail === undefined) return next(e)
+    return next({ ...e, props: { ...e.props, tail: e.props.tail === undefined ? tail : `${e.props.tail} · ${tail}` } })
   })
+
+  // A packet this plugin sent to main is one row; ctrl+o (isExpanded) shows it whole (§5.1).
+  // Seen live on 2.1.296: the engine does not run this hook for the row of this plugin's own
+  // $.prompt.submit (a probe plugin of another name was handed that row and rewrote it), so the
+  // row stays whole there until the rewrite moves to another plugin or the engine changes.
+  on('ui.render', { component: 'UserMessage', props: { origin: { kind: 'plugin' } } }, async ($, e, next) => {
+    const { origin } = e.props
+    if (e.props.isExpanded || origin.kind !== 'plugin' || origin.name !== PLUGIN || origin.asUser === true) return next(e)
+    const row = packetRow(e.props.text, await read($, ledger))
+    return row === null ? next(e) : next({ ...e, props: { ...e.props, text: row } })
+  })
+
+  on('ui.render', { component: 'CommandOutput', props: { command: 'tg' } }, async ($, e, next) => {
+    const asked = e.props.args.trim()
+    if (e.props.isErrored || (asked !== 'help' && asked !== 'status')) return next(e)
+    // The row's text comes under the plugin's name (`dialogs-pane: tg status`, seen live): the card's title is the command's own.
+    return CommandCard($.ui.resolve(e), e.props.text.replace(`${PLUGIN}: `, ''))
+  })
+  // ── /footer ──
 
   // ── routing ──
   on('turn.start', async ($, e, next) => {
@@ -309,13 +338,16 @@ export const register: Register = (on, options) => {
 // --- tg through $.process.run ---
 
 async function runTg<T>($: $, req: TgRequest<T>): Promise<TgResult<T>> {
+  let result: TgResult<T>
   try {
-    return settle(req, await $.process.run(req.argv, { timeoutMs: TG_TIMEOUT_MS }))
+    result = settle(req, await $.process.run(req.argv, { timeoutMs: TG_TIMEOUT_MS }))
   } catch {
     // The run rejects when tg cannot start or outlives the timeout; settle
     // reports both as `missing`, which the pane explains.
-    return settle(req, undefined)
+    result = settle(req, undefined)
   }
+  await seeLogin($, result) // ── footer ──
+  return result
 }
 
 // --- open or hidden, kept in $.store across sessions ---
@@ -339,18 +371,23 @@ async function setMode($: $, next: Mode): Promise<void> {
   await syncWatches($)
 }
 
+/**
+ * The status line holds alarms only (§4.1, §4.5): a hard stop waiting, stops
+ * skipped while delegate runs, not logged in; anything else clears it. A hard
+ * stop that starts waiting is also a native notification, once, for an owner
+ * in another window. Called after every change any of them reads.
+ */
 async function refreshStatus($: $): Promise<void> {
-  const pilot = await autopilotStatus($) // ── autopilot ──
-  if ((await read($, mode)) !== 'hidden') {
-    $.ui.status(pilot.line ?? (pilot.tail === '' ? undefined : `tg${pilot.tail}`))
-    return
-  }
-  // Once a pass is held, the status line counts every chat it has, not the view on screen.
-  const counted: Load<TgDialog[]> = passHeld === null ? await read($, dialogs) : { status: 'ok', value: [...passHeld.rows.values()] }
-  $.ui.status(pilot.line ?? hiddenStatus(counted, await read($, band), (await read($, triage)).reply) + ledgerStatus(await read($, ledger)) + pilot.tail)
+  const alarms = await dgAlarms($) // ── delegate ──
+  await notifyHolds($, alarms.holds)
+  const text = statusAlarm({ hold: alarms.line, noStops: alarms.noStops, isLoggedOut })
+  // The status line is set, not drawn: write it only when it changes (the undo window ticks every second).
+  if (lastStatus !== undefined && lastStatus.text === text) return
+  lastStatus = { text }
+  $.ui.status(text)
 }
 
-/** Before the pane is first opened, Hidden's status line reads `tg dialogs`; after it, the passes (── folders ──). */
+/** Before the pane is first opened, the footer's count reads `tg dialogs`; after it, the passes (── folders ──). */
 async function poll($: $): Promise<void> {
   if ((await read($, mode)) === 'hidden' && !(await read($, folders)).pass.hasOpened) await loadLatest($, { isQuiet: true })
 }
@@ -388,7 +425,7 @@ async function retryAfterFlood($: $, seconds: number, retry: () => Promise<void>
   }
 }
 
-/** The latest chats (`tg dialogs`), for Hidden's status line and band before the pane is first opened. */
+/** The latest chats (`tg dialogs`), for the footer's count and the band before the pane is first opened. */
 async function loadLatest($: $, options: { isQuiet?: boolean } = {}): Promise<void> {
   const before = loaded(await read($, dialogs))
   // A quiet reload keeps the list on screen instead of the loading rows.
@@ -405,10 +442,7 @@ async function loadLatest($: $, options: { isQuiet?: boolean } = {}): Promise<vo
   // The pane opened meanwhile: the list is its view now, not the latest chats.
   if ((await read($, folders)).pass.hasOpened) return
   await update($, dialogs, () => ({ status: 'ok', value: result.value.map(cutRow) }))
-  const grown = before === undefined ? undefined : grownDialog(before, result.value)
-  if (grown !== undefined && (await read($, mode)) === 'hidden') {
-    await update($, band, () => ({ dialogId: grown.id, label: dialogLabel(grown), kind: grown.kind, text: grown.last_text }))
-  }
+  if (before !== undefined) await raiseGrown($, before, result.value)
   await refreshStatus($)
 }
 
@@ -994,22 +1028,26 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
   }
 }
 
-/** §4.5: agents by level, new messages in watched chats, what waits for the owner. */
+/** §4.5: agents by level, new messages in watched chats, what waits for the owner. One summary: the header, the footer label, `/tg status`. */
 async function summaryOf($: $) {
+  return stateSummary(await summaryCounts($))
+}
+
+async function summaryCounts($: $) {
   const pilot = await read($, autopilot)
   const levels = pilot.running.map(id => pilot.dialogs[String(id)]?.level)
   const count = (level: string) => levels.filter(one => one === level).length
   const watched = new Set((await read($, triage)).watched.map(peer => peer.id))
   const listed = await knownDialogs($)
   const replyDraft = await read($, draft)
-  return stateSummary({
+  return {
     levels: [
       { glyph: GLYPH.pinned, count: (await read($, pins)).length },
       ...AP_LEVELS.map(level => ({ glyph: LEVEL_GLYPH[level], count: count(level) })),
     ],
     watched: listed.filter(dialog => watched.has(dialog.id)).reduce((sum, dialog) => sum + dialog.unread, 0),
     forYou: pilot.drafts.length + (replyDraft !== null && replyDraft.step.kind !== 'sent' ? 1 : 0) + (await dgHoldCount($)),
-  })
+  }
 }
 
 async function chipsOf($: $): Promise<{ text: string; color?: string }[]> {
@@ -1383,9 +1421,11 @@ async function onTriageEvent($: $, entry: Listening, event: WatchEvent, isReplay
     await refreshStatus($)
     return
   }
-  const report = reportReply(peer, message, entry.recent)
+  // The band names the intents of who wrote (§4.6), not of the chat: in a group a bot's reply is a bot's.
+  const report = reportReply(peer, message, entry.recent, senderClass(message, chatKind(peer.kind, isBotFather(peer.arg))))
   await update($, triage, value => ({ ...value, reply: report.reply }))
-  if ((await read($, mode)) === 'hidden') await update($, band, () => report.band)
+  // Every mode: the band leaves out what the pane draws (── footer ──).
+  await update($, band, () => report.band)
   await refreshStatus($)
 }
 
@@ -1418,14 +1458,6 @@ async function watchTarget($: $): Promise<PeerRef | undefined> {
 async function watchedReplyId($: $, dialogId: number): Promise<number | null> {
   const reply = (await read($, triage)).reply
   return reply !== null && reply.dialogId === dialogId ? reply.messageId : null
-}
-
-/** The latency on Hidden's band, when the band shows the watched reply. */
-async function bandLatency($: $, els: Els, event: BandEvent): Promise<RenderElement | null> {
-  const reply = (await read($, triage)).reply
-  if (reply === null || reply.dialogId !== event.dialogId || reply.latencyMs === null) return null
-  const { Text } = els
-  return <Text color={reply.latencyMs > 3000 ? TOKEN.warn : undefined} dimColor={reply.latencyMs <= 3000}>{`${GLYPH.latency}${latencyText(reply.latencyMs)}`}</Text>
 }
 
 /** The `◎` mark of each watched dialog's row, colored by its watch's health. */
@@ -2183,13 +2215,15 @@ async function sendIds($: $, ids: readonly number[], legs: readonly Leg[], how: 
   }
 }
 
-/** The Hidden band's ⏎: the dialog's newest message to main, under the intent the band names. */
+/** The band's ⏎ on a watched chat's news: the message to main, under the intent the band names; ⏎ opens where it names none. */
 async function bandToMain($: $): Promise<void> {
   const event = await read($, band)
+  const asked = event === null ? null : bandIntent(event, (await lastIntents($)).last)
+  if (event !== null && asked === null) return openFromBand($)
   const dialog = (await knownDialogs($)).find(one => one.id === event?.dialogId)
   // A watched reply names its own message (triage); otherwise the dialog's newest.
   const messageId = event === null ? null : ((await watchedReplyId($, event.dialogId)) ?? dialog?.last_id ?? null)
-  if (event === null || dialog === undefined || messageId === null) {
+  if (event === null || asked === null || dialog === undefined || messageId === null) {
     $.ui.toast('tg: that message is no longer in the dialog list; open it with o.')
     return
   }
@@ -2199,7 +2233,7 @@ async function bandToMain($: $): Promise<void> {
     $.ui.toast(`tg: could not fetch #${messageId} (${found.ok ? 'not found' : found.failure.kind}).`)
     return
   }
-  const { sender, intent } = bandIntent(dialog.kind, (await lastIntents($)).last)
+  const { sender, intent } = asked
   const sent = await sendPacket($, {
     peer,
     selected: found.value,
@@ -2760,7 +2794,7 @@ async function drawBottestDiff($: $, els: Els, width: number, rows: number): Pro
 import type { PluginOptions } from 'claude-code'
 
 import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
-import { AutopilotCard, DraftBand, NoteBand, UndoBand, type AllowView } from './autopilot/components'
+import { AutopilotCard, type AllowView } from './autopilot/components'
 import {
   AP_LEVELS,
   LEVEL_GLYPH,
@@ -2776,7 +2810,7 @@ import {
   DEFAULT_QUIET,
 } from './autopilot/config'
 import { MAX_REGENERATIONS, NO_BURST, afterCheck, consume, gate, onDeleted, onEdited, onIncoming, onTyping, sentLastHour, wakeAt, type AfterCheck, type Burst } from './autopilot/burst'
-import { NO_AUTOPILOT, UNDO_MS, addEntry as addApEntry, draftsTail, logCheck, patchEntry, putDraft, undoLeft, undoStatus } from './autopilot/ledger'
+import { NO_AUTOPILOT, UNDO_MS, addEntry as addApEntry, logCheck, patchEntry, putDraft, undoLeft } from './autopilot/ledger'
 import {
   HISTORY_LIMIT,
   LISTEN_SYSTEM,
@@ -3343,42 +3377,6 @@ async function apOpen($: $, peer: PeerRef): Promise<void> {
   await openThread($, listed ?? dialogOfPeer(peer))
 }
 
-/** The band in every mode: an undoable auto reply first (it has 30 s), then a draft, then a summary. */
-async function drawAutopilotBand($: $, els: Els, width: number): Promise<RenderElement | null> {
-  const hold = await drawHoldBand($, els, width) // ── delegate ──
-  if (hold !== null) return hold
-  const state = await read($, autopilot)
-  if (state.undo !== null && state.now < state.undo.until) {
-    return UndoBand(els, { undo: state.undo, now: state.now, onUndo: () => apUndo($), onDismiss: () => apCloseUndo($, { state: 'expired' }) })
-  }
-  const draft = state.drafts[0]
-  if (draft !== undefined) {
-    return DraftBand(els, {
-      draft,
-      more: state.drafts.length - 1,
-      width,
-      onSend: () => apSendDraft($),
-      onUnfold: () => apUnfoldDraft($, draft),
-      onEdit: () => apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'editing' } })),
-      onSave: text => apSetDraft($, draft.seq, one => ({ ...one, text: text.trim() === '' ? one.text : text, state: { kind: 'ready' } })),
-      onDrop: () => apDropDraft($),
-      onOpen: () => apOpen($, draft.peer),
-    })
-  }
-  const note = state.notes.at(-1)
-  if (note === undefined) return null
-  const dismiss = () => update($, autopilot, value => ({ ...value, notes: value.notes.filter(one => one.seq !== note.seq) }))
-  return NoteBand(els, {
-    note,
-    width,
-    onDismiss: dismiss,
-    onOpen: async () => {
-      await dismiss()
-      await apOpen($, note.peer)
-    },
-  })
-}
-
 // --- the card, the pane's row, the list marks ---
 
 /** `a`: the card for the open thread's dialog, or the one at the cursor; again closes it. */
@@ -3560,14 +3558,6 @@ function apLevelTail(state: Autopilot, dialog: ApDialog, at: number): string {
   return dialog.level === 'auto' ? `auto ${sentLastHour(state.ledger, dialog.peer.id, at)}/${dialog.perHour ?? '∞'}` : dialog.level
 }
 
-/** The status line: an open undo window owns it (`tg ⟳ … u undo 28s`); waiting drafts add a tail. */
-async function autopilotStatus($: $): Promise<{ line: string | null; tail: string }> {
-  const state = await read($, autopilot)
-  const dg = await dgStatus($) // ── delegate ── a hard stop waiting outranks the undo window.
-  const undo = state.undo !== null && state.now < state.undo.until ? `${undoStatus(state.undo, state.now)}${dg.tail}` : null
-  const line = dg.line ?? undo
-  return { line, tail: draftsTail(state.drafts) + dg.tail }
-}
 // ── /autopilot ──
 
 // ── delegate ──
@@ -3594,7 +3584,7 @@ async function autopilotStatus($: $): Promise<{ line: string | null; tail: strin
 // leases in $.store keep a dialog to one session, at every level.
 import type { ApEntry, DgDialog, DgGrant, DgStop, DgTask, DgWorktree, Delegate, GuardEvent, GuardHold, GuardWork } from '../types'
 import type { Peer } from './packet/types'
-import { DelegateRows, HoldBand, TaskCard, TaskRow, chatCardLines, chatTaskRows, warningText } from './delegate/components'
+import { DelegateRows, TaskCard, TaskRow, chatCardLines, chatTaskRows, warningText } from './delegate/components'
 import { armedOf, eventsOf, holdsOf as guardHoldsOf, workOf } from './delegate/guard'
 import { CHECK_FILES, DEFAULT_DG_DIALOG, checksOf, nextWeb, parseDgDialogs, parseDuration, parseRepos, workerTools } from './delegate/grant'
 import { HEARTBEAT_MS, holder, leaseKey, leaseOf } from './delegate/lease'
@@ -4346,19 +4336,25 @@ async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
 
 // --- what shows: task cards, the band, the status line ---
 
-/** The status line: a hard stop waiting owns it; running tasks and skipped stops add a tail. */
-async function dgStatus($: $): Promise<{ line: string | null; tail: string }> {
+/**
+ * The status line's delegate alarms (§4.1): the first hard stop waiting, and
+ * stops skipped while a delegate runs; and every hard stop waiting, for the
+ * band and its notification (── footer ──).
+ */
+async function dgAlarms($: $): Promise<{ line: string | null; noStops: string | null; holds: BandHold[] }> {
   const state = await read($, delegate)
   const guard = await dgGuardView($)
   const live = state.tasks.filter(isLive)
-  const held = live.flatMap(task => holdsOfView(task, guard).map(hold => ({ task, hold })))[0]
-  const line = held === undefined ? null : `tg ⏸ HARD STOP ${held.hold.stops.join(' + ')}: ${oneLine(held.hold.what, 50)} · ⚡ ${held.task.peer.label} · answer in the dialog`
+  const holds = live.flatMap(task => [
+    ...task.holds.map(hold => ({ key: `hold:s:${task.id}:${hold.id}`, peer: task.peer, stops: hold.stops, what: hold.what })),
+    ...guard.holds.filter(hold => hold.taskId === task.id).map(hold => ({ key: `hold:g:${task.id}:${hold.id}`, peer: task.peer, stops: hold.stops, what: hold.what })),
+  ])
+  const held = holds[0]
+  const line = held === undefined ? null : `tg ⏸ HARD STOP ${held.stops.join(' + ')}: ${oneLine(held.what, 50)} · ${LEVEL_GLYPH.delegate} ${held.peer.label} · answer in the dialog`
   const pilot = await read($, autopilot)
   const noStopsOf = await dgNoStopsOf($)
   const marks = pilot.running.filter(id => pilot.dialogs[String(id)]?.level === 'delegate').map(noStopsOf)
-  const noStops = marks.find((one): one is string => one !== null)
-  const tasks = live.length === 0 ? '' : ` · ⚡ ${live.length} task${live.length === 1 ? '' : 's'}`
-  return { line, tail: `${tasks}${noStops === undefined ? '' : ` · ${noStops}`}` }
+  return { line, noStops: marks.find((one): one is string => one !== null) ?? null, holds }
 }
 
 /** A task's waiting stops: the Speaker's (on the task) and the Worker's (the guard's). */
@@ -4370,15 +4366,6 @@ function holdsOfView(task: DgTask, guard: { holds: readonly GuardHold[] }): { st
 async function dgHoldCount($: $): Promise<number> {
   const guard = await dgGuardView($)
   return (await read($, delegate)).tasks.filter(isLive).reduce((sum, task) => sum + holdsOfView(task, guard).length, 0)
-}
-
-async function drawHoldBand($: $, els: Els, width: number): Promise<RenderElement | null> {
-  const guard = await dgGuardView($)
-  for (const task of (await read($, delegate)).tasks.filter(isLive)) {
-    const hold = holdsOfView(task, guard)[0]
-    if (hold !== undefined) return HoldBand(els, { label: task.peer.label, stops: hold.stops, what: hold.what, width })
-  }
-  return null
 }
 
 /**
@@ -4850,11 +4837,8 @@ async function runPass($: $): Promise<void> {
   const kept = pruneVerdicts(verdicts, [...map.rows.values()])
   if (Object.keys(kept).length !== Object.keys(verdicts).length) await update($, triage, value => ({ ...value, verdicts: pruneVerdicts(value.verdicts, [...map.rows.values()]) }))
   await landPass($, map)
-  // Hidden: a chat whose unread count grew since the last pass raises the band, as `tg dialogs` did.
-  const grown = before === null ? undefined : grownDialog([...before.rows.values()], [...map.rows.values()])
-  if (grown !== undefined && (await read($, mode)) === 'hidden') {
-    await update($, band, () => ({ dialogId: grown.id, label: dialogLabel(grown), kind: grown.kind, text: grown.last_text }))
-  }
+  // A watched chat whose unread count grew since the last pass raises the band (── footer ──).
+  if (before !== null) await raiseGrown($, [...before.rows.values()], [...map.rows.values()])
   await storeFolders($)
   await refreshStatus($)
   await armNext($)
@@ -5402,3 +5386,200 @@ async function emptyText($: $): Promise<string> {
   }
 }
 // ── /folders ──
+
+// ── footer ──
+// dialogs-pane-ux.md §4.1, §4.5 and §8 T5: what the pane says outside itself.
+// The footer label (SessionMode) is the §4.5 summary with the unread chats
+// that are not muted; the status line holds the three alarms only; the band
+// above the prompt is one queue of what needs the owner, most urgent first,
+// leaving out what the pane draws; the hint tail says the band has something;
+// a packet sent to main is one transcript row; /tg help and /tg status are
+// cards. Pure rules in ./ui/queue, the band's drawing in ./ui/band.
+
+/** The seat the pane was last drawn in: docked, the open chat shows under Chats. */
+let lastSeat: Seat | null = null
+/** tg's last answer was "not logged in" (exit 3): the status line's third alarm. A hot reload forgets it until tg next answers. */
+let isLoggedOut = false
+/** What the status line last got; undefined until the first write, so a fresh module always writes once. */
+let lastStatus: { text: string | undefined } | undefined
+
+/** Every tg answer says whether the account is logged in; a change redoes the status line. */
+async function seeLogin($: $, result: TgResult<unknown>): Promise<void> {
+  const isOut = !result.ok && result.failure.kind === 'auth'
+  // Only an answer from Telegram says the account is in: a missing tg or a flood says nothing about it.
+  if (isOut === isLoggedOut || (!isOut && !result.ok)) return
+  isLoggedOut = isOut
+  await refreshStatus($)
+}
+
+/** `tg 22`: the All chats folder's count, as tg counts it (unread, not muted); before the first pass, the latest chats'. */
+async function unreadHead($: $): Promise<UnreadHead> {
+  if (isLoggedOut) return { kind: 'failed', isLoggedOut: true }
+  const state = await read($, folders)
+  const all = state.list?.find(one => one.kind === 'all')
+  if (all !== undefined && all.unread !== null) return { kind: 'count', unread: all.unread }
+  const load = await read($, dialogs)
+  // Once the pane opened, the list on screen is a folder's, not the latest chats: wait for the pass.
+  if (state.pass.hasOpened) return passHeld === null ? { kind: 'loading' } : { kind: 'count', unread: unreadChats([...passHeld.rows.values()]) }
+  if (load.status === 'ok') return { kind: 'count', unread: unreadChats(load.value) }
+  return load.status === 'error' ? { kind: 'failed', isLoggedOut: false } : { kind: 'loading' }
+}
+
+async function footerText($: $): Promise<string> {
+  return footerLabel(await unreadHead($), await summaryOf($))
+}
+
+/** What the pane draws now, so the band does not say it twice. */
+async function onScreen($: $): Promise<OnScreen> {
+  if ((await read($, mode)) === 'hidden') return NOTHING_ON_SCREEN
+  const where = await read($, nav)
+  const open = await read($, thread)
+  const isDock = lastSeat === 'dock'
+  return {
+    chat: open !== null && (isDock || where.view === 'thread') ? open.peer.id : null,
+    isForYou: where.list.kind === 'foryou' && where.query === '' && (isDock || where.view === 'dialogs'),
+  }
+}
+
+/** The band's queue now; `seen`: what counts as on screen (`/tg status` lists everything). */
+async function bandNow($: $, seen?: OnScreen): Promise<BandItem[]> {
+  const pilot = await read($, autopilot)
+  return bandQueue({
+    holds: (await dgAlarms($)).holds,
+    drafts: pilot.drafts,
+    undo: pilot.undo !== null && pilot.now < pilot.undo.until ? pilot.undo : null,
+    reply: await read($, band),
+    watched: (await read($, triage)).watched.map(peer => peer.id),
+    notes: pilot.notes,
+    tasks: (await read($, delegate)).tasks.map(task => ({ id: task.id, peer: task.peer, status: task.status, reason: task.reason })),
+    dismissed: (await read($, queue)).dismissed,
+    onScreen: seen ?? (await onScreen($)),
+  })
+}
+
+/** The band: the item the queue is on, two rows, or null with nothing to show. */
+async function drawBand($: $, els: Els, width: number): Promise<RenderElement | null> {
+  const items = await bandNow($)
+  const index = shownIndex(items, (await read($, queue)).at)
+  const item = items[index]
+  if (item === undefined) return null
+  const asked = item.kind === 'reply' ? bandIntent(item.event, (await lastIntents($)).last) : null
+  const reply = (await read($, triage)).reply
+  return BandItemView(els, {
+    item,
+    index,
+    count: items.length,
+    width,
+    now: (await read($, autopilot)).now,
+    sendAs: asked === null ? null : intentLabel(asked.intent),
+    latencyMs: item.kind === 'reply' && reply !== null && reply.dialogId === item.event.dialogId ? reply.latencyMs : null,
+    on: bandActions($, item, width),
+  })
+}
+
+/** What the band's keys do for `item` (§6 "Band"): ⏎ its action, e d o u, j k through the queue. */
+function bandActions($: $, item: BandItem, width: number): BandActions {
+  const step = (by: 1 | -1) => async () => {
+    const items = await bandNow($)
+    const at = stepKey(items, (await read($, queue)).at, by)
+    await update($, queue, value => ({ ...value, at }))
+  }
+  const put = () => dismissItem($, item.key)
+  const none = async () => undefined
+  const base = { edit: none, save: none, next: step(1), prev: step(-1) }
+  switch (item.kind) {
+    case 'hold':
+      return { ...base, primary: () => apOpen($, item.peer), open: () => apOpen($, item.peer), dismiss: none }
+    case 'draft': {
+      const { seq } = item.draft
+      return {
+        ...base,
+        primary: () => bandDraftEnter($, seq, width),
+        open: () => apOpen($, item.draft.peer),
+        dismiss: () => apDropDraft($, seq),
+        edit: () => apSetDraft($, seq, one => ({ ...one, state: { kind: 'editing' } })),
+        save: text => apSetDraft($, seq, one => ({ ...one, text: text.trim() === '' ? one.text : text, state: { kind: 'ready' } })),
+      }
+    }
+    case 'undo':
+      return { ...base, primary: () => apUndo($), open: () => apOpen($, item.undo.peer), dismiss: () => apCloseUndo($, { state: 'expired' }) }
+    case 'reply':
+      return { ...base, primary: () => bandToMain($), open: () => openFromBand($), dismiss: () => dismissBand($) }
+    case 'summary': {
+      const drop = () => update($, autopilot, value => ({ ...value, notes: value.notes.filter(one => one.seq !== item.note.seq) }))
+      const open = async () => {
+        await drop()
+        await apOpen($, item.note.peer)
+      }
+      return { ...base, primary: open, open, dismiss: drop }
+    }
+    case 'task': {
+      // Opening the chat shows the task card on top of its thread: the news is read.
+      const open = async () => {
+        await put()
+        await apOpen($, item.task.peer)
+      }
+      return { ...base, primary: open, open, dismiss: put }
+    }
+  }
+}
+
+/**
+ * ⏎ on a draft's item: it sends when its whole text shows on its row (or the
+ * band unfolded it), as the owner's own write (decision 9); a longer one
+ * unfolds and opens its chat first (T0d), so the next ⏎ sends what was read.
+ * Read again at the press: the draft may have changed since it was drawn.
+ */
+async function bandDraftEnter($: $, seq: number, width: number): Promise<void> {
+  const draft = await apDraftOf($, seq)
+  if (draft === null) return
+  if (draft.state.kind === 'unfolded' || draftFits(draft.text, width)) return apSendDraft($, seq)
+  return apUnfoldDraft($, draft)
+}
+
+/** `d` on news: it leaves the band; the key is kept so the same news does not come back. */
+async function dismissItem($: $, key: string): Promise<void> {
+  await update($, queue, value => ({ ...value, dismissed: [...value.dismissed.filter(one => one !== key), key].slice(-50) }))
+}
+
+/** A hard stop that starts waiting reaches an owner in another window too (§5.5): one notification each. */
+async function notifyHolds($: $, holds: readonly BandHold[]): Promise<void> {
+  const keys = holds.map(hold => hold.key)
+  const notified = (await read($, queue)).notified
+  const fresh = holds.filter(hold => !notified.includes(hold.key))
+  if (fresh.length === 0 && notified.every(key => keys.includes(key))) return
+  await update($, queue, value => ({ ...value, notified: keys }))
+  for (const hold of fresh) {
+    $.ui.notify(`HARD STOP ${hold.stops.join(' + ')}: ${oneLine(hold.what, 120)} (${hold.peer.label}). Answer in Claude Code.`, { title: 'tg' }).catch(() => {
+      // A refused or unbound notification leaves the status line and the band, which say the same.
+    })
+  }
+}
+
+/** A watched chat whose unread count grew between two loads raises the band; the others wait in their folders. */
+async function raiseGrown($: $, before: readonly TgDialog[], after: readonly TgDialog[]): Promise<void> {
+  const watched = new Set((await read($, triage)).watched.map(peer => peer.id))
+  const grown = grownDialog(before, after.filter(dialog => watched.has(dialog.id)))
+  if (grown === undefined) return
+  // Only the chat is known, not who wrote: the band picks no sender's intents in a group.
+  await update($, band, () => ({ dialogId: grown.id, label: dialogLabel(grown), kind: grown.kind, text: grown.last_text, sender: null }))
+}
+
+/** `/tg status` (§4.4, §4.5): the summary, what runs, what is watched, what waits, the alarm. Its first line is the card's title. */
+async function statusLines($: $): Promise<string[]> {
+  const running = (await runRowsNow($)).filter(isRunning)
+  const watched = (await read($, triage)).watched
+  const items = await bandNow($, NOTHING_ON_SCREEN)
+  const now = (await read($, autopilot)).now
+  const alarms = await dgAlarms($)
+  const alarm = statusAlarm({ hold: alarms.line, noStops: alarms.noStops, isLoggedOut })
+  return [
+    'tg status',
+    await footerText($),
+    ...(running.length === 0 ? ['running   nothing'] : ['running', ...running.map(row => `  ${activityText(row, row.peer.label)}`)]),
+    `watching  ${watched.length === 0 ? 'nothing' : watched.map(peer => peer.label).join(' · ')}`,
+    ...(items.length === 0 ? ['waiting   nothing'] : ['waiting', ...items.map(item => `  ${itemLine(item, now)}`)]),
+    ...(alarm === undefined ? [] : [`alarm     ${alarm}`]),
+  ]
+}
+// ── /footer ──
