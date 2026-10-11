@@ -90,6 +90,8 @@ export type KeyFacts = {
   /** Seconds left to undo the last auto reply; 0 when no window is open. */
   undoLeft: number
   hasNotice: boolean
+  /** The first open's start block is drawn over Chats (§4.4): `d` puts it away when no notice is up. */
+  hasStart: boolean
   marks: number
   isRangeOpen: boolean
   /** `f` has a pair: two bot replies marked, or, with nothing marked, the cursor reply has an earlier reply to the same message. */
@@ -119,6 +121,7 @@ export const NO_FACTS: KeyFacts = {
   hasFinished: false,
   undoLeft: 0,
   hasNotice: false,
+  hasStart: false,
   marks: 0,
   isRangeOpen: false,
   hasPair: false,
@@ -190,6 +193,16 @@ const onDraftRow = (c: KeyContext) => (c.where !== 'chat' || c.facts.row === 'dr
 
 /** A message's keys (⏎ send…, x, v, i): a message under the cursor, not a draft's row. */
 const onMessage = (c: KeyContext) => noRows('a message')(c) ?? (c.where === 'chat' && c.facts.row === 'draft' ? 'needs a message under the cursor' : null)
+
+/** `d` in Chats puts the start block away, once no notice is up for it to dismiss first (§4.4). */
+const isStartKey = (c: KeyContext) => c.where === 'chats' && c.facts.hasStart && !c.facts.hasNotice
+
+function dismissLabel(c: KeyContext): string {
+  if (c.where === 'recorded') return 'discard'
+  if (c.where === 'activity') return 'dismiss ended tasks'
+  if ((c.where === 'foryou' || c.where === 'chat') && c.facts.row !== 'chat' && c.facts.row !== null) return 'drop'
+  return isStartKey(c) ? 'got it' : 'dismiss'
+}
 
 /** The send sheet's own keys work on its intents; its other steps answer h. */
 const onIntents = (c: KeyContext) => (c.facts.sheet === 'intents' ? null : 'needs the intents (h)')
@@ -334,10 +347,10 @@ export const KEYS = [
     group: 'pane',
     where: ['chats', 'chat', 'foryou', 'card', 'activity', 'recorded', 'band'],
     kinds: 'any',
-    label: c =>
-      c.where === 'recorded' ? 'discard' : c.where === 'activity' ? 'dismiss ended tasks' : (c.where === 'foryou' || c.where === 'chat') && c.facts.row !== 'chat' && c.facts.row !== null ? 'drop' : 'dismiss',
+    label: dismissLabel,
+    menuLabel: c => (isStartKey(c) ? 'put the start block away' : dismissLabel(c)),
     needs: c =>
-      c.where === 'band' || c.where === 'recorded'
+      c.where === 'band' || c.where === 'recorded' || isStartKey(c)
         ? null
         : c.where === 'activity'
           ? c.facts.hasFinished

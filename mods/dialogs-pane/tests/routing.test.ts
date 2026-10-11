@@ -6,7 +6,7 @@ import type { AgentInfo, On, ProcessRunResult, RenderPropsOf, SessionSendInput }
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
 import { hotkeyTable } from '../hooks/ui/keys'
-import { DIALOGS, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, chatKey, findChat, folderRun, messagesFor } from './fixtures'
+import { DIALOGS, STARTED, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, chatKey, findChat, folderRun, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 
@@ -80,7 +80,7 @@ function world(
     store?: Record<string, unknown>
   } = {},
 ): World {
-  const store = new Map(Object.entries(options.store ?? {}))
+  const store = new Map(Object.entries({ ...STARTED, ...options.store }))
   const seen: World = { runs: [], spawns: [], sends: [], spawned: [], prompts: [], toasts: [], logs: [], agents: [], store }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: store.get(e.key) }))

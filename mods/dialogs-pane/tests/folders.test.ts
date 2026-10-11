@@ -8,7 +8,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
 import type { TgDialog } from '../types'
-import { DIALOGS, MESSAGES, chatIds, chatKey, findChat, folderRun, type FolderSpec } from './fixtures'
+import { DIALOGS, STARTED, MESSAGES, chatIds, chatKey, findChat, folderRun, type FolderSpec } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -74,7 +74,7 @@ const passes = (seen: World) => seen.runs.filter(argv => argv[1] === 'folders' &
 const tgCalls = (seen: World) => seen.runs.filter(argv => argv[0] === 'tg').length
 
 function world(on: On, store: Record<string, unknown> = {}): World {
-  const seen: World = { runs: [], store: new Map(Object.entries(store)), children: [], state: new Map(), pass: { rows: ROWS, folders: FOLDERS } }
+  const seen: World = { runs: [], store: new Map(Object.entries({ ...STARTED, ...store })), children: [], state: new Map(), pass: { rows: ROWS, folders: FOLDERS } }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('state.set', (_$, e, next) => {
     if (e.plugin === PLUGIN) seen.state.set(e.key, e.value)

@@ -735,6 +735,8 @@ declare module 'claude-code' {
       lastStop: StopNotice | null
       // ── folders ──
       folders: Folders
+      // ── onboarding ── the first open's start block (§4.4, §8 T7), shown until `d`; `$.store` keeps the `d`.
+      isStartShown: boolean
     }
   }
 }

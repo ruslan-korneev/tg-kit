@@ -4,7 +4,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import type { BotTest } from '../types'
-import { DIALOGS, MESSAGES, chatKey, folderRun } from './fixtures'
+import { DIALOGS, STARTED, MESSAGES, chatKey, folderRun } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const PROPS: RenderPropsOf['Pane'] = {
@@ -61,7 +61,7 @@ function world(
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work/example-bot' }))
-  on('store.get', () => ({ value: undefined }))
+  on('store.get', (_$, e) => ({ value: STARTED[e.key] }))
   on('store.set', () => ({ value: undefined }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))

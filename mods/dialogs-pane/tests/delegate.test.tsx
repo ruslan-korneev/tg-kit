@@ -11,7 +11,7 @@ import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, Ren
 import { describe, expect, mock, test, type Engine, type MockClock, type Plugin } from 'claude-code/testing'
 
 import type { TgDialog, TgMessage } from '../types'
-import { DIALOGS, chatKey, findChat, folderRun } from './fixtures'
+import { DIALOGS, STARTED, chatKey, findChat, folderRun } from './fixtures'
 import { bandKeyProblems } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
@@ -135,7 +135,7 @@ function world(
     asked: [],
     status: [],
     toasts: [],
-    store: new Map(),
+    store: new Map(Object.entries(STARTED)),
     history: [message(498, 'can you add a health check?')],
     registered: [],
     spawned: [],

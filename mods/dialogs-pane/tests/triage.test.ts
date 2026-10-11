@@ -5,7 +5,7 @@
 import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { DIALOGS, MESSAGES, chatIds, chatKey, findChat, folderRun } from './fixtures'
+import { DIALOGS, STARTED, MESSAGES, chatIds, chatKey, findChat, folderRun } from './fixtures'
 import { FOOTER, HINT, bandKeyProblems, engineSites, siteText } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
@@ -55,7 +55,7 @@ function world(
   on: On,
   options: { store?: Record<string, unknown>; model?: (e: ModelCompleteInput) => ModelCompleteResult; dialogs?: unknown } = {},
 ): World {
-  const seen: World = { status: [], toasts: [], store: new Map(Object.entries(options.store ?? {})), children: [], asked: [], runs: [] }
+  const seen: World = { status: [], toasts: [], store: new Map(Object.entries({ ...STARTED, ...options.store })), children: [], asked: [], runs: [] }
   engineSites(on)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))

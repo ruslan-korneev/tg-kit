@@ -242,11 +242,13 @@ export function EmptyList({ Text }: Els, props: { text: string }): RenderElement
   )
 }
 
-export function Divider({ Text }: Els, props: { label: string; width: number }): RenderElement {
+/** `─ label ───…`; `right` ends it (`─ start here ──── d: got it ─`). */
+export function Divider({ Text }: Els, props: { label: string; width: number; right?: string }): RenderElement {
   const label = props.label === '' ? '' : ` ${props.label} `
+  const right = props.right === undefined ? '' : ` ${props.right} ─`
   return (
     <Text color={TOKEN.accent} dimColor wrap="truncate-end">
-      {`─${label}`.padEnd(Math.max(1, props.width), '─')}
+      {`─${label}`.padEnd(Math.max(1, props.width - right.length), '─') + right}
     </Text>
   )
 }

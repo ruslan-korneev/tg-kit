@@ -211,6 +211,7 @@ export const register: Register = (on, options) => {
       })
     }
     const started = await next(e)
+    await startOnboarding($) // ── onboarding ──
     await startFolders($) // ── folders ──
     await startRouting($) // ── routing ──
     await startTriage($)
@@ -725,6 +726,7 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       hasFinished: tasks.some(task => !isLive(task)),
       undoLeft: undoLeft(pilot.undo, Math.max(pilot.now, await $.clock.now())),
       hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null || (await stopNoticeNow($, Infinity)) !== null,
+      hasStart: await isStartDrawn($, seat, where), // ── onboarding ──
       marks: chosen.ids.length,
       isRangeOpen: chosen.anchor !== null,
       hasPair: chosen.ids.length > 0 ? diffPair(chosen.ids, messages).ok : atCursor !== undefined && replyPair(atCursor, messages) !== null,
@@ -829,6 +831,11 @@ async function runKey($: $, id: RunKey): Promise<void> {
       if (where === 'activity') return dismissEnded($)
       if (where === 'recorded') return discardRecorded($) // ── bottest ──
       if (where === 'chat' && (await cursorItem($))?.kind === 'draft') return dropAtCursor($)
+      // ── onboarding ── with no notice up, d in Chats puts the start block away.
+      if (where === 'chats') {
+        const { facts } = await keyContext($, lastSeat ?? 'dock', where)
+        if (facts.hasStart && !facts.hasNotice) return dismissStart($)
+      }
       // The notice row's notice: a write's result, or what 0 stopped.
       await update($, bottest, value => ({ ...value, notice: null }))
       await update($, lastStop, () => null) // ── running ──
@@ -1002,11 +1009,15 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const sheetRows = recordedBar !== null ? (seat === 'dock' ? 4 : 2) : sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
   const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + runningRows + noticeRows
   const room = Math.max(3, rows - chrome)
+  // ── onboarding ── inline, the start block sits over the chat list and takes its rows; the dock draws it below (drawLower).
+  const isStartOver = !isMenu && seat === 'inline' && (await isStartDrawn($, seat, where))
   const slot = isMenu
     ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
     : seat === 'dock'
       ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - runningRows))
-      : await drawInline($, els, where, width, room)
+      : isStartOver
+        ? [StartBlock(els, { width }), ...(await drawInline($, els, where, width, Math.max(1, room - START_ROWS)))]
+        : await drawInline($, els, where, width, room)
   const drawn = new Set(sheetBar === null && fieldBar === null && recordedBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
   if (recordedBar !== null) drawn.add('d')
   if (strip !== null && search === 'key') drawn.add('s')
@@ -1169,6 +1180,8 @@ async function drawDock($: $, els: Els, where: Where, width: number, room: numbe
   const mode = where === 'chats' || where === 'folders' || where === 'foryou' ? 'active' : where === 'field' ? 'static' : 'idle'
   const list = await drawTop($, els, width, topRows, mode)
   const lower = Math.max(1, room - topRows - 1)
+  // ── onboarding ── with no chat open, the start block takes the lower part, its divider the divider's row.
+  if (await isStartDrawn($, 'dock', where)) return [...list, StartBlock(els, { width })]
   return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, 'dock', where, width, lower, open !== null))]
 }
 
@@ -6266,3 +6279,43 @@ async function statusLines($: $): Promise<string[]> {
   ]
 }
 // ── /footer ──
+
+// ── onboarding ──
+// dialogs-pane-ux.md §4.4 and §8 T7: the first open's start block, four lines
+// of the keys that matter, until `d`. `$.store` keeps the `d` across sessions;
+// `$.state` holds whether it shows, so drawing reads no file. The dock draws it
+// in the lower part while no chat is open, where `⏎ on a chat opens it here.`
+// stood, so the chat list keeps its rows; inline it sits over the chat list.
+// It is text: no ring stop comes or goes with it (§4.3 rule 1).
+import { START_ROWS, StartBlock } from './ui/frame'
+
+const STORE_START = 'start.dismissed'
+const isStartShown = atom({ plugin: 'dialogs-pane', key: 'isStartShown' } as const, false)
+
+/** From session.start: shown until a `d` in any session put it away. */
+async function startOnboarding($: $): Promise<void> {
+  const isDismissed = (await $.store.get(STORE_START)) === true
+  await update($, isStartShown, () => !isDismissed)
+}
+
+/** Whether the start block is drawn: the dock's lower part with no chat open, or inline over the chat list. */
+async function isStartDrawn($: $, seat: Seat, where: Where): Promise<boolean> {
+  if (!(await read($, isStartShown))) return false
+  const at = await read($, nav)
+  if (seat === 'dock') return (await read($, thread)) === null && (where === 'chats' || where === 'folders' || where === 'foryou' || (where === 'field' && at.isSearching))
+  // Inline: over Chats, and over the list the search field types for, so a search neither adds nor takes its rows.
+  return (where === 'chats' || (where === 'field' && at.isSearching)) && at.view === 'dialogs'
+}
+
+/**
+ * `d` in Chats: the block goes, for this session and the next ones. Inline the
+ * list gains its rows, so its window may start higher: a new generation gives
+ * the rows new keys, and the ring waits for the drawing that brings them (§8 T9).
+ */
+async function dismissStart($: $): Promise<void> {
+  await update($, isStartShown, () => false)
+  await $.store.set(STORE_START, true)
+  await update($, folders, value => ({ ...value, gen: value.gen + 1 }))
+  await ringCursor($)
+}
+// ── /onboarding ──
