@@ -2088,11 +2088,12 @@ The symbol column holds one symbol, chosen by this priority:
 
 | Symbol | Role | Means |
 | --- | --- | --- |
+| `⚠` | `unread` | a delegate chat running with hard stops skipped (`dangerouslySkipHardStops`, v1's red `⚠ no stops` tail). Above everything: the one state that is dangerous, not merely waiting. The AUTOPILOT lane and the chat card's corner spell it out (`⚠ no stops`) |
 | `@2` | `mention` | unread mentions of the owner, also in a muted chat (Telegram notifies those) |
 | `12` | `unread` | unread messages in a chat that is not muted; `99+` past 99 (mentions: `@9+`) |
 | `12` | `dim` | the same count in a muted chat (§4.7: muted counts would bury the rest) |
 | `⊘` | `dim` | a closed topic: no writes, no agent (§10.9) |
-| `⚡` | `ok`, or `held` while it holds something for the owner | an agent is on here, at any level |
+| `⚡` | `ok`, or `held` while it holds something for the owner | an agent is on here, at any level, follow (→ main, ladder level 1, decision 2) included |
 | `ro` | `held` | BotFather, read-only (it took the watch column in v1) |
 | `✎` | `held` | FOR YOU only: a draft waits for the owner |
 | `◌` | `dim` | muted, nothing unread |
@@ -2391,7 +2392,7 @@ the bottom, so the fill never shows as an empty half.
   uses five cells, `▰` in `ok`, then `held` from 80 %, then `unread` at the limit, with `▱` in
   `dim`. A chat with no limit (`∞/h`) has no gauge. The hour is rolling, so nothing "resets": the
   owner's `↻ resets 0:41` is drawn `↻ 0:41`, the time until the oldest counted send leaves the
-  hour and a slot frees (§10.13, decision 4). The compact card and the Hidden line show the same pair
+  hour and a slot frees, as `m:ss` like the lanes' clocks (`↻ 41:07`, `↻ 0:41`) (§10.13, decision 4). The compact card and the Hidden line show the same pair
   (`12/50`).
 - **The cell strip.** One `■` per autopilot event, newest at the right, as many as fit. The cells
   map from `ApOutcome` (`types/index.d.ts:466`) as follows:
@@ -2403,13 +2404,15 @@ the bottom, so the fill never shows as an empty half.
   | `stop` | asked | `mention` |
   | `failed`, and `skipped` | refused | `unread` |
 
-  `working`, `listened`, `dropped` and `allowed` draw no cell. The counts after the strip leave
-  zeros out.
+  `working`, `listened`, `dropped` and `allowed` draw no cell. The counts after the strip
+  (`sent 11 · held 2 · asked 1 · refused 1`, each word in its cell's role) are over every event in
+  the session's ledger, while the strip is cut to the newest; zeros are left out.
 - **Lanes.** One per chat on, with the level glyph, the name, and a lane as wide as the card
   allows. The lane is the burst's wait: `━` is the time since the last incoming message, against
   the burst gap (`gapS`, 20 s by default), and `·` is what remains. Then the state, in this order:
   `drafting 0:12` (the clock since the draft started), `draft waits` (`held`), `sent 0.93`,
-  `listening`. An idle lane is all `·`. A delegate lane shows its task's minutes (`task 42 min`)
+  `listening`. `sent 0.93` shows while the chat's newest ledger entry is that send, for 5 minutes
+  at most; then, or at the next burst, the lane goes back to `listening`. An idle lane is all `·`. A delegate lane shows its task's minutes (`task 42 min`)
   instead. At most three lanes; past that the title counts the rest (`AUTOPILOT · 5 chats · +2`).
 - **The log.** Each line holds the time (`HH:MM`, dim), the chat's name (in its kind role, a fixed
   column of 13 cells), and the text in `subtext`, or in its tone (`ok`, `held`, `unread`) for an
