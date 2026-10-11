@@ -2,16 +2,17 @@
 // commands and duration, set in the card; the tools the Worker is given; and
 // the check every one of its tool calls passes in a `tool.call` hook, so the
 // grant holds whatever the prompt says. Pure.
-import type { DgCommands, DgDialog, DgDuration, DgGrant, DgSkip, DgStop, DgWeb } from './contract'
+import type { DgDialog, DgDuration, DgGrant, DgSkip, DgStop, DgWeb } from './contract'
 import { isInside, isUnresolvable, resolvePath } from './paths'
 import { base, gitSub, operands, pathWords, readCommand, seeThrough, type Reading, type Simple } from './shell'
 import { DG_STOPS, type Place, type ToolUse } from './stops'
 
 export const DG_WEB = ['off', 'read', 'full'] as const satisfies readonly DgWeb[]
 export const WEB_LABEL = { off: 'off', read: 'read-only', full: 'full' } as const satisfies Record<DgWeb, string>
-export const COMMANDS_LABEL = { checks: "the repos' checks", any: 'any but tg (permission rules decide)' } as const satisfies Record<DgCommands, string>
+/** The card's fixed `commands` row: the Worker's only commands mode (decision 12). */
+export const COMMANDS_LABEL = "the repo's checks"
 
-export const DEFAULT_GRANT: DgGrant = { web: 'read', repos: [], commands: 'checks', duration: { kind: 'done' } }
+export const DEFAULT_GRANT: DgGrant = { web: 'read', repos: [], duration: { kind: 'done' } }
 export const DEFAULT_DG_DIALOG: DgDialog = { grant: DEFAULT_GRANT, skip: null, isWarned: false }
 
 /** The tools a Worker is spawned with; the hook refuses any other all the same. */
@@ -61,7 +62,7 @@ function grantOf(v: unknown): DgGrant {
   return {
     web: DG_WEB.find(one => one === v.web) ?? DEFAULT_GRANT.web,
     repos,
-    commands: v.commands === 'any' ? 'any' : 'checks',
+    // A stored `commands` (`checks`, or the removed `any`) is dropped: the repo's checks are the only mode.
     duration: minutes === null ? { kind: 'done' } : { kind: 'deadline', minutes },
   }
 }
@@ -262,7 +263,7 @@ function fenced(reading: Reading, roots: readonly string[], scope: Scope, cwds: 
   return null
 }
 
-// --- awk and sed under `checks`: read-only only when their program is ---
+// --- awk and sed: read-only only when their program is ---
 
 /** awk's program text; null when it comes from a file (`-f`) or an option the grant does not know. */
 function awkProgram(simple: Simple): string | null {
@@ -398,7 +399,7 @@ function sedVerdict(program: string, dialect: 'gnu' | 'bsd'): SedVerdict {
   }
 }
 
-/** Under `checks`: awk and sed are local read-only commands only with a program that can neither write nor run. */
+/** awk and sed are local read-only commands only with a program that can neither write nor run. */
 function isReadOnlyProgram(simple: Simple, name: string): boolean {
   if (name === 'awk') {
     const program = awkProgram(simple)
@@ -501,19 +502,18 @@ function linkOutside(simple: Simple, cwds: readonly string[], scope: Scope, read
   return places.find(path => !isInside(path, scope.worktrees)) ?? null
 }
 
-/** Variables that make a check run other code (git's config and helpers, preloads); refused under `checks`. */
+/** Variables that make a check run other code (git's config and helpers, preloads); refused. */
 const RUNS_ENV = /^(GIT_[A-Z0-9_]*|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|NODE_OPTIONS|BASH_ENV|PAGER|EDITOR|VISUAL)=/
 /** git options that run a command of their own: fetch's upload-pack, push's receive-pack. */
 const GIT_RUNS = /^(--upload-pack|--receive-pack|--exec)(=|$)/
 
 function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
   const reading = readCommand(command)
-  const isChecks = grant.commands === 'checks'
-  // Decision 11, before the mode: what is nested too deep may run tg, and is refused in both modes.
+  // Decision 11: what is nested too deep may run tg.
   const seen = seeThrough(reading)
   if (seen.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec, git rebase -x, launchers)')
   const tg = seen.commands.find(runsTg)
-  if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run, in either commands mode; the Speaker is the only voice in the chat`)
+  if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run; the Speaker is the only voice in the chat`)
   const start = scope.worktrees[0] ?? '/'
   // Where each simple command stands: its worktree, and where a `cd` before it went.
   // Read over `seen`, so a launcher's own `sh -c 'cd …'` counts; its first commands are the reading's, in order.
@@ -525,33 +525,31 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
     if (name === 'cd' || name === 'pushd') {
       const target = operands(simple)[0]
       const expanded = target === undefined ? scope.home : expandWord(target, scope)
-      // Fail closed, in both modes: past a move it cannot follow, no relative path can be read.
+      // Fail closed: past a move it cannot follow, no relative path can be read.
       if (expanded === null || expanded === '') return refuse(`${simple.join(' ').slice(0, 60)}: a directory the grant cannot resolve (a variable, or a launcher's --directory); write the path out`)
       cwd = resolvePath(expanded, cwd, scope.home)
     }
   }
-  // tg-kit's config directory, reads too, in either mode (decision 11): allow.toml, the sessions, the config.
+  // tg-kit's config directory, reads too (decision 11): allow.toml, the sessions, the config.
   const config = fenced(seen, [scope.configDir], scope, index => cwds[index] ?? [start], true)
-  if (config !== null) return refuse(`${config}: inside tg-kit's config directory (${scope.configDir}), which is never the Worker's, in either commands mode`)
-  if (isChecks && reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
-  if (isChecks) {
-    const runs = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))].find(word => RUNS_ENV.test(word))
-    if (runs !== undefined) return refuse(`${runs.slice(0, runs.indexOf('='))}: a variable that makes a command run other code`)
-    for (const assign of reading.assigns) {
-      if (reading.expanded.has(assign)) return refuse(`${assign.slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
-      for (const word of pathWords(['', assign.slice(assign.indexOf('=') + 1)])) {
-        const checked = pathCheck(word, scope, 'set', start, true)
-        if (!checked.ok) return checked
-      }
+  if (config !== null) return refuse(`${config}: inside tg-kit's config directory (${scope.configDir}), which is never the Worker's`)
+  if (reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
+  const runs = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))].find(word => RUNS_ENV.test(word))
+  if (runs !== undefined) return refuse(`${runs.slice(0, runs.indexOf('='))}: a variable that makes a command run other code`)
+  for (const assign of reading.assigns) {
+    if (reading.expanded.has(assign)) return refuse(`${assign.slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
+    for (const word of pathWords(['', assign.slice(assign.indexOf('=') + 1)])) {
+      const checked = pathCheck(word, scope, 'set', start, true)
+      if (!checked.ok) return checked
     }
   }
-  // Paths into the owner's checkouts are refused in every mode: the worktree is the Worker's place.
+  // Paths into the owner's checkouts are refused: the worktree is the Worker's place.
   const checkout = fenced(seen, scope.checkouts, scope, index => cwds[index] ?? [start])
   if (checkout !== null) return refuse(`${checkout}: that is the owner's own checkout`)
   for (const [index, simple] of reading.commands.entries()) {
     const name = base(simple[0] ?? '')
-    // `$W/app.py`: where it points is known only when the shell runs, so `checks` cannot clear it.
-    if (isChecks && simple.some(word => reading.expanded.has(word) || /^~[^/]/.test(word))) {
+    // `$W/app.py`: where it points is known only when the shell runs, so the grant cannot clear it.
+    if (simple.some(word => reading.expanded.has(word) || /^~[^/]/.test(word))) {
       return refuse(`${simple.join(' ').slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
     }
     if (NET.has(name)) {
@@ -561,7 +559,7 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
         return refuse(`${simple.join(' ').slice(0, 60)}: web is read-only (fetch pages, nothing sent)`)
       }
     }
-    // Links in either mode: a link inside the worktree that leads out would pass every later check.
+    // Links: a link inside the worktree that leads out would pass every later check.
     if (name === 'ln' || name === 'link' || (name === 'cp' && isLinkingCp(simple))) {
       const outside = linkOutside(simple, cwds[index] ?? [start], scope, reading)
       if (outside !== null) return refuse(`${name} ${outside}: a link that lies or points outside your worktree, or one the grant cannot resolve; the grant does not follow links`)
@@ -571,7 +569,6 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
       const checked = pathCheck(dir, scope, 'git -C')
       if (!checked.ok) return checked
     }
-    if (!isChecks) continue
     if ((name === 'cd' || name === 'pushd') && operands(simple).length === 0) return refuse(`${name} with no path: it leaves your worktree`)
     // Every place a word can name a path (an operand, `--out=/p`, `-o/p`, `>>/p`) stays in the worktree; an awk or sed program is code, read below.
     const programs = programWords(simple, name)

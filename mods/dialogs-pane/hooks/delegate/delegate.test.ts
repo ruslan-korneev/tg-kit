@@ -11,7 +11,7 @@ import { readCommand } from './shell'
 import { noStopsLabel, parseDialogSkip, parseSkipFlag, parseStops, skippedStops } from './skip'
 import { parseDelegate } from './speaker'
 import { callHits, hasCardNumber, partition, textHits, type Place } from './stops'
-import { addStep, branchOf, cardLines, parseWorker, stepOf } from './task'
+import { addStep, branchOf, cardLines, parseWorker, stepOf, workerSystem } from './task'
 
 const WT = '/home/me/.config/tg-kit/worktrees/app-task-1'
 const PLACE: Place = { worktrees: [WT], home: '/home/me' }
@@ -155,7 +155,7 @@ describe('the grant', () => {
     expect(workerTools(grant({ web: 'off' }))).not.toContain('WebFetch')
   })
 
-  test("commands: the repo's checks and local commands; any lets the permission rules decide", () => {
+  test("commands: the repo's checks and local commands, the only mode", () => {
     expect(ok('Bash', { command: 'uv run pytest -q tests/unit' })).toBe(true)
     expect(ok('Bash', { command: 'git add -A && git commit -m wip' })).toBe(true)
     expect(ok('Bash', { command: 'git push origin tg/x' })).toBe(true)
@@ -163,9 +163,8 @@ describe('the grant', () => {
     expect(ok('Bash', { command: 'git stash' })).toBe(false)
     expect(ok('Bash', { command: 'ls $(pwd)' })).toBe(false)
     expect(ok('Bash', { command: 'cat /home/me/code/app/.env' })).toBe(false)
-    expect(ok('Bash', { command: 'python3 -c "import os"' }, grant({ commands: 'any' }))).toBe(true)
-    expect(ok('Bash', { command: 'git -C /home/me/code/app reset --hard' }, grant({ commands: 'any' }))).toBe(false)
-    expect(ok('Agent', { prompt: 'x' }, grant({ commands: 'any' }))).toBe(false)
+    expect(ok('Bash', { command: 'git -C /home/me/code/app reset --hard' })).toBe(false)
+    expect(ok('Agent', { prompt: 'x' })).toBe(false)
   })
 
   // The T3 review's X3 (dialogs-pane-ux.md §9 decision 11): a path in any position. `{P}` is the target.
@@ -176,11 +175,10 @@ describe('the grant', () => {
     `awk 'BEGIN { print 1 > "{P}" }'`, "sed -n 'w {P}' README.md", 'cd /home/me/code && echo x >> app/{P_REL}',
   ]
   const at = (form: string, path: string) => form.replace('{P}', path).replace('{P_REL}', 'x.txt')
-  const both = [grant({ commands: 'checks' }), grant({ commands: 'any' })]
 
   for (const form of POSITIONS) {
-    test(`X3: ${form} into the owner's checkout is refused in both modes`, () => {
-      for (const g of both) expect([g.commands, ok('Bash', { command: at(form, '/home/me/code/app/x.txt') }, g)]).toEqual([g.commands, false])
+    test(`X3: ${form} into the owner's checkout is refused`, () => {
+      expect(ok('Bash', { command: at(form, '/home/me/code/app/x.txt') })).toBe(false)
     })
     if (form.includes('{P_REL}')) continue
     test(`X3: ${form} outside the worktree is refused under checks`, () => {
@@ -199,18 +197,18 @@ describe('the grant', () => {
     }
   })
 
-  test('X3: commands inside the worktree still pass, in both modes', () => {
+  test('X3: commands inside the worktree still pass', () => {
     for (const command of [
       'uv run pytest > ./out.txt', 'uv run pytest 2>&1 | tail -5', 'sort -o ./x README.md', 'sort -o./x README.md', 'sort --output=out.txt README.md', 'ls 2>&1', 'cat < README.md',
       `echo x > ${WT}/out.txt`, `echo x>>${WT}/out.txt`, "find . -name '*.pyc' -exec rm {} +", 'find . -name x -exec rm {} \;', "git rebase -x 'uv run pytest' HEAD~1",
       "awk '{print $1}' README.md", "awk -F: '$2 > 5 { print $1 }' README.md", "sed -n '1,5p' README.md", "sed '/^#/d' README.md", "sed -i 's/a/b/g' README.md", "sed -i '' 's/a/b/' notes.txt",
       'cd src && cat a.ts', 'NODE_ENV=test uv run pytest', "grep -n 'end$' README.md",
     ]) {
-      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+      expect([command, ok('Bash', { command })]).toEqual([command, true])
     }
   })
 
-  // Decision 11: in either commands mode, no tg and no tg-kit config directory outside the worktrees.
+  // Decision 11: no tg and no tg-kit config directory outside the worktrees.
   const TG_FORMS = [
     'tg send @example_bot hi --yes', 'tg read me', '/usr/local/bin/tg me', '~/.local/bin/tg allow add 1004 --yes', './tg me', 'TG me',
     'uv run tg allow add 1004 --yes', 'uv run --with x tg me', 'uv --directory . run tg me', 'uv tool run tg me', 'uvx tg me', 'uvx --from tg-kit tg me', 'pipx run tg me',
@@ -219,10 +217,8 @@ describe('the grant', () => {
     "find . -exec tg me \;", "git rebase -x 'tg me' HEAD~1", 'uv run uvx tg me',
   ]
   for (const command of TG_FORMS) {
-    test(`decision 11: ${command} is refused in both modes`, () => {
-      for (const g of both) {
-        expect([g.commands, checkGrant({ tool: 'Bash', input: { command } }, g, SCOPE)]).toEqual([g.commands, { ok: false, reason: expect.stringContaining('tg is never the Worker') }])
-      }
+    test(`decision 11: ${command} is refused`, () => {
+      expect([checkGrant({ tool: 'Bash', input: { command } }, grant(), SCOPE)]).toEqual([{ ok: false, reason: expect.stringContaining('tg is never the Worker') }])
     })
   }
 
@@ -236,56 +232,53 @@ describe('the grant', () => {
     `awk '{ print }' ${CONFIG}/allow.toml`, `sh -c 'cat ${CONFIG}/allow.toml'`, `${CONFIG}/bin/run`,
   ]
   for (const command of CONFIG_FORMS) {
-    test(`decision 11: ${command} reaches tg-kit's config and is refused in both modes`, () => {
-      for (const g of both) {
-        expect([g.commands, checkGrant({ tool: 'Bash', input: { command } }, g, SCOPE)]).toEqual([g.commands, { ok: false, reason: expect.stringContaining("tg-kit's config directory") }])
-      }
+    test(`decision 11: ${command} reaches tg-kit's config and is refused`, () => {
+      expect([checkGrant({ tool: 'Bash', input: { command } }, grant(), SCOPE)]).toEqual([{ ok: false, reason: expect.stringContaining("tg-kit's config directory") }])
     })
   }
 
   // The review's M1: xargs' options that take a value hid the command after them.
   const XARGS = ['xargs -I {}', 'xargs -I{}', 'xargs -i {}', 'xargs -i{}', 'xargs -E END', 'xargs -EEND', 'xargs -e END', 'xargs --replace {}', 'xargs --replace={}', 'xargs --eof=END', 'xargs -0 -n 5 -P 2', 'xargs -d , -L 1', 'xargs --max-args 5', 'xargs -a list.txt']
   for (const xargs of XARGS) {
-    test(`M1: echo 1004 | ${xargs} tg … and … sh -c 'tg …' are refused in both modes`, () => {
+    test(`M1: echo 1004 | ${xargs} tg … and … sh -c 'tg …' are refused`, () => {
       for (const command of [`echo 1004 | ${xargs} tg allow add {} --yes`, `echo 1004 | ${xargs} sh -c 'tg allow add 1004 --yes'`]) {
-        for (const g of both) expect([command, g.commands, checkGrant({ tool: 'Bash', input: { command } }, g, SCOPE)]).toEqual([command, g.commands, { ok: false, reason: expect.stringContaining('tg is never the Worker') }])
+        expect([command, checkGrant({ tool: 'Bash', input: { command } }, grant(), SCOPE)]).toEqual([command, { ok: false, reason: expect.stringContaining('tg is never the Worker') }])
       }
     })
   }
 
   test('M1: what xargs runs is read: its sh -c too; plain xargs still passes', () => {
     expect(readCommand("xargs -I {} sh -c 'echo {} >> /home/me/.zshrc'").commands).toContainEqual(['echo', '{}', '>>', '/home/me/.zshrc'])
-    expect(ok('Bash', { command: "ls | xargs -I {} sh -c 'echo {} >> /home/me/code/app/x'" }, grant({ commands: 'any' }))).toBe(false)
+    expect(ok('Bash', { command: "ls | xargs -I {} sh -c 'echo {} >> /home/me/code/app/x'" })).toBe(false)
     for (const command of ["find . -name '*.py' | xargs -n 5 grep -l x", 'ls | xargs -I {} cat {}']) {
-      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+      expect([command, ok('Bash', { command })]).toEqual([command, true])
     }
   })
 
-  // The security review: paths.ts does not follow links, so no link may lie or point outside the worktree, in either mode.
-  test('links: ln outside the worktree is refused in both modes; inside it passes', () => {
+  // The security review: paths.ts does not follow links, so no link may lie or point outside the worktree.
+  test('links: ln outside the worktree is refused; inside it passes', () => {
     for (const command of [
       'ln -s ~/.zshrc x', 'ln -s ../../code/app/f x', 'ln -s ../../../../code/app/f x', 'ln -s /home/me/.ssh/id_ed25519 key', 'ln ~/.zshrc x', 'ln -s ./a /tmp/x', 'ln -st /tmp ./a',
       'ln -s --target-directory=/tmp ./a', 'ln -sf /etc/hosts sub/x', 'link /home/me/.zshrc x',
     ]) {
-      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, false])
+      expect([command, ok('Bash', { command })]).toEqual([command, false])
     }
-    expect(ok('Bash', { command: 'ln -s $X x' }, grant({ commands: 'any' }))).toBe(false)
+    expect(ok('Bash', { command: 'ln -s $X x' })).toBe(false)
     for (const command of ['ln -s ./a ./b', 'ln -s a sub/b', `ln -s ${WT}/a ${WT}/b`, 'ln a b']) {
-      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+      expect([command, ok('Bash', { command })]).toEqual([command, true])
     }
   })
 
-  // The review's LOW, e0ece2b: cp that makes links falls under the link rule, in both modes.
-  test('links: a linking cp outside the worktree is refused in both modes; inside it, and a plain cp, are as before', () => {
+  // The review's LOW, e0ece2b: cp that makes links falls under the link rule.
+  test('links: a linking cp outside the worktree is refused; inside it, and a plain cp, are as before', () => {
     for (const command of ['cp -s ~/.zshrc x', 'cp -l ~/.zshrc x', 'cp --symbolic-link /etc/hosts x', 'cp --link /home/me/.ssh/id_ed25519 key', 'cp -s ./a /tmp/x', 'cp -sft /tmp ./a', 'cp -rs ../../../../code/app src']) {
-      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, false])
+      expect([command, ok('Bash', { command })]).toEqual([command, false])
     }
     for (const command of ['cp -s ./a ./b', 'cp -l a b', 'cp --link a sub/b', 'cp a b', 'cp -r src dst']) {
-      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+      expect([command, ok('Bash', { command })]).toEqual([command, true])
     }
-    // A plain cp is the copy it was: outside the worktree, refused under checks and the permission rules' call under any.
+    // A plain cp is the copy it was: outside the worktree, refused by the worktree rule.
     expect(ok('Bash', { command: 'cp /etc/hosts x' })).toBe(false)
-    expect(ok('Bash', { command: 'cp /etc/hosts x' }, grant({ commands: 'any' }))).toBe(true)
   })
 
   // The review's X4: the fences and the cd tracking read what a launcher runs too.
@@ -297,19 +290,14 @@ describe('the grant', () => {
     ["bash -c 'cd ~/.config/tg-kit; cat allow.toml'", "tg-kit's config directory"],
   ] as const
   for (const launcher of ['uv run', 'uvx', 'pipx run', 'uv tool run --from x']) {
-    test(`X4: ${launcher} running a shell that cds out is read in both modes`, () => {
+    test(`X4: ${launcher} running a shell that cds out is read`, () => {
       for (const [inner, why] of X4) {
         const command = `${launcher} ${inner}`
-        for (const g of both) expect([command, g.commands, checkGrant({ tool: 'Bash', input: { command } }, g, SCOPE)]).toEqual([command, g.commands, { ok: false, reason: expect.stringContaining(why) }])
+        expect([command, checkGrant({ tool: 'Bash', input: { command } }, grant(), SCOPE)]).toEqual([command, { ok: false, reason: expect.stringContaining(why) }])
       }
     })
   }
 
-  test('X4: a launcher whose shell cds within the worktree still passes (any; checks refuses the launcher itself)', () => {
-    for (const command of ["uv run sh -c 'cd src && cat a.ts'", `uvx sh -c 'cd ${WT}/src && ls'`, "pipx run sh -c 'cd . && cat README.md'"]) {
-      expect([command, ok('Bash', { command }, grant({ commands: 'any' }))]).toEqual([command, true])
-    }
-  })
 
   // The review's X5: a launcher's --directory (or UV_WORKING_DIR) moves where its command's paths start.
   const X5 = [
@@ -320,35 +308,53 @@ describe('the grant', () => {
     'uv run --directory $D cat x', 'uv run --directory= cat x', 'cd $D && cat x',
   ]
   for (const command of X5) {
-    test(`X5: ${command} is refused in both modes`, () => {
-      for (const g of both) expect([g.commands, ok('Bash', { command }, g)]).toEqual([g.commands, false])
+    test(`X5: ${command} is refused`, () => {
+      expect(ok('Bash', { command })).toBe(false)
     })
   }
 
-  test('X5: a --directory into the worktree still passes under any (checks refuses the launcher itself)', () => {
-    for (const command of [`uv run --directory ${WT}/src cat a.ts`, 'uv run --directory src cat a.ts', `uvx --directory=${WT} ruff check .`, 'UV_WORKING_DIR=src uv run cat a.ts']) {
-      expect([command, ok('Bash', { command }, grant({ commands: 'any' }))]).toEqual([command, true])
-    }
-  })
 
-  test("decision 11: the Worker's own worktree under tg-kit's config still passes, in both modes; tg named as data is no run", () => {
+  test("decision 11: the Worker's own worktree under tg-kit's config still passes; tg named as data is no run", () => {
     for (const command of [
       `cat ${WT}/README.md`, `echo x > ${WT}/out.txt`, `ls ~/.config/tg-kit/worktrees/app-task-1/src`, `uv run pytest > ${WT}/log.txt 2>&1`,
       `ls ${WT}/*.md`, 'cat ./README.md', 'uv run pytest -k tg', 'git switch -c tg/add-health-1', 'grep -rn tg_kit README.md',
     ]) {
-      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+      expect([command, ok('Bash', { command })]).toEqual([command, true])
     }
-    // `checks` refuses any expansion; under `any` the variable is resolved, to the worktree here.
-    expect(ok('Bash', { command: 'cat $TG_KIT_CONFIG_DIR/worktrees/app-task-1/README.md' }, grant({ commands: 'any' }))).toBe(true)
   })
 
-  test('decision 11: nesting deeper than the grant reads is refused in both modes, since tg may hide in it', () => {
+  test('decision 11: nesting deeper than the grant reads is refused, since tg may hide in it', () => {
     const command = `sh -c "sh -c 'sh -c \\"sh -c ls\\"'"`
-    for (const g of both) expect(checkGrant({ tool: 'Bash', input: { command } }, g, SCOPE)).toMatchObject({ ok: false, reason: expect.stringContaining('nested deeper') })
+    expect(checkGrant({ tool: 'Bash', input: { command } }, grant(), SCOPE)).toMatchObject({ ok: false, reason: expect.stringContaining('nested deeper') })
   })
 
-  test("the commands Select names the rule: any but tg", () => {
-    expect(COMMANDS_LABEL.any).toBe('any but tg (permission rules decide)')
+  // Decision 12: one commands mode, the repo's checks; `any` is gone.
+  test("decision 12: a declared check runs even when it is a launcher form, with its own args", () => {
+    for (const command of ['uv run pytest', 'uv run pytest -q tests/unit -k grant', 'uv run ruff check src', 'NODE_ENV=test uv run pytest > ./log.txt 2>&1']) expect([command, ok('Bash', { command })]).toEqual([command, true])
+  })
+
+  test('decision 12: a launcher, shell or interpreter that is not a declared check is refused', () => {
+    for (const command of [
+      'uv run python app.py', 'uv run pytest-xdist', 'uvx ruff check', 'pipx run black .', 'uv tool run mypy', 'uv run --with x pytest', 'uv run --directory src pytest',
+      "sh -c 'python3 app.py'", 'bash -c "node x.js"', 'eval python3 x.py', 'python3 app.py', 'node x.js', 'npx tsx x.ts', 'bash script.sh', 'sh', "echo 'python3 x.py' | sh",
+    ]) {
+      expect([command, ok('Bash', { command })]).toEqual([command, false])
+    }
+  })
+
+  test('decision 12: no commands field is left; a stored grant drops its old `commands`, `any` included', () => {
+    expect(COMMANDS_LABEL).toBe("the repo's checks")
+    expect(Object.keys(DEFAULT_GRANT).sort()).toEqual(['duration', 'repos', 'web'])
+    // @ts-expect-error a grant has no commands field to set, so `any` cannot be written into one.
+    const removed: DgGrant = { web: 'read', repos: [], commands: 'any', duration: { kind: 'done' } }
+    void removed
+    for (const commands of ['any', 'checks', 'ANY', undefined, 1]) {
+      const loaded = parseDgDialogs({ '7': { grant: { web: 'read', repos: ['/a'], commands, duration: { kind: 'done' } } } })['7']?.grant
+      expect(loaded).toEqual({ web: 'read', repos: ['/a'], duration: { kind: 'done' } })
+    }
+    // What the Worker is told has no other mode in it.
+    expect(workerSystem({ grant: DEFAULT_GRANT, worktrees: [], deadline: null })).toContain("- Commands: the repo's checks: none found, local git, and local read-only commands.")
+    expect(workerSystem({ grant: DEFAULT_GRANT, worktrees: [], deadline: null })).not.toMatch(/permission rules|\bany\b/)
   })
 
   test('checks are read off the repo root', () => {
@@ -363,7 +369,7 @@ describe('the grant', () => {
     expect(parseDuration('done')).toEqual({ ok: true, value: { kind: 'done' } })
     expect(parseDuration('soon')).toEqual({ ok: false })
     expect(parseDgDialogs({ '7': { grant: { web: 'full', repos: ['/a', 3], commands: 'rm', duration: { minutes: -1 } }, skip: { stops: ['publish', 'x'], until: null }, isWarned: true } })).toEqual({
-      '7': { grant: { web: 'full', repos: ['/a'], commands: 'checks', duration: { kind: 'done' } }, skip: { stops: ['publish'], until: null }, isWarned: true },
+      '7': { grant: { web: 'full', repos: ['/a'], duration: { kind: 'done' } }, skip: { stops: ['publish'], until: null }, isWarned: true },
     })
   })
 })

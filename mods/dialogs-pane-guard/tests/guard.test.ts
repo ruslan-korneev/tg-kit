@@ -21,7 +21,7 @@ const TASK: DgTask = {
   agentId: WORKER,
   startedAt: NOW,
   deadline: null,
-  grant: { web: 'read', repos: [REPO], commands: 'checks', duration: { kind: 'done' } },
+  grant: { web: 'read', repos: [REPO], duration: { kind: 'done' } },
   worktrees: [{ repo: REPO, path: WT, branch: 'tg/add-a-health-endpoint-1', checks: ['uv run pytest', 'uv run ruff check'] }],
   holds: [],
   question: null,
@@ -162,10 +162,13 @@ describe('the grant', () => {
     expect(seen.ran).toEqual(['uv run pytest -q > ./out.txt 2>&1'])
   })
 
-  test("decision 11: under `any` too, tg and tg-kit's config are refused, and nothing runs", WITH_PANE, async ($, on) => {
+  test("a task whose grant still carries the removed `commands: any` is held to the checks; tg and tg-kit's config are refused", WITH_PANE, async ($, on) => {
     mock.clock(on, { now: NOW })
     const seen = world(on)
-    await start($, { ...DELEGATE, tasks: [{ ...TASK, grant: { ...TASK.grant, commands: 'any' } }] })
+    // A dialogs-pane from before decision 12 could still hand over such a task; the guard reads no mode.
+    const old = { ...TASK.grant, commands: 'any' } as unknown as DgTask['grant']
+    await start($, { ...DELEGATE, tasks: [{ ...TASK, grant: old }] })
+    expect((await worker($, 'python3 -c "print(1)"')).deny).toContain("not one of the repo's checks")
     for (const command of ['tg send @example_bot hi --yes', 'uv run tg allow add 1004 --yes', `${HOME}/.local/bin/tg me`, 'python3 -m tg_kit me']) {
       expect((await worker($, command)).deny).toContain("tg is never the Worker's to run")
     }
@@ -177,7 +180,7 @@ describe('the grant', () => {
   test("decision 11: TG_KIT_CONFIG_DIR moves tg-kit's config, and the rule with it", WITH_PANE, async ($, on) => {
     mock.clock(on, { now: NOW })
     const seen = world(on, { configDir: `${HOME}/tg-state` })
-    await start($, { ...DELEGATE, tasks: [{ ...TASK, grant: { ...TASK.grant, commands: 'any' } }] })
+    await start($)
     expect((await worker($, `cat ${HOME}/tg-state/allow.toml`)).deny).toContain(`tg-kit's config directory (${HOME}/tg-state)`)
     expect((await worker($, 'cat $TG_KIT_CONFIG_DIR/allow.toml')).deny).toContain("tg-kit's config directory")
     expect(seen.ran).toEqual([])
@@ -213,18 +216,6 @@ describe('hard stops', () => {
       { seq: 1, at: NOW, taskId: 1, peer: TASK.peer, summary: TASK.summary, stops: ['publish'], what: 'git push origin tg/add-a-health-endpoint-1', answer: 'yes', why: 'you' },
     ])
     expect(await guardValue($, 'holds')).toEqual([])
-  })
-
-  test('T10: under `any`, a merge behind a launcher waits in the dialog as a plain one does; No keeps it from running', WITH_PANE, async ($, on) => {
-    mock.clock(on, { now: NOW })
-    const seen = world(on)
-    seen.dialog = 'No'
-    await start($, { ...DELEGATE, tasks: [{ ...TASK, grant: { ...TASK.grant, commands: 'any' } }] })
-    const result = await worker($, 'uv run gh pr merge 12 --squash')
-    expect(seen.questions).toEqual(['HARD STOP publish (Worker for Dev Team): gh pr merge 12 --squash. Allow it?'])
-    expect(result.deny).toContain('Hard stop publish')
-    expect((await worker($, 'uv run pytest -q')).deny).toBeUndefined()
-    expect(seen.ran).toEqual(['uv run pytest -q'])
   })
 
   test('No refuses it: the push never runs', WITH_PANE, async ($, on) => {

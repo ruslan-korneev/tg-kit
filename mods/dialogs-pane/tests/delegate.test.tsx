@@ -439,6 +439,9 @@ describe('the card', () => {
     expect(await ui.find({ type: 'Text', text: "(this session's repo)" })).toBeDefined()
     expect((await ui.find({ key: 'dg:web' }))?.props.value).toBe('read')
     expect((await ui.find({ key: 'dg:duration' }))?.props.value).toBe('done')
+    // commands is a fixed row, not a Select: the repo's checks are the only mode (decision 12).
+    expect(await ui.find({ type: 'Text', text: "commands the repo's checks" })).toBeDefined()
+    expect(await ui.find({ key: 'dg:commands' })).toBeUndefined()
     await ui.select({ key: 'dg:web', value: 'full' })
     await ui.select({ key: 'dg:duration', value: '2h' })
     expect(seen.store.get('delegate.dialogs')).toMatchObject({ [String(PERSON)]: { isWarned: true, grant: { web: 'full', repos: [REPO], duration: { kind: 'deadline', minutes: 120 } } } })
