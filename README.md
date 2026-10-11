@@ -10,8 +10,8 @@ goes through `tg raw`, which covers the whole MTProto API.
 ## Install
 
 ```bash
-uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'                # puts `tg` on PATH
-uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'   # + QR-code login
+uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.3.0'                # puts `tg` on PATH
+uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.3.0'   # + QR-code login
 ```
 
 From a local checkout, for development:
@@ -53,8 +53,8 @@ claude plugin install dialogs-pane@tg-kit
 claude plugin install dialogs-pane-guard@tg-kit
 ```
 
-The pane needs `tg` v0.2.0 or later on PATH (it uses `tg watch` and `tg folders`) and a
-logged-in account (see Log in). `tg folders --help` tells you whether yours has them.
+The pane needs `tg` v0.3.0 or later on PATH (it uses `tg watch`, `tg folders` and `tg topics`)
+and a logged-in account (see Log in). `tg topics --help` tells you whether yours has them.
 
 The pane's colours are its `palette` option, a row of `/config`: `tokyo-night` by default, any
 theme `tg themes` shows (see Themes), `NAME256` for tmux, `theme` to follow Claude Code's own

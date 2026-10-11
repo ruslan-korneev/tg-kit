@@ -1,6 +1,6 @@
 [project]
 name = "tg-kit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Drive a Telegram user account from the command line — built for testing bots from agents"
 readme = "README.md"
 license = "MIT"
