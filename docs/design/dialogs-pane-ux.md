@@ -38,8 +38,9 @@ above the prompt.
   `tg raw messages.GetDialogFilters` (the folder list, without titles) and `tg dialogs --limit 50`
   and `--limit 200` (kinds and unread). The pane's store files were read for which keys hold
   anything. §2.2 and §4.6–4.7 have the counts.
-- Throwaway probe mods checked the engine surfaces this design leans on. All six worked; the last
-  row is T1's probe:
+- Throwaway probe mods checked the engine surfaces this design leans on. The first five are this
+  design's own probe; the last two are behaviours T1 and T2 found, which a probe confirmed and the
+  engine's docs do not state:
 
 | Surface | Result |
 | --- | --- |
@@ -49,6 +50,7 @@ above the prompt.
 | `Pane` `isFocused` | flips on ctrl+x tab and redraws, so the pane can say who holds the keys |
 | `Select` | draws `web: read-only ▾`; focused, it opens a list; ⏎ picks |
 | `Button` `hotkey` in a Box drawn `display: "none"` | pressed while the pane holds the keys, as a drawn one is; so is one in a 0×0 Box. The engine's docs do not promise it (the Button doc says only "while the plugin's site holds the focus"), so it is an assumption: §6 leans on it, Appendix A checks it after every engine upgrade |
+| The focus ring across a redraw | keeps its position among the pane's ring stops (Buttons, Inputs, Selects), not its key; a `$.ui.focus` on a key the old drawing still has lands on the old drawing, and `ok` comes back all the same. In a 40-row list centred on the cursor, `k` put ▸ on row 32 and the ring on 31; a 3-row sheet closing left ▸ on 39 and the ring on 36. Scrolling at the edges and rows without ring stops under the sheet kept the ring on ▸ at every step. §4.3's ring rules lean on it, Appendix A checks it |
 
 ## 2. Audit of today's UX
 
@@ -255,6 +257,18 @@ lower part. Inline, each view takes the body.
 - **Letters** — verbs with one meaning each (§6).
 - **Digits** — numbered options on screen; **0** — stop everything (drawn while something runs).
 - **j/k and the arrows** — move; the cursor follows the ring, the ring follows the cursor.
+- **The ring keeps its place, not its key** (§1). Across a redraw the ring stays at its position
+  among the pane's ring stops (Buttons, Inputs, Selects), and a `$.ui.focus` on a key the old
+  drawing still has lands on the old drawing. So ⏎ stays on the cursor row only when:
+  1. a view never changes how many stops are drawn above the cursor row while the cursor stays: an
+     element only some views use is drawn in all of them, without its hotkey where it does not
+     work (the strip's `s: search`);
+  2. lists scroll at their edges: a move inside the window never changes which rows are above the
+     cursor, and a move past the edge brings a row the old drawing did not have, which the ring
+     waits for;
+  3. a layer draws the rows under it without ring stops while it holds the ring (the thread under
+     the send sheet: its messages and their buttons as text, ▸ kept), so closing it brings the
+     cursor row's key back and the ring waits for it.
 - **Sheets** — a short strip that takes the action bar's place (send, targets, recording); its keys
   are drawn in it; ⏎ is its main button.
 - **Menu (`m`)** — every key valid here, grouped (message, chat, chats, pane, safety); each label is
@@ -1703,3 +1717,8 @@ Decided by the owner after the second pass (2026-10-10):
 - After every engine upgrade, with the pane holding the keys and the menu closed: `j` moves the
   cursor, `p` in a bot chat puts `⌁1` in the header (`p` again stops it), `q` hides the pane. If
   one does nothing, the engine no longer presses hidden Buttons (§1, §6).
+- With every build and engine upgrade, in a thread longer than the pane (30 messages; the fake tg
+  needs a bot thread that long): `k` ten times, then ⏎ `h` ⏎. The inverse ring stays on ▸ each
+  time; a ring a row or more away from ▸ means one of §4.3's ring rules broke. No unit test sees
+  the ring, so the tests check the rules instead: `j` and `k` inside a window keep its first row,
+  and no `msg:` or `btn:` Button is drawn while the send sheet holds the ring.
