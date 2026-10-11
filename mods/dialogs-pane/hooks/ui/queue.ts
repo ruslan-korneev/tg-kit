@@ -220,11 +220,6 @@ export function compactStatusText(status: CompactStatus, isShort = false): { tex
   }
 }
 
-/** The chats the card counts as waiting: For you's people and every chat a draft or a hard stop waits in, each once. */
-export function waitingChats(people: readonly { id: number }[], agents: readonly { id: number }[]): number {
-  return new Set([...people, ...agents].map(one => one.id)).size
-}
-
 /** The card's rows: For you's first two, else the first two of `folder` unread and not muted (as the status counts them), else none. */
 export function compactRows<T extends { unread: number; muted: boolean }>(forYou: readonly T[], folder: readonly T[]): T[] {
   return (forYou.length > 0 ? forYou : folder.filter(row => row.unread > 0 && !row.muted)).slice(0, COMPACT_ROWS)

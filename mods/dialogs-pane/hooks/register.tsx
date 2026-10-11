@@ -157,7 +157,6 @@ import {
   statusAlarm,
   stepKey,
   unreadChats,
-  waitingChats,
   type BandHold,
   type CompactStatus,
   type BandItem,
@@ -336,7 +335,8 @@ export const register: Register = (on, options) => {
   )
 
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const tail = hintTail((await bandNow($)).length, (await summaryCounts($)).forYou)
+    // FOR YOU's one count (forYouNow): the hint's `N for you` is the card's and the header's N.
+    const tail = hintTail((await bandNow($)).length, (await forYouNow($)).chats)
     if (tail === undefined) return next(e)
     return next({ ...e, props: { ...e.props, tail: e.props.tail === undefined ? tail : `${e.props.tail} · ${tail}` } })
   })
@@ -1064,7 +1064,9 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const isChatsOnTop = await chatsOnTop($)
   const isLoading = !isMenu && (await isLoadingShown($, seat, where))
   const head = await unreadHead($)
-  const header = Header(els, { colors, counts: await headerCounts($, head), isLoading, isError: head.kind === 'failed', width })
+  // FOR YOU once a drawing: the header's count, the section's rows and its title read the same answer.
+  const forYou = await forYouNow($)
+  const header = Header(els, { colors, counts: await headerCounts($, head, forYou.chats), isLoading, isError: head.kind === 'failed', width })
   // Inline, the windows always leave a row for a notice (T4b): the frame fits its content, so the
   // row costs nothing while it is empty, and one arriving takes no row from a list.
   const notice = seat === 'inline' && !isMenu ? await drawNoticeRow($, els, width) : null
@@ -1086,7 +1088,7 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
         isAutopilotShown: false,
       }
     : seat === 'dock'
-      ? await drawDock($, els, where, width, room, hasKeys)
+      ? await drawDock($, els, where, width, room, hasKeys, forYou)
       : { slot: await drawInline($, els, where, width, room, hasKeys), isAutopilotShown: false }
   const { slot } = view
   const legend = seat === 'dock' ? await drawLegend($, els, width, view.isAutopilotShown, !isChatsOnTop) : null
@@ -1134,14 +1136,14 @@ async function hasReloadRow($: $, isListShown: boolean, isThreadShown: boolean):
 }
 
 /** The header's counts (§10.5): the footer's unread chats, mentions over every chat known, and what runs. */
-async function headerCounts($: $, head: UnreadHead): Promise<HeaderCounts> {
+async function headerCounts($: $, head: UnreadHead, forYou: number): Promise<HeaderCounts> {
   const counts = await summaryCounts($)
   const pilot = await read($, autopilot)
   const known = passHeld === null ? await knownDialogs($) : [...passHeld.rows.values()]
   return {
     unread: head.kind === 'count' ? head.unread : 0,
     mentions: known.reduce((sum, dialog) => sum + dialog.mentions, 0),
-    forYou: counts.forYou,
+    forYou,
     agents: pilot.running.length,
     isHolding: pilot.drafts.length > 0 || (await dgHoldCount($)) > 0,
     follows: (await read($, pins)).length,
@@ -1244,7 +1246,7 @@ async function topLength($: $): Promise<number> {
  * brings the sections back, the chat stays loaded with `›` on its row, and ⏎
  * brings its card back. Both moves start a generation.
  */
-async function drawDock($: $, els: Els, where: Where, width: number, room: number, hasKeys: boolean): Promise<{ slot: RenderElement[]; isAutopilotShown: boolean }> {
+async function drawDock($: $, els: Els, where: Where, width: number, room: number, hasKeys: boolean, forYou: Awaited<ReturnType<typeof forYouNow>>): Promise<{ slot: RenderElement[]; isAutopilotShown: boolean }> {
   const at = await read($, nav)
   // The send box writes into the open chat, so its card stays; the search field types for the list.
   const isLower = LOWER.includes(where) || (where === 'field' && !at.isSearching && (await read($, thread)) !== null)
@@ -1256,7 +1258,7 @@ async function drawDock($: $, els: Els, where: Where, width: number, room: numbe
       isOpen: isLower,
       isStart,
       // FOR YOU's section sits over Chats only: the For you view and the Folders list draw no such card.
-      forYou: (await chatsOnTop($)) ? (await forYouSectionRows($)).length : 0,
+      forYou: (await chatsOnTop($)) ? forYou.drafts.length + forYou.holds.length + forYou.people.length : 0,
       autopilot: (await apCardNow($)).rows,
       log: (await logNow($)).length,
       list: await topLength($),
@@ -1268,7 +1270,7 @@ async function drawDock($: $, els: Els, where: Where, width: number, room: numbe
   // Under the send box or the search field the list is drawn without ring stops (§4.3 rule 3).
   const mode = where === 'chats' || where === 'folders' || where === 'foryou' ? 'active' : where === 'field' ? 'static' : 'idle'
   const cards: RenderElement[] = []
-  if (layout.forYou > 0) cards.push(await drawForYouSection($, els, width, layout.forYou, borderOf(hasKeys, false)))
+  if (layout.forYou > 0) cards.push(await drawForYouSection($, els, width, layout.forYou, borderOf(hasKeys, false), forYou))
   cards.push(await drawTopCard($, els, { seat: 'dock', where, width, rows: layout.chats, mode, border: borderOf(hasKeys, isTopCursor) }))
   if (layout.start > 0) cards.push(StartCard(els, { colors, width, border: borderOf(hasKeys, false) }))
   if (layout.autopilot > 0) cards.push(await drawAutopilotSlot($, els, width, layout.autopilot, borderOf(hasKeys, false)))
@@ -1475,41 +1477,56 @@ type SectionRow = Pick<Parameters<typeof ChatRow>[2], 'time' | 'glyph' | 'name' 
 let lastForYou: SectionRow[] = []
 
 /**
- * FOR YOU's items now: the agents' drafts first (`draft: …` in `held`, ✎),
- * then the people who wait on the owner (mentions, `asks you: …`), from the
- * pass the module holds. No tg call and no model call: For you's view (`y`) ranks.
+ * FOR YOU, one definition (§10.5): the agents' drafts and hard stops waiting,
+ * then the people who wait on the owner (mentions, asks), from the pass the
+ * module holds; `fyi` stays in `y`'s view. `chats` counts each chat once, and
+ * is the number the FOR YOU card's title, the header's `N FOR YOU`, the band's
+ * hint tail and the compact card's `N chats waiting` all show; the footer
+ * line keeps the owner's `@N`. No tg call and no
+ * model call; light enough for the footer, which draws often.
  */
-async function forYouSectionRows($: $): Promise<SectionRow[]> {
+async function forYouNow($: $): Promise<{ drafts: { key: string; peer: PeerRef; text: string; at: number }[]; holds: BandHold[]; people: TgDialog[]; why: Record<string, ForYouWhy>; chats: number }> {
   const pilot = await read($, autopilot)
   const reply = await read($, draft)
+  const drafts = (await liveAgents($)).flatMap(item => {
+    if (item.kind === 'draft') {
+      const one = pilot.drafts.find(value => value.seq === item.seq)
+      return one === undefined ? [] : [{ key: `fy:ap:${one.seq}`, peer: one.peer, text: one.text, at: one.at }]
+    }
+    if (item.kind === 'reply') return reply === null ? [] : [{ key: 'fy:reply', peer: reply.peer, text: reply.text, at: reply.at }]
+    return []
+  })
+  // ── delegate ── a hard stop waits for the owner's answer in the dialog; the guard's state is read only while a task runs.
+  const holds = (await read($, delegate)).tasks.some(isLive) ? (await dgAlarms($)).holds : []
+  // People who wait on the owner: mentions and asks. `fyi` stays in `y`'s view, where the owner reads down a list.
+  const known = passHeld === null ? await knownDialogs($) : [...passHeld.rows.values()]
+  const state = await read($, triage)
+  const ranked = forYouPeople(known, me ?? NO_ME, state.verdicts, state.repliedToYou)
+  const people = ranked.rows.filter(dialog => ranked.why[String(dialog.id)] !== 'fyi')
+  const chats = new Set([...drafts.map(one => one.peer.id), ...holds.map(hold => hold.peer.id), ...people.map(dialog => dialog.id)]).size
+  return { drafts, holds, people, why: ranked.why, chats }
+}
+
+/** FOR YOU's rows in the chat row: `draft: …` and `stop: …` in `held` with ✎, then the people, `asks you: …` where they ask. */
+async function forYouRows($: $, forYou: Awaited<ReturnType<typeof forYouNow>>): Promise<SectionRow[]> {
+  const pilot = await read($, autopilot)
   const at = Math.max(pilot.now, await $.clock.now())
-  const held = (key: string, peer: PeerRef, text: string, when: number): SectionRow => ({
+  const held = (key: string, peer: PeerRef, preview: string, when: number | null): SectionRow => ({
     key,
-    time: rowTime(new Date(when).toISOString(), at),
+    time: when === null ? '' : rowTime(new Date(when).toISOString(), at),
     glyph: dialogGlyph(peer.kind),
     name: peer.label,
     isUnread: false,
-    preview: { text: `draft: ${oneLine(text, 200)}`, role: 'held' },
+    preview: { text: oneLine(preview, 200), role: 'held' },
     symbol: { text: GLYPH.draft, role: 'held' },
   })
-  const drafts = (await liveAgents($)).flatMap((item): SectionRow[] => {
-    if (item.kind === 'draft') {
-      const one = pilot.drafts.find(value => value.seq === item.seq)
-      return one === undefined ? [] : [held(`fy:ap:${one.seq}`, one.peer, one.text, one.at)]
-    }
-    if (item.kind === 'reply') return reply === null ? [] : [held('fy:reply', reply.peer, reply.text, reply.at)]
-    return []
-  })
-  if (passHeld === null) return drafts
-  const people = await rankedPeople($, passHeld)
   const agentOf = await agentMarks($)
-  // People who wait on the owner: mentions and asks. `fyi` stays in `y`'s view, where the owner reads down a list.
-  const waiting = people.rows.filter(dialog => people.why[String(dialog.id)] !== 'fyi')
   return [
-    ...drafts,
-    ...waiting.map((dialog): SectionRow => {
+    ...forYou.drafts.map(one => held(one.key, one.peer, `draft: ${one.text}`, one.at)),
+    ...forYou.holds.map(hold => held(`fy:${hold.key}`, hold.peer, `stop: ${hold.what}`, null)),
+    ...forYou.people.map((dialog): SectionRow => {
       const row = dialogRow(dialog, { now: at, agent: agentOf(dialog.id) })
-      return { key: `fy:chat:${dialog.id}`, ...row, preview: people.why[String(dialog.id)] === 'asks you' ? { text: `asks you: ${dialog.last_text}` } : row.preview }
+      return { key: `fy:chat:${dialog.id}`, ...row, preview: forYou.why[String(dialog.id)] === 'asks you' ? { text: `asks you: ${dialog.last_text}` } : row.preview }
     }),
   ]
 }
@@ -1519,8 +1536,8 @@ async function forYouSectionRows($: $): Promise<SectionRow[]> {
  * (`y: all · 3`). Text only: a Button above CHATS would move the stops above
  * the cursor (§4.3 rule 1); ⏎ on an item works in `y`'s view and the band.
  */
-async function drawForYouSection($: $, els: Els, width: number, rows: number, border: CardBorder): Promise<RenderElement> {
-  const items = await forYouSectionRows($)
+async function drawForYouSection($: $, els: Els, width: number, rows: number, border: CardBorder, forYou: Awaited<ReturnType<typeof forYouNow>>): Promise<RenderElement> {
+  const items = await forYouRows($, forYou)
   const isEmptied = items.length === 0
   if (!isEmptied) lastForYou = items
   const dim = (row: SectionRow): SectionRow => ({ ...row, glyph: { ...row.glyph, role: 'dim' }, preview: { text: row.preview.text, role: 'dim' }, symbol: null })
@@ -1530,7 +1547,7 @@ async function drawForYouSection($: $, els: Els, width: number, rows: number, bo
     key: 'card:foryou-section',
     colors,
     role: 'mention',
-    title: `FOR YOU · ${items.length}`,
+    title: `FOR YOU · ${forYou.chats}`,
     corner: more > 0 ? `y: all · ${more}` : 'y: all',
     border,
     width,
@@ -6528,18 +6545,11 @@ const compactAt = atom({ plugin: 'dialogs-pane', key: 'compactAt' } as const, 0)
  */
 async function compactFacts($: $): Promise<{ status: CompactStatus; rows: TgDialog[] }> {
   const known = passHeld === null ? await knownDialogs($) : [...passHeld.rows.values()]
-  const state = await read($, triage)
-  const people = forYouPeople(known, me ?? NO_ME, state.verdicts, state.repliedToYou).rows
-  const pilot = await read($, autopilot)
-  const reply = await read($, draft)
-  const agents = [
-    ...pilot.drafts.map(one => one.peer),
-    ...(reply !== null && reply.step.kind !== 'sent' ? [reply.peer] : []),
-    ...(await dgAlarms($)).holds.map(hold => hold.peer),
-  ]
+  // FOR YOU's one count (forYouNow): the card's `N chats waiting` is the dock's `FOR YOU · N`.
+  const forYou = await forYouNow($)
   const where = await read($, nav)
   const folder = viewRows(passHeld, where.list) ?? known
-  return { status: compactStatus(waitingChats(people, agents), unreadChats(known)), rows: compactRows(people, folder) }
+  return { status: compactStatus(forYou.chats, unreadChats(known)), rows: compactRows(forYou.people, folder) }
 }
 
 /**

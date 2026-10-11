@@ -17,7 +17,6 @@ import {
   statusAlarm,
   stepKey,
   unreadChats,
-  waitingChats,
   type QueueInput,
 } from './queue'
 
@@ -60,10 +59,6 @@ describe('the compact card (§10.7)', () => {
     expect(compactStatusText({ kind: 'read' })).toEqual({ text: 'all read', role: null })
   })
 
-  test('waiting counts distinct chats: a chat with a mention and a draft is one', () => {
-    expect(waitingChats([row(1, 2), row(2, 1)], [{ id: 1 }, { id: 3 }, { id: 3 }])).toBe(3)
-    expect(waitingChats([], [])).toBe(0)
-  })
 
   test("the rows: For you's first two, else the folder's first two unread and not muted, else none", () => {
     const forYou = [row(1, 2), row(2, 1), row(3, 1)]

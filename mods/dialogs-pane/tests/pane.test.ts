@@ -171,7 +171,7 @@ describe('the frame', () => {
     expect(seen.opened).toEqual(['tg'])
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'tg', props: DOCK })
-      expect((await ui.find({ key: 'header' }))?.text).toBe('TG · 3 UNREAD')
+      expect((await ui.find({ key: 'header' }))?.text).toBe('TG · 3 UNREAD · 1 FOR YOU')
       expect(await titleOf(ui, 'card:chats')).toBe('CHATS  All chats 3  For you  Bots')
       expect((await findChat(ui, 1001))?.text).toContain('Example Bot')
       expect((await findChat(ui, 1003))?.text).toContain('Saved Messages')
@@ -219,7 +219,7 @@ describe('the frame', () => {
 
   test('inline: one view at a time, its card titled after it, h: chats in the key line', async ($, on) => {
     const { ui } = await openPane($, on, INLINE)
-    expect((await ui.find({ key: 'header' }))?.text).toBe('TG · 3 UNREAD')
+    expect((await ui.find({ key: 'header' }))?.text).toBe('TG · 3 UNREAD · 1 FOR YOU')
     expect(await tabsOf(ui)).toEqual(['All chats 3', 'For you', 'Bots'])
     expect(await barKeys(ui)).toEqual(['open', 'back', 'search', 'summary', 'watch', 'agent', 'menu'])
     await openChat(ui, 1001)
@@ -1376,7 +1376,8 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       const dev: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
       await write($, value => ({ ...value, running: [dev.id], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
       expect(await siteText($, FOOTER)).not.toBe(footer)
-      expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 2 for you · ctrl+x tab')
+      // The tail shows while the band holds items, with FOR YOU's number: 60 chats, 56 of them people who wait; the drafts' chats are among them, counted once.
+      expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 56 for you · ctrl+x tab')
       expect(await place(ui)).toEqual(base)
       // The window keeps its first row and the ring its stop as the band empties again.
       await write($, value => ({ ...value, drafts: [], undo: null, notes: [] }))
@@ -1416,9 +1417,8 @@ describe('the dock\'s sections hold their rows for a layout generation (§10.5 "
       const forYou = (await ui.find({ key: 'card:foryou-section' }))?.props.height
       expect(await ui.find({ key: 'card:autopilot' })).toBeUndefined()
       expect(await ui.find({ key: 'card:log' })).toBeUndefined()
-      // Two drafts land for the owner: the header counts them, FOR YOU keeps its rows and counts the rest.
+      // Two drafts land for the owner: their chats already wait as people, FOR YOU keeps its rows and counts the rest.
       await fillBand($, write)
-      expect((await ui.find({ key: 'header' }))?.text).toContain('2 FOR YOU')
       expect((await ui.find({ key: 'card:foryou-section' }))?.props.height).toBe(forYou)
       expect(await place(ui)).toEqual(base)
       // An agent starts: the header counts it at once, the card waits for the next generation.
@@ -1989,6 +1989,23 @@ describe('the compact card above the prompt (§10.7, T15)', () => {
     await band.press({ key: 'compact:up' })
     expect(await rowKeys(band)).toEqual(['compact:1001'])
     expect(seen.status.filter(text => text !== undefined)).toEqual([])
+    await band.unmount()
+  })
+
+  test('FOR YOU is one number: the compact card, the band\'s hint, the dock\'s FOR YOU card and the header agree (§10.5)', { timeoutMs: 15_000 }, async ($, on) => {
+    // Three people waiting (mentions), two drafts (Contact A's chat also waits as a person; Dev Team's too): four chats.
+    const { seen, write } = await compact($, on, mentioned([1001, 1002, 1004]))
+    await fillBand($, write)
+    const band = await mount($)
+    expect(await status(band)).toBe('● 3 chats waiting')
+    expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 3 for you · ctrl+x tab')
+    // Opened Wide: the dock's FOR YOU card and the header say the same number.
+    await $.command.run(runTg())
+    expect(seen.store.get('mode')).toBe('open')
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
+    expect(await titleOf(ui, 'card:foryou-section')).toBe('FOR YOU · 3')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('3 FOR YOU')
+    await ui.unmount()
     await band.unmount()
   })
 
