@@ -1806,10 +1806,10 @@ Decided by the owner after the second pass (2026-10-10):
    its kind alone. Task T3 carries it.
 9. **The owner's own writes pass `--yes`**: a message typed after `n`, ⏎ on a draft the owner has
    read, and a press of a bot's button. allow.toml gates only what agents send on their own: auto,
-   delegate's replies and an agent replaying a recording (the Worker runs no tg: decision 11);
-   BotFather and `readonly = true` still refuse. Rejected: allow.toml for the owner's writes too,
-   which refused the owner's own words in every chat outside it (`bottest/keyboard.ts:46`). Tasks
-   T0d, T3, T5 and T6 carry it. Confirmed by the owner on the same day:
+   delegate's replies, the Worker and an agent replaying a recording; BotFather and
+   `readonly = true` still refuse. Rejected: allow.toml for the owner's writes too, which refused
+   the owner's own words in every chat outside it (`bottest/keyboard.ts:46`). Tasks T0d, T3, T5
+   and T6 carry it. Confirmed by the owner on the same day:
    - **Presses count.** A press of a bot's button is the owner's own write and passes `--yes`;
      BotFather stays `ro`.
    - **"Read" means the whole draft is on screen** when ⏎ is pressed. A band item that cuts the
