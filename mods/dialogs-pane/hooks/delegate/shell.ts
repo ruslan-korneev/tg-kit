@@ -235,7 +235,7 @@ function merge(into: Reading, from: Reading): void {
   into.assigns.push(...from.assigns)
 }
 
-/** The commands one simple command runs: itself, or what its shell, eval, find -exec or rebase -x runs. */
+/** The commands one simple command runs: itself, and what its shell, eval, find -exec or rebase -x runs. */
 function expand(words: readonly string[], depth: number): Reading {
   const out = empty()
   const alternatives: string[][] = []
@@ -254,13 +254,13 @@ function expand(words: readonly string[], depth: number): Reading {
     if (depth < MAX_DEPTH) merge(out, read())
     else out.isTooDeep = true
   }
+  // The shell, eval, find and git rebase stay commands of their own (their redirects and operands
+  // are theirs: `sh -c 'npm test' > /p`); what they run is read beside them.
+  out.commands.push(simple)
   if (script !== undefined) {
-    if (depth >= MAX_DEPTH) out.commands.push(simple)
     inner(() => readCommand(script, depth + 1))
     return out
   }
-  // find and git rebase stay commands of their own; what they run is read beside them.
-  out.commands.push(simple)
   if (name === 'find') {
     for (let i = 1; i < simple.length; i++) {
       if (!FIND_EXEC.has(simple[i] ?? '')) continue

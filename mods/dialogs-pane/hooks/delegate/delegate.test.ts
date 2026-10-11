@@ -22,7 +22,8 @@ const stops = (command: string) => callHits(bash(command), PLACE).map(hit => hit
 describe('reading a command', () => {
   test('separators, wrappers and sh -c', () => {
     expect(readCommand('cd src && sudo env A=1 git push origin x; echo ok').commands).toEqual([['cd', 'src'], ['git', 'push', 'origin', 'x'], ['echo', 'ok']])
-    expect(readCommand(`bash -c "rm -rf '/tmp/x' | cat"`).commands).toEqual([['rm', '-rf', '/tmp/x'], ['cat']])
+    // The shell stays a command of its own (X6): its redirects and operands are its own.
+    expect(readCommand(`bash -c "rm -rf '/tmp/x' | cat"`).commands).toEqual([['bash', '-c', "rm -rf '/tmp/x' | cat"], ['rm', '-rf', '/tmp/x'], ['cat']])
     expect(readCommand('ls 2>&1 | grep a').commands).toEqual([['ls', '2>&1'], ['grep', 'a']])
   })
 
@@ -326,6 +327,20 @@ describe('the grant', () => {
   test('decision 11: nesting deeper than the grant reads is refused, since tg may hide in it', () => {
     const command = `sh -c "sh -c 'sh -c \\"sh -c ls\\"'"`
     expect(checkGrant({ tool: 'Bash', input: { command } }, grant(), SCOPE)).toMatchObject({ ok: false, reason: expect.stringContaining('nested deeper') })
+  })
+
+  // The review's X6: the shell around `-c` (and eval) is a command too; its redirects were never read.
+  test('X6: a shell -c or eval keeps its own redirects and operands, and is not a check', () => {
+    for (const command of [
+      "sh -c 'uv run pytest' > /home/me/code/app/x", "sh -c 'uv run pytest' >> /home/me/.config/tg-kit/allow.toml", "sh -c 'uv run pytest' >/home/me/.config/tg-kit/sessions/x",
+      "sh -c 'uv run pytest' > /home/me/.zshrc", "bash -c 'uv run pytest' 2> /home/me/code/app/log", "sh -c 'cat' < /home/me/.ssh/id_rsa",
+      "sh -c 'uv run pytest'", "bash -lc 'uv run pytest'", "zsh -c 'uv run pytest'", "eval 'uv run pytest'", "eval 'uv run pytest' > /home/me/.zshrc", "find . -exec sh -c 'uv run pytest' \;",
+    ]) {
+      expect([command, ok('Bash', { command })]).toEqual([command, false])
+    }
+    expect(stops("sh -c 'cat' < /home/me/.ssh/id_rsa")).toEqual(['share'])
+    expect(stops("bash -c 'cat' <~/.ssh/id_ed25519")).toEqual(['share'])
+    for (const command of ['uv run pytest', 'uv run pytest > ./out.txt', `uv run pytest > ${WT}/out.txt 2>&1`]) expect([command, ok('Bash', { command })]).toEqual([command, true])
   })
 
   // Decision 12: one commands mode, the repo's checks; `any` is gone.

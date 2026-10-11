@@ -315,7 +315,8 @@ card that you see in the pane:
   - The repo's own checks, read off `package.json`, `pyproject.toml` with `uv.lock`, `Makefile`,
     `justfile`, `Cargo.toml` and `go.mod`, with their arguments; local git (no stash, no config,
     since both are shared with your checkout) and local read-only commands. Anything else is
-    refused, a launcher, a shell or an interpreter that is not a check included.
+    refused, a launcher, a shell or an interpreter that is not a check included: `sh -c` and
+    `eval` are refused even around a check, and their own redirects are read as any command's.
   - A word the shell expands (a `$` outside single quotes) is refused: a path known only when the
     shell runs cannot be cleared.
   - awk and sed run only with a program that can neither write nor run (no `-f`). `git -c` and the
