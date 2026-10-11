@@ -403,7 +403,7 @@ describe('the card', () => {
     expect((await ui.find({ key: 'key:start:grant' }))?.text).toBe('⏎ add to allow.toml…')
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
-    expect(seen.questions).toEqual(['delegate sends in Contact B without you, so Contact B must be in allow.toml. Run  tg allow add 1007 --yes  ?'])
+    expect(seen.questions).toEqual(['delegate sends in Contact B without you, so Contact B must be in allow.toml. Run  tg allow add 1007 --yes  ? (kept for later: tg allow remove takes it out)'])
     expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add').map(one => one.argv)).toEqual([['tg', 'allow', 'add', '1007', '--yes']])
     expect(seen.children).toHaveLength(1)
     await ui.unmount()

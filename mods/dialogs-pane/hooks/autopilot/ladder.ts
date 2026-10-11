@@ -175,10 +175,13 @@ export function allowArgv(arg: string): readonly string[] {
   return ['tg', 'allow', 'add', arg, '--yes']
 }
 
-/** The dialog's question: the exact command a Yes runs, verbatim (§9 decision 1). */
+/** What the question says of a Yes: the add outlives this rung, and how it is undone (tg's own `allow remove`). */
+export const ALLOW_KEPT = '(kept for later: tg allow remove takes it out)'
+
+/** The dialog's question: the exact command a Yes runs, verbatim (§9 decision 1), and that the add is kept. */
 export function allowQuestion(label: string, rung: ApRung, argv: readonly string[]): string {
   const name = oneLine(label, 40)
-  return `${RUNG_NAME[rung]} sends in ${name} without you, so ${name} must be in allow.toml. Run  ${argv.join(' ')}  ?`
+  return `${RUNG_NAME[rung]} sends in ${name} without you, so ${name} must be in allow.toml. Run  ${argv.join(' ')}  ? ${ALLOW_KEPT}`
 }
 
 /** Activity's line for the add: the audit trail of who changed allow.toml. */

@@ -468,6 +468,8 @@ describe('recorder', () => {
       await clock.settle()
       expect(seen.questions).toEqual([expect.stringContaining('An agent replaying this recording writes to @example_bot on its own')])
       expect(seen.questions[0]).toContain('tg allow add @example_bot --yes')
+      // The add outlives this hand-off: the question says it is kept (T7).
+      expect(seen.questions[0]).toContain('(kept for later: tg allow remove takes it out)')
       const added = runs.filter(run => run.argv[1] === 'allow' && run.argv[2] === 'add')
       if (answer === 'No') {
         expect(added).toEqual([])

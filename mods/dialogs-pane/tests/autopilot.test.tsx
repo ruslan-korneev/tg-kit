@@ -407,7 +407,7 @@ describe('auto', () => {
     await clock.settle()
     expect(seen.opens.slice(opens)).toEqual([{ id: 'tg', focus: true }])
     // The argv is built once: the dialog shows it verbatim, and it is what runs.
-    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ?', options: ['No', 'Yes, add it'] }])
+    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ? (kept for later: tg allow remove takes it out)', options: ['No', 'Yes, add it'] }])
     expect(adds(seen)).toEqual([['tg', 'allow', 'add', '1002', '--yes']])
     // Read again after the add, then straight on into the level: the card closes and the watch starts.
     expect(seen.runs.at(seen.runs.findIndex(one => one.argv[2] === 'add') + 1)?.argv).toEqual(['tg', 'allow', 'list', '--json'])
