@@ -4,8 +4,8 @@
 // $.process.run (`$` never crosses an import) and hands the run to `settle`.
 import type { ProcessRunResult } from 'claude-code'
 
-import type { Folder, FolderPass, TgDialog, TgFailure, TgMessage } from '../../types'
-import { TgJsonError, parseDialogs, parseFolderPass, parseFolders, parseMessageViews } from '../packet/types'
+import type { Folder, FolderPass, TgDialog, TgFailure, TgMessage, Topic } from '../../types'
+import { TgJsonError, parseDialogs, parseFolderPass, parseFolders, parseMessageViews, parseTopics } from '../packet/types'
 
 /** `partial` is set when tg found only some of what was asked (`tg msg`, exit 4). */
 export type TgResult<T> = { ok: true; value: T; partial?: string } | { ok: false; failure: TgFailure }
@@ -56,15 +56,23 @@ export const tg = {
   /** The pass (§8 T8b): every folder's chats and every chat's row, in one call. */
   pass: (): TgRequest<FolderPass> => request(['folders', '--chats'], checked(parseFolderPass)),
 
-  /** The last `limit` messages of a chat, oldest first. */
-  read: (peer: string, options: { limit?: number } = {}): TgRequest<TgMessage[]> =>
-    request(['read', peer, '--limit', String(options.limit ?? 30), '--reverse'], checked(parseMessageViews)),
+  /** The last `limit` messages of a chat, oldest first; `topic`: of that forum topic alone (§10.9). */
+  read: (peer: string, options: { limit?: number; topic?: number } = {}): TgRequest<TgMessage[]> =>
+    request(['read', peer, '--limit', String(options.limit ?? 30), '--reverse', ...topicArgs(options.topic)], checked(parseMessageViews)),
+
+  /** A forum's topics in Telegram's order, pinned first (README "Forum topics"). */
+  topics: (peer: string): TgRequest<Topic[]> => request(['topics', peer], checked(parseTopics)),
 
   /** Whole messages by id (`tg msg` never cuts the text). */
   msg: (peer: string, ids: readonly number[]): TgRequest<TgMessage[]> => ({
     ...request(['msg', peer, ...ids.map(String)], checked(parseMessageViews)),
     isPartialOnNotFound: true,
   }),
+}
+
+/** `--topic ID` for a peer narrowed to a forum topic, nothing for a whole chat: every call on a topic names it (§10.9). */
+export function topicArgs(topic: number | undefined): string[] {
+  return topic === undefined ? [] : ['--topic', String(topic)]
 }
 
 /**

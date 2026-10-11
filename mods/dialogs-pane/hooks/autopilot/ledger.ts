@@ -3,7 +3,7 @@
 // check-before-send choice, the escalation and the undo state; and the lines
 // the status line and the band draw from it. Pure.
 import type { ApCheck, ApDraft, ApEntry, ApOutcome, ApUndo, ApUndoWindow, Autopilot } from '../../types'
-import { GLYPH, oneLine } from '../ui/model'
+import { GLYPH, isSamePeer, oneLine } from '../ui/model'
 import { LEVEL_GLYPH } from './config'
 
 /** `u` deletes an auto reply this long after it went out. */
@@ -35,9 +35,9 @@ export function logCheck(ledger: readonly ApEntry[], seq: number, check: ApCheck
   return ledger.map(entry => (entry.seq === seq ? { ...entry, checks: [...entry.checks, check] } : entry))
 }
 
-/** One draft per dialog: a newer one replaces it. */
+/** One draft per dialog, or per forum topic: a newer one replaces it. */
 export function putDraft(drafts: readonly ApDraft[], draft: ApDraft): ApDraft[] {
-  return [...drafts.filter(one => one.peer.id !== draft.peer.id), draft]
+  return [...drafts.filter(one => !isSamePeer(one.peer, draft.peer)), draft]
 }
 
 /** Seconds left in the undo window, rounded up; 0 once closed. */

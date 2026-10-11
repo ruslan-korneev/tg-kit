@@ -4,7 +4,7 @@
 import type { RenderElement } from 'claude-code'
 
 import type { Els } from '../ui/components'
-import { GLYPH, TOKEN, cells, oneLine } from '../ui/model'
+import { GLYPH, TOKEN, cells, flagLetters, graphemes, oneLine } from '../ui/model'
 
 /** One row of the Folders list: a folder, the Archive, or a pane view. */
 export type FolderItem = {
@@ -20,13 +20,14 @@ export type FolderItem = {
 }
 
 /** Pads or cuts `text` to `width` cells. */
-function fit(text: string, width: number): string {
+function fit(raw: string, width: number): string {
   const room = Math.max(1, width)
+  const text = flagLetters(raw)
   if (cells(text) <= room) return text + ' '.repeat(room - cells(text))
   let out = ''
-  for (const char of text) {
-    if (cells(out + char) > room - 1) break
-    out += char
+  for (const glyph of graphemes(text)) {
+    if (cells(out + glyph) > room - 1) break
+    out += glyph
   }
   return `${out}…${' '.repeat(Math.max(0, room - cells(out) - 1))}`
 }

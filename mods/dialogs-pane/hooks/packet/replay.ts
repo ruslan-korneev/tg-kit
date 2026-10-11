@@ -60,7 +60,11 @@ export function buildReplay(
     return `tg start ${spec}${payload}${wait}`
   }
 
-  const replyTo = trigger.reply_to === null ? '' : ` --reply-to ${trigger.reply_to}`
+  // In a forum the trigger goes back into its own topic; a message posted straight into a topic
+  // "replies" to the topic's id, which is no reply at all (README "Forum topics").
+  const topic = trigger.topic_id === null ? '' : ` --topic ${trigger.topic_id}`
+  const isReply = trigger.reply_to !== null && trigger.reply_to !== trigger.topic_id
+  const replyTo = (isReply ? ` --reply-to ${trigger.reply_to}` : '') + topic
   // `tg send` parses Markdown by default; the record holds the text as it arrived.
   const plain = /[*_`~|[\]]/.test(trigger.text) ? ' --plain' : ''
   // A leading dash would read as an option; stdin carries such text verbatim.

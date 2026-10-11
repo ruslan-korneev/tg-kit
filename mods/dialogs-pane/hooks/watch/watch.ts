@@ -4,7 +4,7 @@
 // typed events. register.tsx owns the child and the subscribers.
 import type { MessageView, Sender } from '../../types'
 import { parseMessageView, parseSender, TgJsonError } from '../packet/types'
-import { failureOf } from '../tg/tg'
+import { failureOf, topicArgs } from '../tg/tg'
 
 /**
  * One event of the stream. `message` and `edit` carry the message as
@@ -47,14 +47,17 @@ export function restartPlan(code: number | null, signal: string | null, stderr: 
 /**
  * The child for what its subscribers need: every event kind; `--after` to
  * replay what a restart or a reload missed; `--idle-exit` only when every
- * subscriber is fine with a quiet watch ending (a pin is not).
+ * subscriber is fine with a quiet watch ending (a pin is not); `topic` for a
+ * forum topic.
  */
-export function watchArgv(peerArg: string, options: { after: number | null; isBounded: boolean }): string[] {
+export function watchArgv(peerArg: string, options: { after: number | null; isBounded: boolean; topic?: number }): string[] {
   return [
     'tg',
     'watch',
     peerArg,
     '--jsonl',
+    // One forum topic alone (§10.9): tg then prints only that topic's messages, edits and typing.
+    ...topicArgs(options.topic),
     ...(options.after === null ? [] : ['--after', String(options.after)]),
     ...(options.isBounded ? ['--idle-exit', IDLE_EXIT] : []),
   ]

@@ -4,7 +4,7 @@
 // when the next pass may run. Pure: register.tsx runs tg and keeps the state.
 import type { AgentItem, ApDraft, ApUndoWindow, Folder, FolderChats, FolderPass, ForYouWhy, ListView, PassState, TgDialog, Verdict } from '../../types'
 import { FOLDER_KINDS, TgJsonError, parseDialog } from '../packet/types'
-import { cells, labelCells } from '../ui/model'
+import { cells, flagLetters, graphemes, labelCells } from '../ui/model'
 import { verdictOf, type Me } from '../triage/needs'
 
 /** A row's `last_text` in $.state and $.store: what a row can draw, not the whole message (§8 T9 b). */
@@ -195,39 +195,40 @@ export function stripEntries(list: readonly Folder[]): Entry[] {
   return [...folders, ...views].map((entry, index) => ({ ...entry, digit: index < DIGITS ? index + 1 : null }))
 }
 
-/** A title cut to `max` cells, an emoji counting two. */
+/** A title cut to `max` cells, an emoji counting two, a flag as its letters (`flagLetters`); cut between glyphs, never inside one. */
 export function cutCells(text: string, max: number): string {
-  if (cells(text) <= max) return text
+  const shown = flagLetters(text)
+  if (cells(shown) <= max) return shown
   let out = ''
-  for (const char of text) {
-    if (cells(out + char) > max - 1) break
-    out += char
+  for (const glyph of graphemes(shown)) {
+    if (cells(out + glyph) > max - 1) break
+    out += glyph
   }
   return `${out}…`
 }
 
-/** One tab as the strip writes it: `2: ‹Work 3›`, the digit only while the digits are live. */
-export function tabText(entry: Entry, isCurrent: boolean, isLive: boolean): string {
+/** One tab as the CHATS title writes it (§10.5): `Work 3`. No digit is drawn, and the current one is marked by colour. */
+export function tabText(entry: Entry): string {
   const count = entry.unread === null || entry.unread === 0 ? '' : ` ${entry.unread}`
-  const name = `${cutCells(entry.title, TITLE_CELLS)}${count}`
-  return `${isLive && entry.digit !== null ? `${entry.digit}: ` : ''}${isCurrent ? `‹${name}›` : name}`
+  return `${cutCells(entry.title, TITLE_CELLS)}${count}`
 }
 
 const GAP = 2
+/** `‹` or `›` past an edge: one cell after its gap. */
+const EDGE = GAP + 1
 
 /**
  * The tabs that fit `width`, the current one always among them: `start` and
- * `end` index the entries shown; `+N` marks stand for the ones past each edge.
+ * `end` index the entries shown; each tab takes its gap, and `‹` / `›` stand
+ * for the ones past each edge (§10.5, §10.10 "§4.7 strip").
  */
 export function stripWindow(texts: readonly string[], current: number, width: number): { start: number; end: number } {
   const fill = (start: number) => {
-    // The tabs' ‹ › draw in one cell each (ui/model NARROW_GLYPHS); titles err wide.
-    let used = start > 0 ? labelCells(`+${start}`) + GAP : 0
+    let used = start > 0 ? EDGE : 0
     let end = start
     while (end < texts.length) {
-      const next = labelCells(texts[end] ?? '') + (end > start ? GAP : 0)
-      const rest = texts.length - end - 1
-      const mark = rest > 0 ? GAP + labelCells(`+${rest}`) : 0
+      const next = GAP + labelCells(texts[end] ?? '')
+      const mark = end + 1 < texts.length ? EDGE : 0
       if (used + next + mark > width && end > start) break
       used += next
       end += 1

@@ -1,0 +1,1 @@
+{ "name": "tg-probes", "version": "0.1.0", "description": "T11 engine probes P1-P8 for the dialogs-pane v2 visual system (throwaway)", "types": "./types/index.d.ts" }

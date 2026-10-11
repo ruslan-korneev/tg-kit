@@ -1,8 +1,8 @@
 // Placeholder chats only (repo rule): @example_bot, a made-up group, Saved Messages.
-import type { ProcessRunResult } from 'claude-code'
-import type { ElementQuery, FoundElement } from 'claude-code/testing'
+import type { ProcessRunResult, RenderPropsOf } from 'claude-code'
+import type { ElementQuery, Engine, FoundElement, Mounted } from 'claude-code/testing'
 
-import type { FolderKind, TgDialog, TgMessage } from '../types'
+import type { FolderKind, TgDialog, TgMessage, Topic } from '../types'
 
 export const DIALOGS: TgDialog[] = [
   {
@@ -16,7 +16,7 @@ export const DIALOGS: TgDialog[] = [
     muted: false,
     last_id: 677792,
     last_date: '2026-10-10T11:02:00Z',
-    last_text: 'Main menu',
+    forum: false, last_text: 'Main menu',
   },
   {
     id: 1002,
@@ -29,7 +29,7 @@ export const DIALOGS: TgDialog[] = [
     muted: false,
     last_id: 500,
     last_date: '2026-10-10T10:58:00Z',
-    last_text: 'deploy is green',
+    forum: false, last_text: 'deploy is green',
   },
   {
     id: 1003,
@@ -42,7 +42,7 @@ export const DIALOGS: TgDialog[] = [
     muted: false,
     last_id: 42,
     last_date: '2026-10-09T08:20:00Z',
-    last_text: 'note',
+    forum: false, last_text: 'note',
   },
 ]
 
@@ -52,6 +52,7 @@ const me = { id: 1003, kind: 'self', username: null, name: 'Me' } as const
 const base: Omit<TgMessage, 'id' | 'date' | 'sender' | 'out' | 'text'> = {
   chat_id: 1001,
   reply_to: null,
+  topic_id: null,
   forward: null,
   edited: null,
   edits: 0,
@@ -88,8 +89,8 @@ export const MESSAGES: TgMessage[] = [
 
 // A person, a group with a member and the bot, a channel: §4.6's senders.
 export const MORE_DIALOGS: TgDialog[] = [
-  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', last_text: 'Can we call tomorrow at 10?' },
-  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', last_text: 'release 2.0 is out' },
+  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', forum: false, last_text: 'Can we call tomorrow at 10?' },
+  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', forum: false, last_text: 'release 2.0 is out' },
 ]
 
 const contact = { id: 1004, kind: 'user', username: null, name: 'Contact A' } as const
@@ -178,4 +179,151 @@ export async function findChat(ui: Finder, id: number): Promise<FoundElement | u
 /** The chat ids of `dialog:<gen>:<id>` keys, in order. */
 export function chatIds(keys: readonly (string | undefined)[]): number[] {
   return keys.flatMap(key => (key?.startsWith('dialog:') === true ? [Number(key.split(':')[2])] : []))
+}
+
+/**
+ * A chat's row key, the cursor moved by j, then k, until the row is drawn: the
+ * dock's CHATS card keeps three rows while a chat is open (§10.5), so a chat
+ * further down the list is reached as the owner reaches it, h first when ▸ is
+ * in the chat.
+ */
+export async function reachChat(ui: Finder & { press: (query: { key: string }) => Promise<unknown> }, id: number): Promise<string> {
+  const ringed = async () => (await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true)?.key
+  // ▸ in the chat: h first, up to the list (marks or a layer take an h each, so at most three).
+  for (let step = 0; step < 3 && (await chatKey(ui, id)).startsWith('dialog:none:') && (await ringed())?.startsWith('dialog:') !== true; step++) {
+    if ((await ui.find({ key: 'key:back' })) === undefined) break
+    await ui.press({ key: 'key:back' })
+  }
+  for (const move of ['key:down', 'key:up']) {
+    for (;;) {
+      const key = await chatKey(ui, id)
+      if (!key.startsWith('dialog:none:')) return key
+      if ((await ui.find({ key: move })) === undefined) break
+      const before = await ringed()
+      await ui.press({ key: move })
+      if ((await ringed()) === before) break
+    }
+  }
+  return chatKey(ui, id)
+}
+
+// --- the v2 frame's cards (docs/design/dialogs-pane-ux.md §10.5) ---
+
+/** A drawn element as a test walks it: its tag, props and children (strings and elements). */
+export type Node = { type?: unknown; props?: Record<string, unknown>; children?: unknown[] }
+/** What the card helpers read of a mounted pane, on either surface. */
+type Finds = { find: (query: ElementQuery) => Promise<FoundElement | undefined> }
+
+const isNode = (value: unknown): value is Node => typeof value === 'object' && value !== null
+const childrenOf = (node: Node | undefined): Node[] => (node?.children ?? []).filter(isNode)
+
+export const textOf = (node: Node): string => (node.children ?? []).map(one => (typeof one === 'string' ? one : isNode(one) ? textOf(one) : '')).join('')
+
+/** A card's title parts as written over its top border (the `position: absolute` Box at its left). */
+async function titleParts(ui: Finds, key: string): Promise<Node[]> {
+  const title = childrenOf(await ui.find({ key })).find(one => one.props?.position === 'absolute' && one.props.left !== undefined)
+  return childrenOf(childrenOf(title)[0])
+}
+
+/** A card's title as drawn, without the spaces that pad it on the border. */
+export async function titleOf(ui: Finds, key: string): Promise<string | undefined> {
+  const parts = await titleParts(ui, key)
+  return parts.length === 0 ? undefined : parts.map(textOf).join('')
+}
+
+/** A card's corner label, if it draws one. */
+export async function cornerOf(ui: Finds, key: string): Promise<string | undefined> {
+  const corner = childrenOf(await ui.find({ key })).find(one => one.props?.position === 'absolute' && one.props.right !== undefined)
+  return corner === undefined ? undefined : textOf(corner).trim()
+}
+
+/** A card's border colour. */
+export async function borderOf(ui: Finds, key: string): Promise<unknown> {
+  return childrenOf(await ui.find({ key })).find(one => one.props?.borderStyle !== undefined)?.props?.borderColor
+}
+
+/** The CHATS card's folder tabs as written in its title: text, not ring stops (§4.7, §10.5). */
+export async function tabsOf(ui: Finds): Promise<string[]> {
+  return (await titleParts(ui, 'card:chats')).map(textOf).filter(text => text.trim() !== '' && text !== 'CHATS' && !text.includes('‹') && !text.includes('›'))
+}
+
+/** The CHATS title's current tab: the one drawn bold (in `accent`), CHATS itself aside. */
+export async function currentTabOf(ui: Finds): Promise<string | undefined> {
+  return (await titleParts(ui, 'card:chats')).find(one => one.props?.bold === true && textOf(one) !== 'CHATS')?.children?.join('')
+}
+
+/** The legend row with nothing to say: the sections' swatches (§10.5). */
+export const LEGEND_TEXT = '■ for you  ■ chats  ■ autopilot  ■ log'
+
+/** The dock's legend row as drawn. */
+export async function legendOf(ui: Finds): Promise<string | undefined> {
+  return (await ui.find({ key: 'legend' }))?.text
+}
+
+// --- a forum (docs/design/dialogs-pane-ux.md §10.9) ---
+
+/** A placeholder forum: the pass counts 2 unread, its topics sum to 9 with a mention. */
+export const FORUM: TgDialog = {
+  id: 1008,
+  kind: 'supergroup',
+  title: 'Project team',
+  username: null,
+  unread: 2,
+  mentions: 0,
+  pinned: false,
+  muted: false,
+  last_id: 707,
+  last_date: '2026-10-10T11:52:00Z',
+  forum: true,
+  last_text: 'can you look at the header?',
+}
+
+const topic = (over: Partial<Topic> & Pick<Topic, 'id' | 'title'>): Topic => ({ icon_color: null, unread: 0, mentions: 0, pinned: false, closed: false, hidden: false, last_id: null, last_date: null, last_text: '', ...over })
+
+/** `tg topics 1008` in tg's order: pinned first, then by the newest message; General, and one closed. */
+export const TOPICS: Topic[] = [
+  topic({ id: 12, title: 'Releases', icon_color: 0x6fb9f0, unread: 5, pinned: true, last_id: 705, last_date: '2026-10-10T11:40:00Z', last_text: 'v2.4 is tagged' }),
+  topic({ id: 20, title: 'Design review', icon_color: 0xff93b2, unread: 1, mentions: 1, last_id: 707, last_date: '2026-10-10T11:52:00Z', last_text: 'can you look at the header?' }),
+  topic({ id: 1, title: 'General', unread: 3, last_id: 703, last_date: '2026-10-10T10:00:00Z', last_text: 'morning' }),
+  topic({ id: 30, title: 'Infra', icon_color: 0x123456, last_id: 704, last_date: '2026-10-10T09:00:00Z', last_text: 'disk at 80%' }),
+  topic({ id: 40, title: 'Old roadmap', icon_color: 0xfb6f5f, closed: true, last_id: 701, last_date: '2026-09-01T09:00:00Z', last_text: 'archived' }),
+]
+
+const ivan = { id: 2002, kind: 'user', username: null, name: 'Ivan Petrov' } as const
+
+/** The forum's messages, oldest first, each in its topic; a message straight into a topic replies to its id. */
+export const FORUM_MESSAGES: TgMessage[] = [
+  { ...base, chat_id: 1008, id: 701, date: '2026-09-01T09:00:00Z', sender: ivan, out: false, text: 'archived', topic_id: 40, reply_to: 40 },
+  { ...base, chat_id: 1008, id: 703, date: '2026-10-10T10:00:00Z', sender: ivan, out: false, text: 'morning', topic_id: 1 },
+  { ...base, chat_id: 1008, id: 704, date: '2026-10-10T11:00:00Z', sender: ivan, out: false, text: 'disk at 80%', topic_id: 30, reply_to: 30 },
+  { ...base, chat_id: 1008, id: 705, date: '2026-10-10T11:40:00Z', sender: ivan, out: false, text: 'v2.4 is tagged', topic_id: 12, reply_to: 12 },
+  { ...base, chat_id: 1008, id: 707, date: '2026-10-10T11:52:00Z', sender: ivan, out: false, text: 'can you look at the header?', topic_id: 20, reply_to: 20 },
+]
+
+/** What `tg read 1008 [--topic N]` answers: the topic's messages, or every topic's. */
+export function forumRead(argv: readonly string[]): TgMessage[] {
+  const at = argv.indexOf('--topic')
+  return at < 0 ? FORUM_MESSAGES : FORUM_MESSAGES.filter(one => one.topic_id === Number(argv[at + 1]))
+}
+
+/** A forum topic's row key as drawn now, `topic:<gen>:<chat>:<id>` (`all` for `≡ all topics`). */
+export async function topicKey(ui: Finder, id: number | 'all', chatId = FORUM.id): Promise<string> {
+  return (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').find(key => key.startsWith('topic:') && key.endsWith(`:${chatId}:${id}`)) ?? `topic:none:${chatId}:${id}`
+}
+
+// --- the mock clock with the pane closed ---
+
+/**
+ * Runs `run` (the mock clock moving, mostly) with the pane closed, then draws
+ * the pane again with `props` and returns the new handle; the old one is gone.
+ * A mounted pane redraws on every tick of its 1 s clocks (the AUTOPILOT card's
+ * lanes, a pass's countdown, the undo window): a minute on the clock is sixty
+ * drawings no test reads, and in a loaded whole-suite run those, not the test,
+ * cross the kit's 5000 ms. Where ▸ is lives in the mod's state, not in the
+ * mount, so the pane comes back as it was.
+ */
+export async function paneClosed($: Engine, ui: Mounted<'terminal', 'Pane'>, props: RenderPropsOf['Pane'], run: () => Promise<void>): Promise<Mounted<'terminal', 'Pane'>> {
+  await ui.unmount()
+  await run()
+  return $.ui.mount({ plugin: 'dialogs-pane', surface: 'terminal', component: 'Pane', requestId: 'tg', props })
 }

@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { failureOf, settle, tg } from '../hooks/tg/tg'
 import {
   NO_SELECTION,
-  failureColor,
+  failureRole,
   failureText,
   grownDialog,
   peerArg,
@@ -76,7 +76,7 @@ describe('§7.4 states: one sentence each; the key after it is the caller\'s', (
     expect(failureText({ kind: 'flood', seconds: 23 }, 10_000, 23_000)).toBe('Telegram asks to wait 23 s · retrying in 13 s')
     expect(failureText({ kind: 'flood', seconds: 40 }, 0, 60_000)).toBe('Telegram asks to wait 40 s · retrying in 60 s')
     expect(failureText({ kind: 'error', message: 'boom' }, 0)).toBe('tg: boom')
-    expect([failureColor({ kind: 'flood', seconds: 1 }), failureColor({ kind: 'error', message: '' })]).toEqual(['yellow', 'red'])
+    expect([failureRole({ kind: 'flood', seconds: 1 }), failureRole({ kind: 'error', message: '' }), failureRole({ kind: 'auth' })]).toEqual(['held', 'unread', undefined])
   })
 })
 

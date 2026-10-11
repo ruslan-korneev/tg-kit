@@ -112,6 +112,8 @@ function essentials(els: Els, props: LadderProps): RenderElement[] {
 type LadderProps = {
   dialog: ApDialog
   kind: ChatKind
+  /** A closed forum topic (§10.9): the ladder reads only, and the card says why. */
+  isClosed?: boolean
   ladder: readonly ApRung[]
   pick: ApRung
   running: ApRung | null
@@ -131,7 +133,7 @@ type LadderProps = {
  */
 export function CardLadder(els: Els, props: LadderProps): RenderElement {
   const { Box, Text, Button } = els
-  const note = readOnlyKindText(props.kind)
+  const note = readOnlyKindText(props.kind, props.isClosed === true)
   return (
     <Box key="ap:card" flexDirection="column">
       {...props.ladder.map(rung => {

@@ -7,7 +7,7 @@ import type { CommandSpec, ModelCompleteInput, ModelCompleteResult, On, ProcessR
 import { describe, expect, mock, test, type Engine, type MockClock, type Mounted } from 'claude-code/testing'
 
 import type { TgMessage } from '../types'
-import { DIALOGS, STARTED, chatKey, findChat, folderRun } from './fixtures'
+import { DIALOGS, STARTED, findChat, folderRun, legendOf, reachChat, titleOf } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -49,6 +49,7 @@ function message(id: number, text: string, over: Partial<TgMessage> = {}): TgMes
     out: false,
     text,
     reply_to: null,
+    topic_id: null,
     forward: null,
     edited: null,
     edits: 0,
@@ -104,6 +105,8 @@ function world(
   const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], opens: [], store: new Map(Object.entries(STARTED)), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  // session.start reads HOME (── delegate ──); unanswered, the hook is skipped and the session starts only in part.
+  on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
   on('store.set', (_$, e) => {
     seen.store.set(e.key, e.value)
@@ -223,6 +226,18 @@ async function handOver($: Engine, clock: MockClock, seen: World, level: '1' | '
   return { ui, child }
 }
 
+/**
+ * handOver for a test that reads no pane after it: the pane is closed before
+ * the clock runs. Every autopilot tick and state change (typing, a phase, the
+ * ledger, the card's 1 s clocks) would redraw it, and in a loaded whole-suite
+ * run those drawings, not the test, cross the kit's 5000 ms.
+ */
+async function handOverClosed($: Engine, clock: MockClock, seen: World, level: '1' | '2' | '3') {
+  const { ui, child } = await handOver($, clock, seen, level)
+  await ui.unmount()
+  return { child }
+}
+
 function watchMessage(child: Child | undefined, one: TgMessage) {
   child?.line({ event: 'message', ...one })
 }
@@ -235,7 +250,8 @@ describe('auto', () => {
   test('a burst waits its gap, the Speaker writes, tg send goes through the guard, u undoes it', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { ui, child } = await handOver($, clock, seen, '3')
+    // No pane while the clock runs; the band is read, and the pane again at the end.
+    const { child } = await handOverClosed($, clock, seen, '3')
     expect(child?.argv).toEqual(['tg', 'watch', '1002', '--jsonl'])
     expect(seen.store.get('autopilot.dialogs')).toMatchObject({ [String(GROUP)]: { level: 'auto', perHour: 50, gapS: 20, threshold: 0.8, quiet: null } })
 
@@ -260,7 +276,7 @@ describe('auto', () => {
     // The undo window is the band's (§8 T5): the status line keeps alarms only.
     expect(seen.status.at(-1)).toBeUndefined()
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect(await band.find({ type: 'Text', text: 'Dev Team replied "Merged, thanks" · conf 0.93' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: 'Dev Team · 1002 replied "Merged, thanks" · conf 0.93' })).toBeDefined()
     expect((await band.find({ key: 'ap:band:undo-press' }))?.text).toContain('undo 30s')
 
     await clock.advance(2_000)
@@ -269,11 +285,13 @@ describe('auto', () => {
     await band.press({ key: 'ap:band:undo-press' })
     expect(seen.runs.at(-1)?.argv).toEqual(['tg', 'delete', '1002', '900', '--yes', '--json'])
 
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
     // l from the card: Activity's log, one line a burst (§5.7).
-    const ledger = await ui.find({ type: 'Text', text: /→ "Merged, thanks"/ })
-    expect(ledger?.text).toMatch(/^ {2}\d\d:\d\d ⟳ Dev Team · → "Merged, thanks" · conf 0\.93 · ✓ sent · undone$/)
+    const ledger = await ui.find({ type: 'Text', text: /sent "Merged, thanks"/ })
+    // The time and the chat are the log's columns, the text what happened (§10.6).
+    expect(ledger?.text).toMatch(/^\d\d:\d\d {2}Dev Team {6}sent "Merged, thanks" · 0\.93 · undone$/)
     await band.unmount()
     await ui.unmount()
   })
@@ -281,7 +299,7 @@ describe('auto', () => {
   test('typing holds the reply until it lapses; messages in one gap are one burst', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'two things:'))
     await clock.advance(10_000)
     watchMessage(child, message(501, 'is it merged? and deployed?'))
@@ -304,7 +322,7 @@ describe('auto', () => {
   test('typing holds 60 s at most', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'hi'))
     for (let s = 0; s < 90; s += 5) {
       child?.line({ event: 'typing', chat_id: GROUP, date: '2026-10-10T12:00:00Z', sender: alice, action: 'typing' })
@@ -326,7 +344,7 @@ describe('auto', () => {
         return answer({ action: 'reply', text: 'Tuesday works', confidence: 0.9, topics: [], reason: '' })
       },
     })
-    await handOver($, clock, seen, '3')
+    await handOverClosed($, clock, seen, '3')
     watchMessage(seen.children.at(-1), message(500, 'call on Tuesday?'))
     await clock.advance(20_000)
     for (let round = 0; round < 3; round++) await clock.advance(20_000)
@@ -352,7 +370,7 @@ describe('auto', () => {
         return answer({ action: 'reply', text: e.prompt.includes('<message id="501"') ? 'Lunch at 1 works' : 'Merged', confidence: 0.95, topics: [], reason: '' })
       },
     })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -365,7 +383,7 @@ describe('auto', () => {
   test('an escalation topic, low confidence or the hourly limit make a draft, never a send', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => answer({ action: 'reply', text: 'Tomorrow at 10 is fine', confidence: 0.95, topics: ['dates'], reason: '' }) })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'call tomorrow at 10?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -407,7 +425,7 @@ describe('auto', () => {
     await clock.settle()
     expect(seen.opens.slice(opens)).toEqual([{ id: 'tg', focus: true }])
     // The argv is built once: the dialog shows it verbatim, and it is what runs.
-    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ? (kept for later: tg allow remove takes it out)', options: ['No', 'Yes, add it'] }])
+    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team · 1002 without you, so Dev Team · 1002 must be in allow.toml. Run  tg allow add 1002 --yes  ? (kept for later: tg allow remove takes it out)', options: ['No', 'Yes, add it'] }])
     expect(adds(seen)).toEqual([['tg', 'allow', 'add', '1002', '--yes']])
     // Read again after the add, then straight on into the level: the card closes and the watch starts.
     expect(seen.runs.at(seen.runs.findIndex(one => one.argv[2] === 'add') + 1)?.argv).toEqual(['tg', 'allow', 'list', '--json'])
@@ -416,7 +434,7 @@ describe('auto', () => {
     expect(seen.toasts.at(-1)).toBe('tg: ⟳ auto on for Dev Team. 0 or /tg stop stops every chat.')
     // The audit trail, now that no `!` row shows the add.
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⟳ Dev Team · allow.toml \+ Dev Team \(1002\), your Yes$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\d\d:\d\d {2}Dev Team +allow.toml \+ Dev Team \(1002\), your Yes$/ })).toBeDefined()
     await ui.unmount()
   })
 
@@ -438,7 +456,7 @@ describe('auto', () => {
     await ui.press({ key: 'key:start' })
     await clock.settle()
     expect(seen.questions).toHaveLength(1)
-    expect((await ui.find({ key: 'header' }))?.text).toContain('agent for @example_bot')
+    expect(await titleOf(ui, 'card:agent')).toBe('AGENT · Example Bot · @example_bot')
     expect(adds(seen)).toEqual([])
     expect(seen.children).toHaveLength(0)
     await ui.unmount()
@@ -475,7 +493,7 @@ describe('auto', () => {
   test("only the card's ⏎ raises the dialog: an auto reply outside allow.toml, a draft sent from the band and /tg stop never ask, and never add", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [GROUP], ask: 'Yes, add it', send: ran => (ran.argv.includes('--yes') ? json({ sent: [message(950, ran.stdin ?? '', { out: true })], replies: [] }) : run(7, '', 'error: 1002 is not in the allowlist; pass --yes\n')) })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     // allow.toml loses Dev Team behind the card's back: auto's send is refused and becomes a draft.
     seen.history.length = 0
     watchMessage(child, message(500, 'is it merged?'))
@@ -584,7 +602,7 @@ describe('auto', () => {
   test('a send the guard refuses keeps the text as a draft with the reason', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { send: () => run(7, '', 'error: 1002 is not in the allowlist; pass --yes\n') })
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -597,7 +615,7 @@ describe('auto', () => {
   test('you answer yourself during the gap: the autopilot stands down for that burst', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(5_000)
     watchMessage(child, message(501, 'yes, just now', { out: true }))
@@ -610,13 +628,13 @@ describe('draft and listen', () => {
   test("a 3 ⏎ outside allow.toml starts draft, and its draft sends: the band shows the reply; e edits, ⏎ sends it as the owner's own, with --yes", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: 'Tomorrow is packed, can I write after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
-    const { child } = await handOver($, clock, seen, '2')
+    const { child } = await handOverClosed($, clock, seen, '2')
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
     await clock.settle()
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     // Two rows (§8 T5): the message it answers and why it waits, then the draft alone at the full width.
-    expect(await band.find({ type: 'Text', text: 'Dev Team: "Can we call tomorrow at 10?" · escalated: dates · conf 0.62' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: 'Dev Team · 1002: "Can we call tomorrow at 10?" · escalated: dates · conf 0.62' })).toBeDefined()
     expect((await band.find({ key: 'band:row2' }))?.text).toBe('  → Tomorrow is packed, can I write after 18?')
     expect(sends(seen)).toHaveLength(0)
     await band.press({ key: 'ap:draft:edit' })
@@ -675,7 +693,7 @@ describe('draft and listen', () => {
     // The pane is on the chat, the cursor on the draft's row: its whole text, wrapped, and the verdict.
     const row = await draftRow(ui)
     expect(row?.props.autoFocus).toBe(true)
-    expect(row?.text).toContain('✎ draft to Dev Team · escalated: dates · conf 0.62')
+    expect(row?.text).toContain('✎ draft to Dev Team · 1002 · escalated: dates · conf 0.62')
     expect(await ui.find({ type: 'Text', text: long })).toMatchObject({ props: { wrap: 'wrap' } })
     expect(await ui.find({ type: 'Text', text: '   ✓ the guard allows it' })).toBeDefined()
     // §4.6 "the cursor on a draft": ⏎ send draft, e: edit, d: drop, a: agent.
@@ -692,7 +710,7 @@ describe('draft and listen', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => answer({ action: 'reply', text: 'Tomorrow is packed, after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
     const { ui, child } = await handOver($, clock, seen, '2')
-    await ui.press({ key: await chatKey(ui, GROUP) })
+    await ui.press({ key: await reachChat(ui, GROUP) })
     await clock.settle()
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
@@ -759,7 +777,7 @@ describe('draft and listen', () => {
     const refused = run(0, JSON.stringify({ action: 'send', target: {}, steps: [], guard: { allowed: false, reason: 'readonly = true in config.toml: every write is refused' } }))
     const seen = world(on, { model: () => answer({ action: 'reply', text: 'After 18?', confidence: 0.62, topics: ['dates'], reason: '' }), dryRun: async () => refused })
     const { ui, child } = await handOver($, clock, seen, '2')
-    await ui.press({ key: await chatKey(ui, GROUP) })
+    await ui.press({ key: await reachChat(ui, GROUP) })
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -783,7 +801,7 @@ describe('draft and listen', () => {
     await clock.settle()
     await ui.press({ key: 'key:back' })
     await ui.press({ key: 'key:foryou' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
+    expect(await titleOf(ui, 'card:foryou')).toBe('FOR YOU')
     const row = (await ui.findAll({ type: 'Button' })).find(one => one.key?.startsWith('fy:') === true)
     expect(row?.text).toContain('Tomorrow is packed, after 18?')
     expect(row?.props.autoFocus).toBe(true)
@@ -815,11 +833,11 @@ describe('draft and listen', () => {
     expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: long }])
     // Back in For you (h reshapes it: the sent row is gone), a new draft for the chat waits behind ↑ while the cursor stays; g brings it; d drops it.
     await ui.press({ key: 'key:back' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
+    expect(await titleOf(ui, 'card:foryou')).toBe('FOR YOU')
     watchMessage(child, message(501, 'And on Friday?'))
     await clock.advance(20_000)
     await clock.settle()
-    expect((await ui.find({ key: 'running' }))?.text).toContain('↑ 1 moved · g: apply')
+    expect(await legendOf(ui)).toContain('↑ 1 moved · g: apply')
     await ui.press({ key: 'key:reload' })
     expect((await ui.find({ key: 'key:dismiss' }))?.text).toBe('drop')
     await ui.press({ key: 'key:dismiss' })
@@ -831,7 +849,7 @@ describe('draft and listen', () => {
   test('listen: a summary in the band, nothing written', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => ({ isAnswered: true, text: 'Release moved to Friday.', usage: USAGE }) })
-    const { child } = await handOver($, clock, seen, '1')
+    const { child } = await handOverClosed($, clock, seen, '1')
     watchMessage(child, message(500, 'release moves to Friday'))
     await clock.advance(20_000)
     await clock.settle()
@@ -846,7 +864,7 @@ describe('kill switch', () => {
   test('/tg autopilot off stops every dialog: the watch, the waiting burst, the model call', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     watchMessage(child, message(500, 'is it merged?'))
     await clock.advance(5_000)
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot:\n⟳ Dev Team: auto, 50/h, gathering')
@@ -864,7 +882,7 @@ describe('kill switch', () => {
     const seen = world(on)
     on('turn.start', (_$, e) => ({ turnId: e.turnId }))
     on('turn.complete', (_$, e) => ({ text: e.answer }))
-    const { child } = await handOver($, clock, seen, '3')
+    const { child } = await handOverClosed($, clock, seen, '3')
     expect(seen.commands.find(one => one.name === 'tg')?.immediate).toBe(true)
     await $.turn.start({ text: 'working on something', turnId: 't-0' })
     watchMessage(child, message(500, 'is it merged?'))
@@ -911,8 +929,9 @@ describe('kill switch', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const { ui, child } = await handOver($, clock, seen, '3')
-    expect((await findChat(ui, 1002))?.text).toContain('⟳ # Dev Team')
-    expect((await findChat(ui, 1002))?.text).toContain('auto 0/50')
+    // The row's symbol is its unread count, which outranks ⚡ (§10.3); the header counts the chat (§10.5).
+    expect((await findChat(ui, 1002))?.text).toMatch(/◇ Dev Team .* 5$/)
+    expect((await ui.find({ key: 'header' }))?.text).toContain('AUTOPILOT 1 CHATS')
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(child?.isKilled).toBe(true)

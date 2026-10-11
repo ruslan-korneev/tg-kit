@@ -3,7 +3,6 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   CHAT_KINDS,
   KEYS,
-  MAX_BAR,
   NO_FACTS,
   STRAY_KEYS,
   WHERES,
@@ -77,14 +76,16 @@ describe('the key table', () => {
   }
 })
 
-describe('the action bar', () => {
-  test('§4.6 orders: ⏎ first, m last, ≤ 7 in every view and kind', () => {
+describe('the key line', () => {
+  test('§4.6 orders: ⏎ first, m last, and never 0 (§10.10), in every view and kind, wide and at 44 and 60 columns', () => {
     for (const where of WHERES) {
       for (const kind of [...CHAT_KINDS, null]) {
         for (const seat of ['dock', 'inline'] as const) {
-          const bar = actionBar(at(where, kind, { isRunning: true, undoLeft: 20, hasPair: true }, seat))
-          expect(bar.length).toBeLessThanOrEqual(MAX_BAR)
-          if (where !== 'band') expect(bar.at(-1)?.id).toBe('menu')
+          for (const width of [Infinity, 60, 44]) {
+            const bar = actionBar(at(where, kind, { isRunning: true, undoLeft: 20, hasPair: true }, seat), width)
+            expect(ids(bar)).not.toContain('stop')
+            if (where !== 'band') expect(bar.at(-1)?.id).toBe('menu')
+          }
         }
       }
     }
@@ -95,7 +96,8 @@ describe('the action bar', () => {
     expect(ids(actionBar(at('chat', 'group')))).toEqual(['send', 'summary', 'watch', 'agent', 'write', 'menu'])
     expect(ids(actionBar(at('chat', 'channel')))).toEqual(['send', 'summary', 'watch', 'agent', 'mark', 'menu'])
     expect(ids(actionBar(at('chat', 'saved')))).toEqual(['send', 'write', 'mark', 'menu'])
-    expect(ids(actionBar(at('chats', 'bot')))).toEqual(['open', 'back', 'summary', 'watch', 'agent', 'menu'])
+    // `s: search` is on the line in both seats: the line is below the list (§10.5).
+    expect(ids(actionBar(at('chats', 'bot')))).toEqual(['open', 'back', 'search', 'summary', 'watch', 'agent', 'menu'])
     expect(ids(actionBar(at('chats', 'bot', {}, 'inline')))).toEqual(['open', 'back', 'search', 'summary', 'watch', 'agent', 'menu'])
     // T9: the Folders list, and For you by its cursor row (§4.6).
     expect(ids(actionBar(at('folders', null)))).toEqual(['open', 'foryou', 'back', 'menu'])
@@ -104,25 +106,23 @@ describe('the action bar', () => {
     expect(ids(actionBar(at('foryou', 'person', { row: 'undo', undoLeft: 20 })))).toEqual(['open', 'back', 'undo', 'menu'])
   })
 
-  test('f joins on a pair; 0 and u join while they work; back joins inline', () => {
+  test('f joins on a pair; u joins while it works; back joins inline; as many as fit, not seven', () => {
     expect(ids(actionBar(at('chat', 'bot', { hasPair: true })))).toContain('diff')
-    const busy = ids(actionBar(at('chat', 'bot', { isRunning: true, undoLeft: 12 }, 'inline')))
-    expect(busy.slice(-4)).toEqual(['back', 'undo', 'stop', 'menu'])
-    expect(busy).toHaveLength(MAX_BAR)
+    const busy = ids(actionBar(at('chat', 'bot', { isRunning: true, undoLeft: 12, hasPair: true }, 'inline')))
+    expect(busy).toEqual(['send', 'write', 'record', 'diff', 'mark', 'back', 'undo', 'menu'])
     expect(actionBar(at('chat', 'bot', { undoLeft: 12 })).find(one => one.id === 'undo')?.label).toBe('undo 12s')
   })
 
-  test('narrow: verbs leave from the end; ⏎, h, u, 0 and m stay', () => {
-    const context = at('chat', 'bot', { isRunning: true }, 'inline')
+  test('narrow: verbs leave from the end; ⏎, h, u and m stay', () => {
+    const context = at('chat', 'bot', { isRunning: true, undoLeft: 9 }, 'inline')
     const bar = actionBar(context, 40)
     const cells = bar.reduce((sum, key, index) => sum + barCells(key) + (index === 0 ? 0 : 2), 0)
     expect(cells).toBeLessThanOrEqual(40)
     expect(ids(bar)[0]).toBe('send')
-    expect(ids(bar).slice(-3)).toEqual(['back', 'stop', 'menu'])
+    expect(ids(bar).slice(-3)).toEqual(['back', 'undo', 'menu'])
   })
 
-  test('a key that waits for a step is off the bar: 0 with nothing running, f without a pair', () => {
-    expect(ids(actionBar(at('chat', 'bot')))).not.toContain('stop')
+  test('a key that waits for a step is off the line: f without a pair', () => {
     expect(ids(actionBar(at('chat', 'bot')))).not.toContain('diff')
   })
 })
@@ -196,13 +196,14 @@ describe('the send sheet (§5.1)', () => {
 })
 
 describe('what runs and the kill switch (§4.6, §5.6, T4)', () => {
-  test('in the dock the running strip says 0: stop all, so the bar never does; inline the bar does', () => {
+  test('0: stop all is a label in the AUTOPILOT corner or the legend row, never on the key line, in either seat (§10.10)', () => {
     for (const where of ['chats', 'chat', 'card', 'activity', 'diff'] as const) {
-      expect(ids(actionBar(at(where, 'bot', { isRunning: true }, 'dock')))).not.toContain('stop')
-      expect(ids(actionBar(at(where, 'bot', { isRunning: true }, 'inline')))).toContain('stop')
+      for (const seat of ['dock', 'inline'] as const) {
+        expect(ids(actionBar(at(where, 'bot', { isRunning: true }, seat)))).not.toContain('stop')
+        // Still live: the frame keeps it as a hidden hotkey.
+        expect(ids(hiddenKeys(at(where, 'bot', { isRunning: true }, seat), new Set()))).toContain('stop')
+      }
     }
-    // Still live in the dock: the frame keeps it as a hidden hotkey.
-    expect(ids(hiddenKeys(at('chat', 'bot', { isRunning: true }, 'dock'), new Set()))).toContain('stop')
   })
 
   test('the menu: 0 stays in safety, quiet while nothing runs; u is listed only while its window is open', () => {
@@ -255,10 +256,8 @@ describe('rows that come and go (T4b)', () => {
     expect(ids(actionBar(at('chat', 'bot')))).not.toContain('back')
     const marked = actionBar(at('chat', 'bot', { marks: 2, isRunning: true, undoLeft: 9 }))
     expect(marked.find(one => one.id === 'back')?.label).toBe('clear')
-    expect(marked.length).toBeLessThanOrEqual(MAX_BAR)
     const ranging = actionBar(at('chat', 'bot', { marks: 1, isRangeOpen: true, isRunning: true, undoLeft: 9 }))
     expect(ids(ranging)).toEqual(expect.arrayContaining(['send', 'range', 'back', 'undo', 'menu']))
-    expect(ranging.length).toBeLessThanOrEqual(MAX_BAR)
   })
 
   test('while marking, x: mark follows ⏎ in every kind of chat, a group too, whose bar has no x otherwise', () => {

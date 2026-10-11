@@ -36,7 +36,7 @@ const row = (id: number, over: Partial<TgDialog> = {}): TgDialog => ({
   muted: false,
   last_id: 1,
   last_date: `2026-10-10T10:${String(id % 60).padStart(2, '0')}:00Z`,
-  last_text: 'placeholder',
+  forum: false, last_text: 'placeholder',
   ...over,
 })
 
@@ -66,7 +66,7 @@ describe('the pass', () => {
   })
 
   test('$.state keeps last_text cut to 120 characters', () => {
-    expect(cutRow(row(1, { last_text: 'x'.repeat(300) })).last_text).toHaveLength(TEXT_MAX)
+    expect(cutRow(row(1, { forum: false, last_text: 'x'.repeat(300) })).last_text).toHaveLength(TEXT_MAX)
     const short = row(1)
     expect(cutRow(short)).toBe(short)
   })
@@ -98,12 +98,12 @@ describe('between passes', () => {
 describe('For you', () => {
   test('mentions and person chats with unread messages that are not muted, ranked with why; noise left out', () => {
     const rows = [
-      row(1, { kind: 'supergroup', unread: 3, mentions: 1, last_text: 'can you review?' }),
-      row(2, { unread: 1, last_text: 'free tomorrow?' }),
-      row(3, { unread: 1, last_text: 'hm' }),
-      row(4, { unread: 1, muted: true, last_text: 'are you there?' }),
+      row(1, { kind: 'supergroup', unread: 3, mentions: 1, forum: false, last_text: 'can you review?' }),
+      row(2, { unread: 1, forum: false, last_text: 'free tomorrow?' }),
+      row(3, { unread: 1, forum: false, last_text: 'hm' }),
+      row(4, { unread: 1, muted: true, forum: false, last_text: 'are you there?' }),
       row(5, { kind: 'channel', unread: 9 }),
-      row(6, { unread: 1, last_text: 'lol' }),
+      row(6, { unread: 1, forum: false, last_text: 'lol' }),
     ]
     const people = forYouPeople(rows, NOBODY, { '6:1': 'noise' }, {})
     expect(people.rows.map(one => one.id)).toEqual([2, 1, 3])
@@ -127,18 +127,17 @@ describe('the strip', () => {
     expect(stripEntries([{ id: 0, title: 'All chats', kind: 'all', unread: 4 }]).map(one => `${one.digit}: ${one.title}`)).toEqual(['1: All chats', '2: For you', '3: Bots'])
   })
 
-  test('a tab: the digit while live, the count, the current one marked; titles cut to 12 cells, an emoji counting two', () => {
+  test('a tab: the title and the count, no digit and no marks (§10.5); titles cut to 12 cells, an emoji counting two', () => {
     const [personal, work] = stripEntries(list)
     if (personal === undefined || work === undefined) throw new Error('no entries')
-    expect(tabText(work, true, true)).toBe('2: ‹Work 3›')
-    expect(tabText(work, false, false)).toBe('Work 3')
-    expect(tabText(personal, false, true)).toBe('1: Personal')
+    expect(tabText(work)).toBe('Work 3')
+    expect(tabText(personal)).toBe('Personal')
     expect(cutCells('Reading list for later', 12)).toBe('Reading lis…')
     expect(cutCells('🎵🎵🎵🎵🎵🎵🎵', 12)).toBe('🎵🎵🎵🎵🎵…')
   })
 
-  test('the window holds the current tab, with +N for the entries past each edge', () => {
-    const texts = stripEntries(list).map(one => tabText(one, false, true))
+  test('the window holds the current tab, with ‹ and › for the entries past each edge', () => {
+    const texts = stripEntries(list).map(one => tabText(one))
     const first = stripWindow(texts, 0, 50)
     expect(first.start).toBe(0)
     expect(first.end).toBeLessThan(texts.length)
@@ -146,6 +145,9 @@ describe('the strip', () => {
     expect(late.start).toBeGreaterThan(0)
     expect(late.end).toBeGreaterThan(10)
     expect(stripWindow(texts, 0, 500)).toEqual({ start: 0, end: texts.length })
+    // Each tab takes its two-cell gap, each edge mark three: `  Personal  Work 3  ›` is 21 cells.
+    expect(stripWindow(texts, 0, 21)).toEqual({ start: 0, end: 2 })
+    expect(stripWindow(texts, 0, 20)).toEqual({ start: 0, end: 1 })
   })
 })
 
@@ -188,7 +190,7 @@ describe('$.store', () => {
     const stored = parseStored({
       list: [{ id: 2, title: 'Work', kind: 'folder', unread: 3 }, { id: 'x' }],
       view: { kind: 'folder', id: 2 },
-      rows: [row(1, { last_text: 'y'.repeat(200) }), { id: 2 }],
+      rows: [row(1, { forum: false, last_text: 'y'.repeat(200) }), { id: 2 }],
     })
     expect(stored?.list).toEqual([{ id: 2, title: 'Work', kind: 'folder', unread: 3 }])
     expect(stored?.rows.map(one => one.last_text.length)).toEqual([TEXT_MAX])

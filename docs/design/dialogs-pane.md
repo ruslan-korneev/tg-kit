@@ -18,8 +18,8 @@ sections below point to it. The engines here (the packet, autopilot, delegate, t
 | Data | `$.process.run(['tg', 'dialogs', '--json'])`, `tg read`, `tg msg`, `tg press` — the mod never touches Telethon |
 | Send to current agent | `$.prompt.submit` (a visible user message) or `prompt.context` (pinned, re-sent each turn) |
 | Send to other agents | `$.agent.list()` → `$.session.send({ to: { agentId } })` |
-| Hidden mode | `$.ui.status(…)`, `AbovePrompt` band, `$.ui.toast(…)` |
-| Commands | `$.command.register({ name: 'tg', immediate: true })` → `/tg` opens, `/tg stop`, `/tg status`, `/tg help`, `/tg hide` |
+| Compact and Hidden | the `AbovePrompt` card and band, the `SessionMode` footer label, `$.ui.status(…)` for alarms only, `$.ui.toast(…)` |
+| Commands | `$.command.register({ name: 'tg', immediate: true })` → `/tg` opens, `/tg stop`, `/tg status`, `/tg help`, `/tg compact`, `/tg hide` |
 
 ## 2. Seats, not modes
 
@@ -30,9 +30,11 @@ to pick, and the layout follows where the engine seats the pane.
 | --- | --- | --- |
 | **Dock** | fullscreen, from 110 columns | the folder strip and chats on top, the open chat below, one action bar; a sheet or card takes the lower part |
 | **Inline** | the main screen | one view at a time (chats, a chat, a card), up to 12 rows |
-| **Hidden** | the pane closed (`q`, the engine's ✕, `/tg hide`) | the footer label (`tg 22 · ⟳1 · 2 for you`), the hint tail and the band above the prompt |
+| **Compact** | the pane closed (`q`, the engine's ✕, `/tg compact`) | a narrow card above the prompt, right-aligned: what waits and the top two chats (`dialogs-pane-ux.md` §10.7), with the footer label, the hint tail and the band |
+| **Hidden** | the card put away (`q` in the card, `/tg hide`) | the footer label (`● tg: 15 unread · @2 · autopilot 12/50`, §10.8), the hint tail and the band above the prompt |
 
-`/tg wide` and `/tg compact` stay as aliases of `/tg`; `/tg hidden` of `/tg hide`. The mockups of
+`/tg wide` stays an alias of `/tg`; `/tg hidden` of `/tg hide`. `$.store` keeps Compact or Hidden,
+so the pane closes back into the one the owner left it in. The mockups of
 both seats, the first open and every flow are in `dialogs-pane-ux.md` §5.
 
 ## 3. The packet
@@ -64,6 +66,20 @@ Intent: Fix — find the handler that produced this reply and fix the cause.
 Fields always carried: id, peer (kind, username, id), sender, date, edit date, reply-to chain,
 forward origin, text + entities, buttons (kind, data), media (type, size, filename, local path if
 downloaded), reactions, views, latency (bot replies), a replay command.
+
+In a forum (`dialogs-pane-ux.md` §10.9) the packet names the chat and the topic: `<tg-packet>`
+gains `topic="12" topic_title="Design review"` for the open topic, or, in the merged stream, for
+the topic every packed message shares; a mixed set carries neither. Each `<message>` carries its
+own `topic="12"` (`1` is General; the attribute is left out outside forums), and the replay
+command sends back into the trigger's topic (`--topic 12`). `topic_title` is the chat's words and
+is masked as the peer's title is. The autopilot's Speaker and delegate's relay read a topic's
+packet the same way.
+
+```xml
+<tg-packet v="1" intent="explain" source="dialogs-pane" redacted="true" topic="20" topic_title="Design review">
+  <peer kind="supergroup" id="[id-1]" title="Project team"/>
+  <message id="809" date="2026-10-10T20:57:00Z" from="user" edited="false" reply_to="20" topic="20">
+```
 
 ## 4. Design system
 

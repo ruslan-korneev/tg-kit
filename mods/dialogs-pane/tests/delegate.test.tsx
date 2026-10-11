@@ -11,7 +11,7 @@ import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, Ren
 import { describe, expect, mock, test, type Engine, type MockClock, type Plugin } from 'claude-code/testing'
 
 import type { TgDialog, TgMessage } from '../types'
-import { DIALOGS, STARTED, chatKey, findChat, folderRun } from './fixtures'
+import { DIALOGS, STARTED, cornerOf, findChat, folderRun, legendOf, paneClosed, reachChat } from './fixtures'
 import { bandKeyProblems } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
@@ -53,7 +53,7 @@ const fixture = <T,>(one: T | undefined): T => {
 /** The delegate chat is a person's (decision 8): the placeholder bot, Contact B, Saved Messages. */
 const CHATS: TgDialog[] = [
   fixture(DIALOGS[0]),
-  { id: PERSON, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 498, last_date: '2026-10-10T11:58:00Z', last_text: 'can you add a health check?' },
+  { id: PERSON, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 498, last_date: '2026-10-10T11:58:00Z', forum: false, last_text: 'can you add a health check?' },
   fixture(DIALOGS[2]),
 ]
 const me = { id: 1003, kind: 'self', username: null, name: 'Me' } as const
@@ -67,6 +67,7 @@ function message(id: number, text: string, over: Partial<TgMessage> = {}): TgMes
     out: false,
     text,
     reply_to: null,
+    topic_id: null,
     forward: null,
     edited: null,
     edits: 0,
@@ -364,10 +365,13 @@ async function handOver($: Engine, clock: MockClock, seen: World, props = PANE_P
 /** A burst asks for work; the Speaker starts a task; the Worker is spawned. */
 async function startTask($: Engine, clock: MockClock, seen: World) {
   const handed = await handOver($, clock, seen)
-  handed.child?.line({ event: 'message', ...message(500, 'please add a /health endpoint to the app') })
-  await clock.advance(20_000)
-  await clock.settle()
-  return handed
+  // The burst's 20 s with the pane closed (paneClosed): nothing reads it until the task has started.
+  const ui = await paneClosed($, handed.ui, PANE_PROPS, async () => {
+    handed.child?.line({ event: 'message', ...message(500, 'please add a /health endpoint to the app') })
+    await clock.advance(20_000)
+    await clock.settle()
+  })
+  return { ...handed, ui }
 }
 
 const worker = async ($: Engine, command: string): Promise<ToolCallResult> =>
@@ -403,7 +407,7 @@ describe('the card', () => {
     expect((await ui.find({ key: 'key:start:grant' }))?.text).toBe('⏎ add to allow.toml…')
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
-    expect(seen.questions).toEqual(['delegate sends in Contact B without you, so Contact B must be in allow.toml. Run  tg allow add 1007 --yes  ? (kept for later: tg allow remove takes it out)'])
+    expect(seen.questions).toEqual(['delegate sends in Contact B · 1007 without you, so Contact B · 1007 must be in allow.toml. Run  tg allow add 1007 --yes  ? (kept for later: tg allow remove takes it out)'])
     expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add').map(one => one.argv)).toEqual([['tg', 'allow', 'add', '1007', '--yes']])
     expect(seen.children).toHaveLength(1)
     await ui.unmount()
@@ -429,7 +433,7 @@ describe('the card', () => {
     const seen = world(on)
     const ui = await openCard($, clock)
     await ui.press({ key: 'ap:level:delegate' })
-    expect(await ui.find({ type: 'Text', text: /^Whoever writes in Contact B steers an agent that has tools/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Whoever writes in Contact B · 1007 steers an agent that has tools/ })).toBeDefined()
     expect(await ui.find({ key: 'dg:web' })).toBeUndefined()
     expect((await ui.find({ key: 'key:start:warning' }))?.text).toBe('⏎ I understand, set it up')
     await ui.press({ key: 'key:start:warning' })
@@ -487,7 +491,9 @@ describe('the handshake with the guard plugin', () => {
   test('a guard gone silent stops every Worker; the Worker’s next call is refused here too', WITH_GUARD, async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    await startTask($, clock, seen)
+    const { ui } = await startTask($, clock, seen)
+    // No pane while the guard's 60 s run: every tick would redraw it, and nothing here reads it.
+    await ui.unmount()
     expect((await worker($, 'uv run pytest')).deny).toBeUndefined()
     await guardMode($, 'silent')
     await clock.advance(60_000)
@@ -517,7 +523,7 @@ describe('a task', () => {
     expect(String(seen.spawned[0]?.prompt)).toContain('<tg-packet')
     // The task's card sits on top of its chat's thread (T4), not on top of the pane.
     expect(await ui.find({ key: 'dg:task:1' })).toBeUndefined()
-    await ui.press({ key: await chatKey(ui, PERSON) })
+    await ui.press({ key: await reachChat(ui, PERSON) })
     expect(await ui.find({ type: 'Text', text: '✓ worktree app-task-1 · branch tg/add-a-health-endpoint-1' })).toBeDefined()
     // What runs is the footer's (↯1), never the status line's: it holds alarms only (§4.1).
     expect(seen.status.at(-1)).toBeUndefined()
@@ -532,24 +538,24 @@ describe('a task', () => {
     await report($, 'holds', [{ id: 1, taskId: 1, stops: ['publish'], what: 'git push origin tg/x', since: NOW }])
     await report($, 'events', [{ seq: 1, at: NOW + 1, taskId: 1, peer: { id: PERSON, arg: '1007', label: 'Contact B', kind: 'user' }, summary: 'add a /health endpoint', stops: ['publish'], what: 'git push origin tg/y', answer: 'skipped', why: 'dangerouslySkipHardStops' }])
     await clock.settle()
-    await ui.press({ key: await chatKey(ui, PERSON) })
+    await ui.press({ key: await reachChat(ui, PERSON) })
     expect(await ui.find({ type: 'Text', text: '✓ read the code (3)' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '… ran uv run pytest' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '⏸ HARD STOP publish: git push origin tg/x? (answer in the dialog)' })).toBeDefined()
-    expect(seen.status.at(-1)).toBe('tg ⏸ HARD STOP publish: git push origin tg/x · ↯ Contact B · answer in the dialog')
+    expect(seen.status.at(-1)).toBe('tg ⏸ HARD STOP publish: git push origin tg/x · ↯ Contact B · 1007 · answer in the dialog')
     // One native notification as it starts waiting, for an owner in another window; not again on the next write.
-    expect(seen.notified).toEqual(['HARD STOP publish: git push origin tg/x (Contact B). Answer in Claude Code.'])
+    expect(seen.notified).toEqual(['HARD STOP publish: git push origin tg/x (Contact B · 1007). Answer in Claude Code.'])
     await report($, 'work', [{ taskId: 1, steps: [], current: 'still waiting' }])
     await clock.settle()
     expect(seen.notified).toHaveLength(1)
     // The band mirrors it first, two rows: what waits, then whose and where to answer.
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect((await band.find({ type: 'Text', text: /⏸ HARD STOP/ }))?.text).toBe('⏸ HARD STOP publish: git push origin tg/x')
-    expect(await band.find({ type: 'Text', text: '↯ Contact B · answer in the dialog' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '↯ Contact B · 1007 · answer in the dialog' })).toBeDefined()
     expect(await bandKeyProblems(band)).toEqual([])
     await band.unmount()
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ↯ Contact B · skipped stop: publish git push origin tg\/y$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\d\d:\d\d {2}Contact B +skipped stop: publish git push origin tg\/y$/ })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -560,7 +566,8 @@ describe('dangerouslySkipHardStops', () => {
     const seen = world(on)
     const { ui } = await startTask($, clock, seen)
     expect((await $.command.run(tgCommand('autopilot --dangerously-skip-hard-stops=publish'))).text).toContain('⚠ hard stops skipped until this session ends: publish')
-    expect((await findChat(ui, PERSON))?.text).toContain('⚠ no stops: publish')
+    // The row's symbol is a red ⚠ (§10.3); the status line spells it out.
+    expect((await findChat(ui, PERSON))?.text).toMatch(/ ⚠$/)
     expect(seen.status.at(-1)).toContain('⚠ no stops: publish')
     expect((await $.command.run(tgCommand('autopilot --dangerously-skip-hard-stops=none'))).text).toBe('tg autopilot: hard stops are on again for this session.')
     expect((await findChat(ui, PERSON))?.text).not.toContain('⚠')
@@ -600,7 +607,7 @@ describe('dangerouslySkipHardStops', () => {
     const { ui } = await startTask($, clock, seen)
     await $.classic.UserPromptSubmit({ prompt: 'hi', permission_mode: 'bypassPermissions' })
     await clock.settle()
-    expect((await findChat(ui, PERSON))?.text).toContain('⚠ no stops · no permissions')
+    expect((await findChat(ui, PERSON))?.text).toMatch(/ ⚠$/)
     expect(seen.status.at(-1)).toContain('⚠ no stops · no permissions')
     await ui.unmount()
   })
@@ -615,7 +622,7 @@ describe('the Speaker in a delegate dialog', () => {
     child?.line({ event: 'message', ...message(500, 'can you finish it this week?') })
     await clock.advance(20_000)
     await clock.settle()
-    expect(seen.questions).toEqual(['HARD STOP commit-on-behalf (reply in Contact B): "sure, done by Friday". Allow it?'])
+    expect(seen.questions).toEqual(['HARD STOP commit-on-behalf (reply in Contact B · 1007): "sure, done by Friday". Allow it?'])
     expect(sends(seen)).toEqual([])
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect(await band.find({ type: 'Text', text: /HARD STOP commit-on-behalf: not sent \(you\)/ })).toBeDefined()
@@ -634,7 +641,7 @@ describe('the Speaker in a delegate dialog', () => {
     expect(sends(seen)).toEqual(['write to someone@example.com'])
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ↯ Contact B · skipped stop: share personal data in/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\d\d:\d\d {2}Contact B +skipped stop: share personal data in/ })).toBeDefined()
     await ui.unmount()
   })
 
@@ -686,7 +693,7 @@ describe('stopping', () => {
     await clock.settle()
     expect(seen.stopped).toEqual([WORKER])
     expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
-    expect((await ui.find({ key: 'header' }))?.text).toContain('○ off')
+    expect(await cornerOf(ui, 'card:agent')).toBe('○ off')
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
     await ui.unmount()
   })
@@ -708,6 +715,8 @@ describe('stopping', () => {
     await ui.select({ key: 'dg:duration', value: '30m' })
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
+    // No pane while half an hour runs: every tick would redraw it, and nothing below reads it.
+    await ui.unmount()
     seen.children.at(-1)?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
     seen.children.at(-1)?.line({ event: 'message', ...message(500, 'please add a /health endpoint') })
     await clock.advance(20_000)
@@ -717,7 +726,6 @@ describe('stopping', () => {
     await clock.settle()
     expect(seen.stopped).toEqual([WORKER])
     expect((await worker($, 'ls')).deny).toContain('This task is over')
-    await ui.unmount()
   })
 })
 describe('what runs: the strip, the kill switch, Activity, the card on top of its chat (T4)', () => {
@@ -758,15 +766,15 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
     on('ui.invalidate', () => ({ value: undefined }))
     const { ui } = await startTask($, clock, seen)
-    await ui.press({ key: await chatKey(ui, 1001) })
+    await ui.press({ key: await reachChat(ui, 1001) })
     await ui.press({ key: 'key:follow' })
     await clock.settle()
-    expect((await ui.find({ key: 'running' }))?.text).toBe('↯ Contact B · ⌁ @example_bot → main0: stop all')
+    expect(await legendOf(ui)).toBe('↯ Contact B · ⌁ Example Bot → main0: stop all')
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(seen.stopped).toEqual([WORKER])
-    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: Contact B, @example_bot')
-    expect(seen.toasts.at(-1)).toBe('tg: stopped Contact B (delegate and its Worker), @example_bot (follow). Settings are kept; /tg, then a (p for a follow), restarts one.')
+    expect(await legendOf(ui)).toBe('■ stopped: Contact B, Example Bot')
+    expect(seen.toasts.at(-1)).toBe('tg: stopped Contact B (delegate and its Worker), Example Bot (follow). Settings are kept; /tg, then a (p for a follow), restarts one.')
     // Empty: no follow (prompt.context has no pinned block), no dialog, no live task.
     expect((await $.prompt.context({ blocks: [] })).blocks.filter(block => block.name === 'tgPinned')).toEqual([])
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
@@ -781,10 +789,10 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
     on('ui.invalidate', () => ({ value: undefined }))
     const { ui } = await startTask($, clock, seen)
-    await ui.press({ key: await chatKey(ui, 1001) })
+    await ui.press({ key: await reachChat(ui, 1001) })
     await ui.press({ key: 'key:follow' })
     // Away from both chats, so the dialog and the follow are each the last on their watch, and leaving ends it.
-    await ui.press({ key: await chatKey(ui, 1003) })
+    await ui.press({ key: await reachChat(ui, 1003) })
     await clock.settle()
     seen.ended.length = 0
     await ui.press({ key: 'key:stop' })
@@ -804,11 +812,11 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
     on('ui.invalidate', () => ({ value: undefined }))
     const { ui } = await startTask($, clock, seen)
-    await ui.press({ key: await chatKey(ui, 1001) })
+    await ui.press({ key: await reachChat(ui, 1001) })
     await ui.press({ key: 'key:follow' })
     await clock.settle()
     const answer = (await $.command.run(tgCommand('stop'))).text
-    expect(answer).toMatch(/^tg: stopped Contact B \(delegate and its Worker\), @example_bot \(follow\)\.\n⚠ not stopped cleanly: Contact B \(autopilot\): .+\.\n/)
+    expect(answer).toMatch(/^tg: stopped Contact B \(delegate and its Worker\), Example Bot \(follow\)\.\n⚠ not stopped cleanly: Contact B \(autopilot\): .+\.\n/)
     expect(seen.stopped).toEqual([WORKER])
     expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
@@ -828,7 +836,7 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     // A thread longer than its window, so a window that shrank would scroll.
     seen.history = Array.from({ length: 40 }, (_, index) => message(400 + index, `line ${index}`))
     const { ui, child } = await handOver($, clock, seen, { ...PANE_PROPS, scroll: { offset: 0, bodyRows } })
-    await ui.press({ key: await chatKey(ui, PERSON) })
+    await ui.press({ key: await reachChat(ui, PERSON) })
     await clock.settle()
     // Off the newest row, which a new message moves the cursor past.
     for (let i = 0; i < 3; i++) await ui.press({ key: 'key:up' })

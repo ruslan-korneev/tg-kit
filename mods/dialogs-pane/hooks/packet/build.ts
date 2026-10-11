@@ -38,6 +38,12 @@ export type PacketInput = {
   waitSeconds?: number
   /** A stopped recording handed over with the packet (dialogs-pane-ux.md §8 T6); its replay takes the replay's place. */
   recording?: RecordingInput
+  /**
+   * The forum topic the packet is about (dialogs-pane-ux.md §10.9): the open topic, or the
+   * one every packed message shares. Missing outside forums and for a mixed set, whose
+   * messages each still carry their own `topic`.
+   */
+  topic?: { id: number; title: string }
 }
 
 /** One recorded step as the packet lists it: what was sent, or the label of the button pressed. */
@@ -97,6 +103,9 @@ export function buildPacket(input: PacketInput): Packet {
       ['intent', input.intent.id],
       ['source', 'dialogs-pane'],
       ['redacted', redactor !== null],
+      ['topic', input.topic?.id ?? null],
+      // A topic's title is the chat's words: masked as the chat's title is.
+      ['topic_title', input.topic === undefined ? null : redactor ? redactor.text(input.topic.title) : input.topic.title],
     ],
     children: [
       { name: 'note', text: PACKET_NOTE },
@@ -212,6 +221,7 @@ function messageNode(m: MessageView, x: MessageExtras): Node {
       ['edited', m.edited ?? false],
       ['edits', m.edits > 0 ? m.edits : null],
       ['reply_to', m.reply_to],
+      ['topic', m.topic_id],
       ['latency_ms', x.latency_ms ?? null],
       ['pinned', m.pinned ? true : null],
       ['service', m.service],

@@ -16,6 +16,31 @@
       "type": "string",
       "multiple": true,
       "default": []
+    },
+    "palette": {
+      "title": "Palette",
+      "description": "The pane's colours: a theme of the catalogue (tokyo-night, catppuccin-mocha, nord, …; tg themes shows them); NAME256 is that theme for tmux (256 colours); theme follows your Claude Code theme; ansi is for a terminal with 16 colours",
+      "type": "string",
+      "options": [
+        "theme",
+        "ansi",
+        "catppuccin-mocha",
+        "catppuccin-mocha256",
+        "catppuccin-latte",
+        "catppuccin-latte256",
+        "tokyo-night",
+        "rose-pine-moon",
+        "rose-pine-moon256",
+        "gruvbox-dark",
+        "gruvbox-dark256",
+        "nord",
+        "nord256",
+        "dracula",
+        "dracula256",
+        "kanagawa",
+        "kanagawa256"
+      ],
+      "default": "tokyo-night"
     }
   }
 }

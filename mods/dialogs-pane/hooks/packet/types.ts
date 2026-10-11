@@ -2,7 +2,7 @@
 // (types/index.d.ts), which must be self-contained; this module re-exports
 // them and holds the parsers. A change in tg lands in both in one commit.
 
-import type { Button, Dialog, Folder, FolderChats, FolderKind, FolderPass, Media, MessageView, Sender, SenderKind } from '../../types'
+import type { Button, Dialog, Folder, FolderChats, FolderKind, FolderPass, Media, MessageView, Sender, SenderKind, Topic } from '../../types'
 
 export type {
   Button,
@@ -176,6 +176,8 @@ export function parseMessageView(v: unknown, path = 'message'): MessageView {
       const l = obj(x, `${path}.links[${i}]`)
       return { text: str(l.text, `${path}.links[${i}].text`), url: str(l.url, `${path}.links[${i}].url`) }
     }),
+    // A tg from before forum topics prints no key: outside a forum, as it could not tell.
+    topic_id: 'topic_id' in o ? nullable(o.topic_id, `${path}.topic_id`, int) : null,
     chat_title: optional(o, 'chat_title', path, str),
   })
 }
@@ -200,6 +202,8 @@ export function parseDialog(v: unknown, path = 'dialog'): Dialog {
     last_id: nullable(o.last_id, `${path}.last_id`, int),
     last_date: nullable(o.last_date, `${path}.last_date`, str),
     last_text: str(o.last_text, `${path}.last_text`),
+    // A tg from before forum topics prints no key: not a forum, as it could not open one.
+    forum: optional(o, 'forum', path, bool) ?? false,
   }
 }
 
@@ -264,4 +268,25 @@ export function parsePeer(v: unknown, path = 'peer'): Peer {
     title: str(o.title, `${path}.title`),
     username: nullable(o.username, `${path}.username`, str),
   }
+}
+
+/** The list `tg topics PEER --json` prints (README "Forum topics"), in Telegram's order. */
+export function parseTopics(v: unknown): Topic[] {
+  return arr(v, 'topics').map((x, i) => {
+    const path = `topics[${i}]`
+    const o = obj(x, path)
+    return {
+      id: int(o.id, `${path}.id`),
+      title: str(o.title, `${path}.title`),
+      icon_color: nullable(o.icon_color, `${path}.icon_color`, int),
+      unread: int(o.unread, `${path}.unread`),
+      mentions: int(o.mentions, `${path}.mentions`),
+      pinned: bool(o.pinned, `${path}.pinned`),
+      closed: bool(o.closed, `${path}.closed`),
+      hidden: bool(o.hidden, `${path}.hidden`),
+      last_id: nullable(o.last_id, `${path}.last_id`, int),
+      last_date: nullable(o.last_date, `${path}.last_date`, str),
+      last_text: str(o.last_text, `${path}.last_text`),
+    }
+  })
 }
