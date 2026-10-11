@@ -516,9 +516,10 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
   if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run, in either commands mode; the Speaker is the only voice in the chat`)
   const start = scope.worktrees[0] ?? '/'
   // Where each simple command stands: its worktree, and where a `cd` before it went (null: it cannot be told).
+  // Read over `seen`, so a launcher's own `sh -c 'cd …'` counts; its first commands are the reading's, in order.
   const cwds: string[][] = []
   let cwd: string | null = start
-  for (const simple of reading.commands) {
+  for (const simple of seen.commands) {
     cwds.push([...new Set([start, cwd ?? start])])
     const name = base(simple[0] ?? '')
     if (name === 'cd' || name === 'pushd') {
@@ -528,7 +529,7 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
     }
   }
   // tg-kit's config directory, reads too, in either mode (decision 11): allow.toml, the sessions, the config.
-  const config = fenced(reading, [scope.configDir], scope, index => cwds[index] ?? [start], true)
+  const config = fenced(seen, [scope.configDir], scope, index => cwds[index] ?? [start], true)
   if (config !== null) return refuse(`${config}: inside tg-kit's config directory (${scope.configDir}), which is never the Worker's, in either commands mode`)
   if (isChecks && reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
   if (isChecks) {
@@ -543,7 +544,7 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
     }
   }
   // Paths into the owner's checkouts are refused in every mode: the worktree is the Worker's place.
-  const checkout = fenced(reading, scope.checkouts, scope, index => cwds[index] ?? [start])
+  const checkout = fenced(seen, scope.checkouts, scope, index => cwds[index] ?? [start])
   if (checkout !== null) return refuse(`${checkout}: that is the owner's own checkout`)
   for (const [index, simple] of reading.commands.entries()) {
     const name = base(simple[0] ?? '')

@@ -288,6 +288,29 @@ describe('the grant', () => {
     expect(ok('Bash', { command: 'cp /etc/hosts x' }, grant({ commands: 'any' }))).toBe(true)
   })
 
+  // The review's X4: the fences and the cd tracking read what a launcher runs too.
+  const X4 = [
+    ["sh -c 'cd /home/me/code && cat app/secret'", "the owner's own checkout"],
+    ["sh -c 'cd /home/me/code && echo x > app/secret'", "the owner's own checkout"],
+    ["sh -c 'cd /home/me/.config && cat tg-kit/allow.toml'", "tg-kit's config directory"],
+    ["sh -c 'cd /home/me/.config && cat tg-kit/sessions/main.session'", "tg-kit's config directory"],
+    ["bash -c 'cd ~/.config/tg-kit; cat allow.toml'", "tg-kit's config directory"],
+  ] as const
+  for (const launcher of ['uv run', 'uvx', 'pipx run', 'uv tool run --from x']) {
+    test(`X4: ${launcher} running a shell that cds out is read in both modes`, () => {
+      for (const [inner, why] of X4) {
+        const command = `${launcher} ${inner}`
+        for (const g of both) expect([command, g.commands, checkGrant({ tool: 'Bash', input: { command } }, g, SCOPE)]).toEqual([command, g.commands, { ok: false, reason: expect.stringContaining(why) }])
+      }
+    })
+  }
+
+  test('X4: a launcher whose shell cds within the worktree still passes (any; checks refuses the launcher itself)', () => {
+    for (const command of ["uv run sh -c 'cd src && cat a.ts'", `uvx sh -c 'cd ${WT}/src && ls'`, "pipx run sh -c 'cd . && cat README.md'"]) {
+      expect([command, ok('Bash', { command }, grant({ commands: 'any' }))]).toEqual([command, true])
+    }
+  })
+
   test("decision 11: the Worker's own worktree under tg-kit's config still passes, in both modes; tg named as data is no run", () => {
     for (const command of [
       `cat ${WT}/README.md`, `echo x > ${WT}/out.txt`, `ls ~/.config/tg-kit/worktrees/app-task-1/src`, `uv run pytest > ${WT}/log.txt 2>&1`,
