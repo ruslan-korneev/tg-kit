@@ -26,20 +26,25 @@ export function watchMark(health: WatchHealth | undefined): { text: string; colo
   }
 }
 
-/** Above a thread while `t` has run: the summary, or that it is coming, or why it failed. */
-export function SummaryBlock({ Box, Text }: Els, props: { summary: Summary; width: number }): RenderElement {
+/** `t`'s summary as a layer (T4b): the summary, or that it is coming, or why it failed; its close Button holds the ring. */
+export function SummaryBlock({ Box, Text, Button }: Els, props: { summary: Summary; width: number; onClose: () => void }): RenderElement {
   const { summary } = props
   const head =
     summary.status === 'loading'
-      ? `${GLYPH.working} summarizing · t cancels`
+      ? `${GLYPH.working} summarizing · t or h cancels`
       : summary.status === 'ok'
-        ? `summary · ${summary.count} msgs · t hides`
-        : `${GLYPH.error} ${summary.message} · t retries`
+        ? `summary · ${summary.count} msgs · t or h closes`
+        : `${GLYPH.error} ${summary.message} · t retries · h closes`
   return (
     <Box key="summary" flexDirection="column">
-      <Text color={summary.status === 'error' ? TOKEN.danger : TOKEN.accent} dimColor={summary.status !== 'error'} wrap="truncate-end">
-        {head}
-      </Text>
+      <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+        <Text color={summary.status === 'error' ? TOKEN.danger : TOKEN.accent} dimColor={summary.status !== 'error'} wrap="truncate-end">
+          {head}
+        </Text>
+        <Button key="summary:close" plain dimColor onPress={props.onClose}>
+          ⏎ close
+        </Button>
+      </Box>
       {summary.status === 'ok'
         ? summaryLines(summary.text).map((line, index) => (
             <Text key={`summary:${index}`} wrap="truncate-end">
@@ -49,12 +54,6 @@ export function SummaryBlock({ Box, Text }: Els, props: { summary: Summary; widt
         : null}
     </Box>
   )
-}
-
-/** Rows the summary block takes, so the thread below gets the rest. */
-export function summaryRows(summary: Summary | null): number {
-  if (summary === null) return 0
-  return 1 + (summary.status === 'ok' ? summaryLines(summary.text).length : 0)
 }
 
 /**

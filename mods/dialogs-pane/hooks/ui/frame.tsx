@@ -1,7 +1,7 @@
 // The pane's frame (docs/design/dialogs-pane-ux.md §4.3, §4.4, §7.3): the
 // header with the location, the state summary and who holds the keys; the
-// folder strip; the action bar and the menu read from ./keys; one notice row;
-// the marks line; and the slot the open view fills. Plain functions over the
+// folder strip; the action bar (with the marks count) and the menu read from
+// ./keys; the inline notice row; and the slot the open view fills. Plain functions over the
 // surface's element table, as ./components draws; handlers come in as closures.
 import type { RenderElement } from 'claude-code'
 
@@ -117,14 +117,28 @@ function BarKey({ Button, Text }: Els, key: ShownKey, isFocused: boolean, onKey:
   )
 }
 
-/** The bar: the verbs for the cursor row (≤ 7, from ./keys), dim while another site holds the keys. */
-export function ActionBar(els: Els, props: { keys: readonly ShownKey[]; isFocused: boolean; onKey: (id: RunKey) => void }): RenderElement {
-  const { Box } = els
+/**
+ * The bar: the verbs for the cursor row (≤ 7, from ./keys), dim while another
+ * site holds the keys. `lead` (`▪ 3 marked`) comes first: the marks ride the
+ * bar's row, so marking never takes a row from the thread (§4.3 rule 1, T4b).
+ */
+export function ActionBar(els: Els, props: { keys: readonly ShownKey[]; lead: string | null; isFocused: boolean; onKey: (id: RunKey) => void }): RenderElement {
+  const { Box, Text } = els
   return (
     <Box key="bar" flexDirection="row" columnGap={2}>
+      {props.lead === null ? null : (
+        <Text key="bar:lead" color={TOKEN.accent}>
+          {props.lead}
+        </Text>
+      )}
       {props.keys.map(key => BarKey(els, key, props.isFocused, props.onKey))}
     </Box>
   )
+}
+
+/** The bar's lead while messages are marked: `▪ 3 marked`. */
+export function marksLead(count: number): string | null {
+  return count === 0 ? null : `${GLYPH.marked} ${count} marked`
 }
 
 /**
@@ -213,7 +227,7 @@ export function Menu(els: Els, props: { sections: readonly MenuSection[]; onKey:
 
 const NOTICE_COLOR: Record<Notice['tone'], string | undefined> = { info: undefined, warn: TOKEN.warn, danger: TOKEN.danger }
 
-/** One notice row: what the last action brought back. `d` dismisses it. */
+/** One notice row, inline (the dock's ride the running strip's row): what the last action brought back. `d` dismisses it. */
 export function NoticeRow({ Box, Text }: Els, props: { notice: Notice }): RenderElement {
   return (
     <Box key="notice">
@@ -224,21 +238,9 @@ export function NoticeRow({ Box, Text }: Els, props: { notice: Notice }): Render
   )
 }
 
-/** While messages are marked: how many, and that ⏎ sends them (the always-on tray is gone). */
-export function MarksLine({ Box, Text }: Els, props: { count: number; isRangeOpen: boolean }): RenderElement {
-  const range = props.isRangeOpen ? ' · v again ends the range' : ''
-  return (
-    <Box key="marks">
-      <Text color={TOKEN.accent} wrap="truncate-end">
-        {`${GLYPH.marked} ${props.count} marked · ⏎ sends them · h clears${range}`}
-      </Text>
-    </Box>
-  )
-}
-
 /**
- * The frame: header, the running strip (dock), the folder strip, the search
- * field, the view's slot, the temporary rows, the bar. Docked, the root takes the room's rows, so the bar sits at
+ * The frame: header, the running strip (dock), the folder strip, the view's
+ * slot, the notice row (inline), the bar or a layer in its row. Docked, the root takes the room's rows, so the bar sits at
  * the bottom and a slot taller than its room is cut, never the bar. Inline
  * the engine fits the frame to what it holds (seen live: a 12-row room drew 9
  * rows for 7 chats), so the windows are sized to the room instead.
@@ -251,9 +253,9 @@ export function Frame(
     /** The dock's running strip (./activity), while something runs or was just stopped. */
     running: RenderElement | null
     strip: RenderElement | null
-    top: readonly RenderElement[]
     slot: readonly RenderElement[]
-    temps: readonly RenderElement[]
+    /** Inline: the notice row, when a notice shows. */
+    notice: RenderElement | null
     bar: RenderElement
     hidden: RenderElement
   },
@@ -263,11 +265,10 @@ export function Frame(
       {props.header}
       {props.running}
       {props.strip}
-      {...props.top}
       <Box key="slot" flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">
         {...props.slot}
       </Box>
-      {...props.temps}
+      {props.notice}
       {props.bar}
       {props.hidden}
     </Box>

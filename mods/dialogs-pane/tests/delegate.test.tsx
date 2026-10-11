@@ -93,6 +93,8 @@ type World = {
   /** Worker tool calls that reached the tool beneath every hook. */
   ran: string[]
   stopped: string[]
+  /** What the kill switch ended, in the order the hooks saw it: TaskStop, a lease's delete, a watch's end. */
+  ended: string[]
 }
 
 const START_TASK = { action: 'start_task', text: 'on it', task: 'add a /health endpoint', confidence: 0.95, topics: [], reason: 'work request' }
@@ -129,6 +131,7 @@ function world(
     dialog: 'Yes, allow it',
     ran: [],
     stopped: [],
+    ended: [],
   }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -141,6 +144,7 @@ function world(
   })
   on('store.delete', (_$, e) => {
     if (options.isDeleteFailing === true) throw new Error('the store would not delete')
+    seen.ended.push(`delete ${e.key}`)
     seen.store.delete(e.key)
     return { value: undefined }
   })
@@ -178,11 +182,15 @@ function world(
       child.isKilled = true
       wake()
     })
-    for (;;) {
-      while (queue.length === 0 && !child.isKilled) await new Promise<void>(resolve => (wake = resolve))
-      const text = queue.shift()
-      if (child.isKilled || text === undefined) return { value: { code: null, signal: 'SIGTERM' } }
-      yield { stream: 'stdout' as const, text }
+    try {
+      for (;;) {
+        while (queue.length === 0 && !child.isKilled) await new Promise<void>(resolve => (wake = resolve))
+        const text = queue.shift()
+        if (child.isKilled || text === undefined) return { value: { code: null, signal: 'SIGTERM' } }
+        yield { stream: 'stdout' as const, text }
+      }
+    } finally {
+      seen.ended.push(`watch ${e.argv[2] ?? ''}`)
     }
   })
   on('model.complete', (_$, e) => {
@@ -214,6 +222,7 @@ function world(
   })
   on('tool.call', { tool: 'TaskStop' }, (_$, e) => {
     seen.stopped.push(e.tool === 'TaskStop' ? (e.task_id ?? '') : '')
+    seen.ended.push('TaskStop')
     return { result: { message: 'stopped', task_id: '', task_type: 'agent' } as never }
   })
   // The Worker's tools themselves: they record what ran.
@@ -670,6 +679,29 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
     expect((await $.command.run(tgCommand('stop'))).text).toBe('tg: nothing was running.')
     expect(await ui.find({ key: 'key:stop' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the kill switch stops in order: the Worker (TaskStop), then the dialog’s lease, then the follow’s watch', WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    const { ui } = await startTask($, clock, seen)
+    await ui.press({ key: 'dialog:1001' })
+    await ui.press({ key: 'key:follow' })
+    // Away from both chats, so the dialog and the follow are each the last on their watch, and leaving ends it.
+    await ui.press({ key: 'dialog:1003' })
+    await clock.settle()
+    seen.ended.length = 0
+    await ui.press({ key: 'key:stop' })
+    await clock.settle()
+    const at = (what: string) => seen.ended.indexOf(what)
+    expect(at('TaskStop')).toBeGreaterThanOrEqual(0)
+    expect(at(`delete autopilot.lease.${GROUP}`)).toBeGreaterThan(at('TaskStop'))
+    // The dialog's own watch ends after its lease, the follow's after both.
+    expect(at(`watch ${GROUP}`)).toBeGreaterThan(at(`delete autopilot.lease.${GROUP}`))
+    expect(at('watch @example_bot')).toBeGreaterThan(at(`watch ${GROUP}`))
     await ui.unmount()
   })
 

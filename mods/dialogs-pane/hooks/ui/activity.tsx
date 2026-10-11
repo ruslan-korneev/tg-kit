@@ -1,5 +1,5 @@
-// The dock's running strip and Activity (docs/design/dialogs-pane-ux.md §5.6,
-// §5.7), drawn from ./running. Plain functions over the surface's element
+// The dock's running strip, which carries the notices too (T4b), and Activity
+// (docs/design/dialogs-pane-ux.md §5.6, §5.7), drawn from ./running. Plain functions over the surface's element
 // table, as ./components draws; handlers come in as closures.
 //
 // The strip sits above the chat and the chats, and comes and goes as things
@@ -8,24 +8,28 @@
 // is a label; the `0` Button is the frame's hidden one, and the menu's.
 import type { RenderElement } from 'claude-code'
 
+import type { Notice } from '../../types'
 import type { Els } from './components'
 import { Divider } from './components'
 import { GLYPH, TOKEN } from './model'
 import { STOP_LABEL, STRIP_SEP, type LogRow, type LogTone, type StripItem } from './running'
 
-/** One row under the header while something runs, or what `0` just stopped. */
-export function RunningStrip({ Box, Text }: Els, props: { shown: readonly StripItem[]; more: number; notice: string | null }): RenderElement {
-  if (props.shown.length === 0) {
-    return (
-      <Box key="running">
-        <Text color={TOKEN.danger} wrap="truncate-end">
-          {props.notice ?? ''}
+const NOTICE_COLOR: Record<Notice['tone'], string | undefined> = { info: undefined, warn: TOKEN.warn, danger: TOKEN.danger }
+
+/**
+ * The dock's row under the header: a notice when there is one (a write's
+ * result, `… pressing`, what `0` stopped, a draft that waits), else what runs;
+ * `0: stop all` at the right while something runs, either way (T4b).
+ */
+export function RunningStrip({ Box, Text }: Els, props: { shown: readonly StripItem[]; more: number; notice: Notice | null; isRunning: boolean }): RenderElement {
+  const left =
+    props.notice !== null ? (
+      <Box key="notice" flexShrink={1}>
+        <Text color={NOTICE_COLOR[props.notice.tone]} wrap="truncate-end">
+          {props.notice.text}
         </Text>
       </Box>
-    )
-  }
-  return (
-    <Box key="running" flexDirection="row" justifyContent="space-between" columnGap={2}>
+    ) : (
       <Text wrap="truncate-end">
         {...props.shown.map((item, index) => (
           <Text key={`running:${item.key}`} color={item.isHeld ? TOKEN.warn : undefined}>
@@ -34,10 +38,16 @@ export function RunningStrip({ Box, Text }: Els, props: { shown: readonly StripI
         ))}
         {props.more === 0 ? null : <Text dimColor>{` +${props.more}`}</Text>}
       </Text>
-      <Text>
-        <Text color={TOKEN.accent}>{STOP_LABEL.slice(0, 2)}</Text>
-        <Text color={TOKEN.danger}>{STOP_LABEL.slice(2)}</Text>
-      </Text>
+    )
+  return (
+    <Box key="running" flexDirection="row" justifyContent="space-between" columnGap={2}>
+      {left}
+      {props.isRunning ? (
+        <Text>
+          <Text color={TOKEN.accent}>{STOP_LABEL.slice(0, 2)}</Text>
+          <Text color={TOKEN.danger}>{STOP_LABEL.slice(2)}</Text>
+        </Text>
+      ) : null}
     </Box>
   )
 }

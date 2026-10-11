@@ -140,8 +140,10 @@ export type Nav = {
   messageStart: number
   /** `m`: the menu over the view. */
   isMenuOpen: boolean
-  /** `s`: the search field is up. */
+  /** `s`: the search field is up, in the bar's row. */
   isSearching: boolean
+  /** `e`: the drafted reply is open as a layer over the lower part (T4b); `h` closes it and it waits on. */
+  isDraftOpen: boolean
 }
 
 export type Thread = { peer: PeerRef; load: Load<TgMessage[]> }
