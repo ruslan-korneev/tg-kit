@@ -2107,13 +2107,31 @@ palette as follows:
 | `0xCB86DB` | violet | mauve `#CBA6F7` | `merged` | `magenta` |
 | `0x8EEE98` | green | green `#A6E3A1` | `success` | `green` |
 | `0xFF93B2` | rose | pink `#F5C2E7` | `claude` | `magentaBright` |
-| `0xFB6F5F` | red | maroon `#EBA0AC` | `error` | `redBright` (SGR 91) |
+| `0xFB6F5F` | red | maroon `#EBA0AC` | `diffRemovedWord` | `redBright` (SGR 91) |
 
 Red maps away from `unread`'s red, so that a topic's dot never reads as an unread count: maroon
-in `mocha`, `redBright` (91) against `unread`'s `red` (31) in 16 colours. `theme` cannot: its
-only red key is `error`, the same as `unread`, so there the red topic and an unread count share a
-colour and only the column tells them apart (a known gap; T12's test records it). Any other value
-draws in `dim`.
+in `mocha`, `redBright` (91) against `unread`'s `red` (31) in 16 colours, and `diffRemovedWord`
+against `error` in `theme`. Any other value draws in `dim`.
+
+**`theme`'s red topic is `diffRemovedWord`** (T16 saw it live, asked by tg-kit-25, 2026-10-11).
+The first draft gave it `error`, `unread`'s key, so a red topic's ● drew `38;5;211` like an unread
+count. The typed keys with a red, as P6 measured them in the dark theme:
+
+| Key | truecolor | tmux | Contrast on black | Verdict |
+| --- | --- | --- | --- | --- |
+| `error` | `255;107;128` | 211 | 7.7 | `unread`'s, the gap itself |
+| `bashBorder` | `253;93;177` | 211 | 7.4 | the same cell as `error` in tmux |
+| `diffRemovedWord` | `179;89;107` | 174 | 4.6 | taken: a darker red, its own cell against `error` |
+| `diffRemovedDimmed` | `105;72;77` | 96 | 2.6 | under 3:1 |
+| `diffRemoved` | `122;41;54` | 95 | 2.2 | under 3:1; it is a diff's background |
+
+`red_FOR_SUBAGENTS_ONLY` (`220;38;38`, 167) and `fastMode` (an orange) are not typed, so they are
+left alone, as for the second yellow. What stays:
+- in tmux, cell 174 is also `claude`'s (`215;119;87`): the red topic shares it with the rose
+  topic and the bot glyph ⬡. Two topics in one colour are told apart by their names; neither
+  reads as an unread count;
+- P6 measured the dark theme only. In a light Claude Code theme the pair is unmeasured: T16 checks
+  `diffRemovedWord` ≠ `error` there once, and if they meet, says so here.
 
 #### The theme catalogue
 
@@ -2276,8 +2294,8 @@ A red topic needs a second red, away from `unread`. These themes have one:
 - `gruvbox-dark` uses neutral_red;
 - `kanagawa` uses autumnRed.
 
-`rose-pine-moon`, `nord` and `dracula` have a single red, so their red topic is `unread`'s, the same
-known gap as `theme`.
+`rose-pine-moon`, `nord` and `dracula` have a single red, so their red topic is `unread`'s, a
+known gap (`theme` had it too, until `diffRemovedWord` below).
 
 **Contrast** of each role on the theme's own background (WCAG ratio). Data roles should reach
 3:1; bold marks a failure. `surface` is a border, not data, and is listed for reference.
