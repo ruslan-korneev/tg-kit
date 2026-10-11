@@ -1777,6 +1777,12 @@ behind a launcher.
 - Out of scope, the same as decision 11's `any` limit: a launcher nested past the reader's depth,
   and code the Worker writes and runs. Those fail closed in the grant (`isTooDeep`); the stops
   should fail the same way — an unreadable command that could publish or share asks.
+- Also here (a grant change, not a stop): the link rule of decision 11 extends from `ln` to a `cp`
+  that links — `cp -s`, `--symbolic-link`, `-l`, `--link` — refused in both modes when the link
+  target or the new name resolves outside the worktrees, exactly as `ln` is. Found in the 6f6ac8e
+  review: `cp -s ~/.zshrc link` makes the same out-of-reach link that `ln -s` does. Tests: `cp -s`
+  and `cp -l` to a path outside the worktree in both modes; a linking `cp` inside the worktree
+  passes; a plain `cp` is unchanged.
 
 Conflict points between parallel tasks: `keys.ts` (each task adds its rows), the Pane render's
 slots (T1 makes them), `types/index.d.ts` (marked blocks, as today).
@@ -1861,10 +1867,11 @@ Decided by the owner during the build (2026-10-11):
       value (`--output=…`, `-o…`), or a redirect target, attached (`>>~/.config/tg-kit/allow.toml`)
       or not. `~`, `$HOME` and `$TG_KIT_CONFIG_DIR` are resolved for it. Reads count too, since a
       Bash word does not say which it is;
-    - makes a symbolic link out of the Worker's reach: an `ln` (with or without `-s`) whose link
-      target or whose new link name resolves outside the worktrees. The check cannot follow a
-      link (the hooks have no file system), so a write through one would see only the link's own
-      path; refusing the link where it is made closes that at the source.
+    - makes a link out of the Worker's reach: an `ln`, or a `cp` that links (`-s`,
+      `--symbolic-link`, `-l`, `--link`), whose link target or whose new link name resolves
+      outside the worktrees. The check cannot follow a link (the hooks have no file system), so a
+      write through one would see only the link's own path; refusing the link where it is made
+      closes that at the source.
 
     The grant reads every place a command can name a path, in both modes (the T3 review's X3).
     The checkout rule (both modes), the worktree rule (`checks`) and the config rule above all
@@ -1961,9 +1968,9 @@ so, and only a sandbox outside the mod would close them:
   `checks` the unresolved expansion is refused.
 - Code the Worker writes and then runs: a script it saved, a `python -c` that builds the name
   `tg` from pieces, an `echo … | sh`. The guard reads one command's words, not a program's effect.
-- A symbolic link the Worker makes by something other than `ln` (a program, a language's own
-  call), then writes through: the guard refuses `ln` out of the worktree, but cannot follow a link
-  it did not see made.
+- A symbolic link the Worker makes by something other than `ln` or `cp` (a program, a language's
+  own call), then writes through: the guard refuses `ln` and a linking `cp` out of the worktree,
+  but cannot follow a link it did not see made.
 
 Under `checks` all three are refused: the reader fails closed on an unknown command or an
 unresolved expansion. The grant defaults to `checks`.
