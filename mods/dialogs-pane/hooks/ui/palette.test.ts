@@ -174,9 +174,11 @@ describe('palette (§10.2)', () => {
     expect(topicColor('theme', 0xffd67e)).toBe('warning')
     expect(topicColor('catppuccin-mocha', 0xfb6f5f)).toBe('#EBA0AC')
     expect(topicColor('ansi', 0xfb6f5f)).toBe('redBright')
-    // theme has no typed second red, and rose-pine-moon and dracula a single red (§10.2's known gap).
+    // theme's second red is diffRemovedWord, apart from unread's error (§10.2); rose-pine-moon and dracula have a single red (the known gap).
+    expect(topicColor('theme', 0xfb6f5f)).toBe('diffRemovedWord')
+    expect(PALETTES.theme.unread).toBe('error')
     const sharesUnread = PALETTE_NAMES.filter(name => topicColor(name, 0xfb6f5f) === PALETTES[name].unread)
-    expect([...sharesUnread]).toEqual(['theme', 'rose-pine-moon', 'rose-pine-moon256', 'dracula', 'dracula256'])
+    expect([...sharesUnread]).toEqual(['rose-pine-moon', 'rose-pine-moon256', 'dracula', 'dracula256'])
     for (const name of PALETTE_NAMES) expect(`${name} ${topicColor(name, 0x123456)}`).toBe(`${name} ${PALETTES[name].dim}`)
     for (const name of PALETTE_NAMES) expect(`${name} ${Object.keys(TOPIC_COLOR[name]).join(' ')}`).toBe(`${name} ${CATALOGUE.topicKeys.join(' ')}`)
   })

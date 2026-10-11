@@ -82,10 +82,10 @@ const ANSI = {
 const topicKey = (iconColor: number) => iconColor.toString(16).toUpperCase().padStart(6, '0')
 
 // `theme` and `ansi` have no hex, so their topics stay here (§10.2's topic table). Red
-// is redBright (91) apart from unread's red (31); theme's only red key is `error`,
-// unread's own (a known gap, §10.2).
+// is apart from unread's: redBright (91) against red (31), and in theme
+// `diffRemovedWord` against `error`, unread's key (§10.2).
 const CODE_TOPICS = {
-  theme: { '6FB9F0': THEME.person, FFD67E: THEME.held, CB86DB: THEME.accent, '8EEE98': THEME.ok, FF93B2: THEME.bot, FB6F5F: 'error' },
+  theme: { '6FB9F0': THEME.person, FFD67E: THEME.held, CB86DB: THEME.accent, '8EEE98': THEME.ok, FF93B2: THEME.bot, FB6F5F: 'diffRemovedWord' },
   ansi: { '6FB9F0': ANSI.person, FFD67E: ANSI.held, CB86DB: ANSI.accent, '8EEE98': ANSI.ok, FF93B2: ANSI.bot, FB6F5F: 'redBright' },
 } as const satisfies Record<'theme' | 'ansi', Record<(typeof CATALOGUE.topicKeys)[number], Color>>
 
