@@ -25,11 +25,22 @@ export type Els = ElementTable
 const pad = (text: string, width: number) =>
   text.length >= width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width)
 
-/** The rows of `list` a window of `rows` shows so that `cursor` stays in it. */
-export function windowAround<T>(list: readonly T[], cursor: number, rows: number): { start: number; items: T[] } {
+/**
+ * Where a list's window starts so that `cursor` is in it, scrolling at the
+ * edges: the start moves only when the cursor leaves [start, start + rows).
+ * The engine keeps the focus ring by its place among a site's Buttons across
+ * a redraw (2.1.296), so a window that recentred on every move left the ring
+ * one row off the cursor; one that holds still keeps them together.
+ */
+export function edgeStart(start: number, cursor: number, rows: number, length: number): number {
   const room = Math.max(1, rows)
-  const start = Math.min(Math.max(0, cursor - Math.floor(room / 2)), Math.max(0, list.length - room))
-  return { start, items: list.slice(start, start + room) }
+  const moved = cursor < start ? cursor : cursor >= start + room ? cursor - room + 1 : start
+  return Math.min(Math.max(0, moved), Math.max(0, length - room))
+}
+
+/** The rows of `list` a window of `rows` from `start` shows. */
+export function windowAt<T>(list: readonly T[], start: number, rows: number): T[] {
+  return list.slice(start, start + Math.max(1, rows))
 }
 
 export function DialogRow(

@@ -5,8 +5,8 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
 import { KEYS, hotkeyTable } from '../hooks/ui/keys'
-import type { TgDialog } from '../types'
-import { DIALOGS, messagesFor } from './fixtures'
+import type { TgDialog, TgMessage } from '../types'
+import { DIALOGS, MESSAGES, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -388,6 +388,55 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     expect(await barKeys(ui)).toContain('diff')
     await ui.unmount()
   })
+})
+
+describe('long lists scroll at the edges (the ring keeps its place among the Buttons)', () => {
+  const fixture = <T,>(one: T | undefined): T => {
+    if (one === undefined) throw new Error('a fixture is missing')
+    return one
+  }
+  const LONG: TgMessage[] = Array.from({ length: 40 }, (_, index) => ({
+    ...fixture(MESSAGES.at(-1)),
+    id: 700001 + index,
+    text: `reply ${index + 1}`,
+    date: `2026-10-10T11:${String(index).padStart(2, '0')}:00Z`,
+  }))
+  const MANY: TgDialog[] = [
+    ...KINDS,
+    ...Array.from({ length: 54 }, (_, index) => ({ ...fixture(KINDS[3]), id: 3000 + index, title: `Contact ${index + 10}` })),
+  ]
+  const long = (argv: readonly string[]) => (argv[1] === 'read' ? json(LONG) : argv[1] === 'dialogs' ? json(MANY) : happy(argv))
+
+  /** The ids of the rows drawn as `prefix:<id>` Buttons, in order. */
+  async function rows(ui: Ui, prefix: string): Promise<string[]> {
+    return (await ui.findAll({ type: 'Button' })).flatMap(button => {
+      const key = String(button.props.key ?? '')
+      return key.startsWith(prefix) ? [key] : []
+    })
+  }
+
+  for (const list of [
+    { name: 'a thread', prefix: 'msg:', open: true, step: 'key:up' },
+    { name: 'Chats', prefix: 'dialog:', open: false, step: 'key:down' },
+  ] as const) {
+    test(`${list.name}: moves inside the window keep its first row; one past the edge shifts it by one`, async ($, on) => {
+      const { ui } = await openPane($, on, DOCK, long)
+      if (list.open) await openChat(ui, 1001)
+      const before = await rows(ui, list.prefix)
+      expect(before.length).toBeGreaterThan(3)
+      expect(before.length).toBeLessThan(list.open ? LONG.length : MANY.length)
+      // The cursor starts at one edge (the newest message, the first chat): walk to the other one.
+      for (let i = 0; i < before.length - 1; i++) {
+        await ui.press({ key: list.step })
+        expect(await rows(ui, list.prefix)).toEqual(before)
+      }
+      await ui.press({ key: list.step })
+      const after = await rows(ui, list.prefix)
+      expect(after).toEqual(list.open ? [list.prefix + String(Number(before[0]?.slice(4)) - 1), ...before.slice(0, -1)] : [...before.slice(1), after.at(-1)])
+      expect(after).not.toEqual(before)
+      await ui.unmount()
+    })
+  }
 })
 
 describe('states', () => {

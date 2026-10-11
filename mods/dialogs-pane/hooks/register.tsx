@@ -83,7 +83,7 @@ import {
 import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
-import { DialogRow, Divider, EmptyLens, LoadState, MessageCard, windowAround, type Els } from './ui/components'
+import { DialogRow, Divider, EmptyLens, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { ActionBar, Frame, Header, HiddenKeys, MarksLine, Menu, NoticeRow, Strip } from './ui/frame'
 import {
   CHAT_KIND_LABEL,
@@ -135,6 +135,8 @@ const nav = atom({ plugin: 'dialogs-pane', key: 'nav' } as const, {
   query: '',
   dialogCursor: 0,
   messageCursor: 0,
+  dialogStart: 0,
+  messageStart: 0,
   isMenuOpen: false,
   isSearching: false,
 })
@@ -461,16 +463,39 @@ async function cursorMessage($: $): Promise<TgMessage | undefined> {
   return messages[clamp((await read($, nav)).messageCursor, messages.length)]
 }
 
+/**
+ * How many rows each list's window showed when last drawn: a move scrolls the
+ * window by the same rule the drawing uses. The module's own, as it is a fact
+ * of the last drawing rather than state; a reload starts it over at 0, which
+ * the next drawing corrects.
+ */
+const windowRows = { dialogs: 0, messages: 0 }
+
+/**
+ * The cursor of one list moved by a step: its window start is first settled
+ * where the drawing put it (a jump may have moved the cursor without it), then
+ * moved only if the cursor leaves the window.
+ */
+function cursorTo(value: Nav, list: 'dialogs' | 'messages', cursor: number, length: number): Nav {
+  const rows = windowRows[list]
+  if (list === 'dialogs') {
+    const drawn = edgeStart(value.dialogStart, value.dialogCursor, rows, length)
+    return { ...value, dialogCursor: cursor, dialogStart: edgeStart(drawn, cursor, rows, length) }
+  }
+  const drawn = edgeStart(value.messageStart, value.messageCursor, rows, length)
+  return { ...value, messageCursor: cursor, messageStart: edgeStart(drawn, cursor, rows, length) }
+}
+
 /** Moves the cursor in the active list; answers the key of the row it lands on. */
 async function moveCursor($: $, by: number): Promise<string | undefined> {
   if ((await read($, nav)).view === 'dialogs') {
     const list = await shownDialogs($)
-    const moved = await update($, nav, value => ({ ...value, dialogCursor: clamp(value.dialogCursor + by, list.length) }))
+    const moved = await update($, nav, value => cursorTo(value, 'dialogs', clamp(value.dialogCursor + by, list.length), list.length))
     const dialog = list[moved.dialogCursor]
     return dialog === undefined ? undefined : `dialog:${dialog.id}`
   }
   const messages = await threadMessages($)
-  const moved = await update($, nav, value => ({ ...value, messageCursor: clamp(value.messageCursor + by, messages.length) }))
+  const moved = await update($, nav, value => cursorTo(value, 'messages', clamp(value.messageCursor + by, messages.length), messages.length))
   const message = messages[moved.messageCursor]
   return message === undefined ? undefined : `msg:${message.id}`
 }
@@ -478,12 +503,15 @@ async function moveCursor($: $, by: number): Promise<string | undefined> {
 async function followRing($: $, element: string): Promise<void> {
   const [kind, raw] = element.split(':')
   const id = Number(raw)
+  // The ring only reaches drawn rows: the window holds where it was drawn, as for j and k.
   if (kind === 'dialog') {
-    const index = (await shownDialogs($)).findIndex(dialog => dialog.id === id)
-    if (index >= 0) await update($, nav, value => ({ ...value, view: 'dialogs', dialogCursor: index }))
+    const list = await shownDialogs($)
+    const index = list.findIndex(dialog => dialog.id === id)
+    if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'dialogs', index, list.length), view: 'dialogs' }))
   } else if (kind === 'msg') {
-    const index = (await threadMessages($)).findIndex(message => message.id === id)
-    if (index >= 0) await update($, nav, value => ({ ...value, view: 'thread', messageCursor: index }))
+    const messages = await threadMessages($)
+    const index = messages.findIndex(message => message.id === id)
+    if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'messages', index, messages.length), view: 'thread' }))
   }
 }
 
@@ -1035,7 +1063,9 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, isAct
   const markOf = await watchMarks($)
   const pilotOf = await autopilotMarks($)
   const cursor = clamp(where.dialogCursor, list.length)
-  const shown = windowAround(list, cursor, rows)
+  windowRows.dialogs = rows
+  const start = edgeStart(where.dialogStart, cursor, rows, list.length)
+  const shown = { start, items: windowAt(list, start, rows) }
   const pinned = new Set((await read($, pins)).map(pin => pin.peer.id))
   return shown.items.map((dialog, index) =>
     DialogRow(els, {
@@ -1070,7 +1100,10 @@ async function drawThread($: $, els: Els, width: number, rows: number, isActive:
   const cursor = clamp(where.messageCursor, messages.length)
   const bt = await bottestCards($, open.peer, messages, width)
   // A card with buttons takes two rows; budget for some of them.
-  const shown = windowAround(messages, cursor, Math.max(1, Math.floor(rows / 1.5)))
+  const window = Math.max(1, Math.floor(rows / 1.5))
+  windowRows.messages = window
+  const start = edgeStart(where.messageStart, cursor, window, messages.length)
+  const shown = { start, items: windowAt(messages, start, window) }
   return shown.items.map((message, index) =>
     MessageCard(els, {
       ...bt(els, message),

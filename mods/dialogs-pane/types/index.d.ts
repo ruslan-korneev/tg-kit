@@ -132,6 +132,12 @@ export type Nav = {
   query: string
   dialogCursor: number
   messageCursor: number
+  /**
+   * The first row of each list's window, as last drawn: it moves only when the
+   * cursor leaves the window (hooks/ui/components.tsx `edgeStart`).
+   */
+  dialogStart: number
+  messageStart: number
   /** `m`: the menu over the view. */
   isMenuOpen: boolean
   /** `s`: the search field is up. */
