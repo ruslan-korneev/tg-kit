@@ -36,7 +36,7 @@ const row = (id: number, over: Partial<TgDialog> = {}): TgDialog => ({
   muted: false,
   last_id: 1,
   last_date: `2026-10-10T10:${String(id % 60).padStart(2, '0')}:00Z`,
-  last_text: 'placeholder',
+  forum: false, last_text: 'placeholder',
   ...over,
 })
 
@@ -66,7 +66,7 @@ describe('the pass', () => {
   })
 
   test('$.state keeps last_text cut to 120 characters', () => {
-    expect(cutRow(row(1, { last_text: 'x'.repeat(300) })).last_text).toHaveLength(TEXT_MAX)
+    expect(cutRow(row(1, { forum: false, last_text: 'x'.repeat(300) })).last_text).toHaveLength(TEXT_MAX)
     const short = row(1)
     expect(cutRow(short)).toBe(short)
   })
@@ -98,12 +98,12 @@ describe('between passes', () => {
 describe('For you', () => {
   test('mentions and person chats with unread messages that are not muted, ranked with why; noise left out', () => {
     const rows = [
-      row(1, { kind: 'supergroup', unread: 3, mentions: 1, last_text: 'can you review?' }),
-      row(2, { unread: 1, last_text: 'free tomorrow?' }),
-      row(3, { unread: 1, last_text: 'hm' }),
-      row(4, { unread: 1, muted: true, last_text: 'are you there?' }),
+      row(1, { kind: 'supergroup', unread: 3, mentions: 1, forum: false, last_text: 'can you review?' }),
+      row(2, { unread: 1, forum: false, last_text: 'free tomorrow?' }),
+      row(3, { unread: 1, forum: false, last_text: 'hm' }),
+      row(4, { unread: 1, muted: true, forum: false, last_text: 'are you there?' }),
       row(5, { kind: 'channel', unread: 9 }),
-      row(6, { unread: 1, last_text: 'lol' }),
+      row(6, { unread: 1, forum: false, last_text: 'lol' }),
     ]
     const people = forYouPeople(rows, NOBODY, { '6:1': 'noise' }, {})
     expect(people.rows.map(one => one.id)).toEqual([2, 1, 3])
@@ -190,7 +190,7 @@ describe('$.store', () => {
     const stored = parseStored({
       list: [{ id: 2, title: 'Work', kind: 'folder', unread: 3 }, { id: 'x' }],
       view: { kind: 'folder', id: 2 },
-      rows: [row(1, { last_text: 'y'.repeat(200) }), { id: 2 }],
+      rows: [row(1, { forum: false, last_text: 'y'.repeat(200) }), { id: 2 }],
     })
     expect(stored?.list).toEqual([{ id: 2, title: 'Work', kind: 'folder', unread: 3 }])
     expect(stored?.rows.map(one => one.last_text.length)).toEqual([TEXT_MAX])

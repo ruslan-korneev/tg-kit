@@ -5,7 +5,7 @@ import type { ProcessRunResult } from 'claude-code'
 
 import type { TgFailure } from '../../types'
 import { TgJsonError, parseMessageViews, type MessageView } from '../packet/types'
-import { failureOf } from '../tg/tg'
+import { failureOf, topicArgs } from '../tg/tg'
 
 /** `press` waits 5 s (tg's own default); a send waits longer for a cold bot. */
 export const PRESS_WAIT_S = 5
@@ -33,10 +33,13 @@ export const calls = {
   press: (peer: string, id: number, row: number, col: number, byOwner = false): string[] => [
     'tg', 'press', peer, String(id), '--row', String(row), '--col', String(col), '--wait', `${PRESS_WAIT_S}s`, '--json', ...yes(byOwner),
   ],
-  /** The text goes on stdin (`-`), so a leading dash or newline needs no escaping. `--plain`: sent as typed. */
-  send: (peer: string, byOwner = false): string[] => ['tg', 'send', peer, '-', '--plain', '--wait', `${SEND_WAIT_S}s`, '--json', ...yes(byOwner)],
+  /**
+   * The text goes on stdin (`-`), so a leading dash or newline needs no escaping. `--plain`: sent as typed.
+   * `topic`: into that forum topic, named explicitly, never left to tg to derive (§10.9).
+   */
+  send: (peer: string, byOwner = false, topic?: number): string[] => ['tg', 'send', peer, '-', '--plain', ...topicArgs(topic), '--wait', `${SEND_WAIT_S}s`, '--json', ...yes(byOwner)],
   /** A chat reply, autopilot's or delegate's or a draft's: as `send`, without waiting for an answer. */
-  reply: (peer: string, byOwner = false): string[] => ['tg', 'send', peer, '-', '--plain', '--json', ...yes(byOwner)],
+  reply: (peer: string, byOwner = false, topic?: number): string[] => ['tg', 'send', peer, '-', '--plain', ...topicArgs(topic), '--json', ...yes(byOwner)],
   allowList: (): string[] => ['tg', 'allow', 'list', '--json'],
 }
 

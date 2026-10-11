@@ -13,6 +13,7 @@ export function msg(over: Partial<MessageView> & Pick<MessageView, 'id'>): Messa
     out: false,
     text: '',
     reply_to: null,
+    topic_id: null,
     forward: null,
     edited: null,
     edits: 0,

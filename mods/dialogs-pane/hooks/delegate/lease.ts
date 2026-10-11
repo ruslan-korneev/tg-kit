@@ -12,7 +12,8 @@ export const LEASE_TTL_MS = 90_000
 
 export type Lease = { session: string; beat: number }
 
-export const leaseKey = (dialogId: number) => `${LEASE_PREFIX}${dialogId}`
+/** By peer key: a chat's id, or `chatId:topicId` for a forum topic's agent (§10.9). */
+export const leaseKey = (key: string) => `${LEASE_PREFIX}${key}`
 
 export function leaseOf(v: unknown): Lease | null {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null

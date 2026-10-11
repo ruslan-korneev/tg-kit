@@ -27,7 +27,7 @@ const chat = (over: Partial<TgDialog>): TgDialog => ({
   muted: false,
   last_id: 1,
   last_date: null,
-  last_text: 'Can we call tomorrow at 10?',
+  forum: false, last_text: 'Can we call tomorrow at 10?',
   ...over,
 })
 

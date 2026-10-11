@@ -23,7 +23,8 @@ import { buildPacket, type Packet, type RecordingInput } from '../packet/build'
 import { INTENTS, type Intent, type IntentId } from '../packet/intents'
 import type { Redactor } from '../packet/redact'
 import type { Peer } from '../packet/types'
-import { GLYPH } from '../ui/model'
+import { topicArgs } from '../tg/tg'
+import { GLYPH, chatPeer } from '../ui/model'
 
 // The contract spells the intent ids out (it must be self-contained); these
 // two lines fail to compile when it and the packet module drift apart.
@@ -130,13 +131,19 @@ export function routeOfRows(rows: readonly BroadcastRow[]): Extract<Route, { kin
 export function peerOf(ref: PeerRef, dialogs: readonly TgDialog[]): Peer {
   const dialog = dialogs.find(one => one.id === ref.id)
   if (dialog !== undefined) return { id: dialog.id, kind: dialog.kind, title: dialog.title, username: dialog.username }
-  return { id: ref.id, kind: ref.kind, title: ref.label, username: ref.arg.startsWith('@') ? ref.arg.slice(1) : null }
+  // A topic's label names its topic too (`Project team › Design review`): the packet's peer is the chat.
+  return { id: ref.id, kind: ref.kind, title: chatPeer(ref).label, username: ref.arg.startsWith('@') ? ref.arg.slice(1) : null }
+}
+
+/** A packet's `topic` and `topic_title` (§10.9): the peer's topic, nothing for a whole chat. */
+export function packetTopic(peer: Pick<PeerRef, 'topic'>): { topic?: { id: number; title: string } } {
+  return peer.topic === undefined ? {} : { topic: { id: peer.topic.id, title: peer.topic.title } }
 }
 
 /** A dialog row for a peer the list no longer holds, so the ledger can still open its thread. */
 export function dialogOfPeer(ref: PeerRef): TgDialog {
   const { id, kind, title, username } = peerOf(ref, [])
-  return { id, kind, title, username, unread: 0, mentions: 0, pinned: false, muted: false, last_id: null, last_date: null, last_text: '' }
+  return { id, kind, title, username, unread: 0, mentions: 0, pinned: false, muted: false, last_id: null, last_date: null, last_text: '', forum: ref.topic !== undefined }
 }
 
 /** The selected messages in thread order. */
@@ -177,6 +184,8 @@ export function previewPacket(input: {
   redact: boolean | Redactor
   /** A hand-off's recording, with the replay that runs its script (§8 T6). */
   handoff?: { recording: RecordingInput }
+  /** The forum topic the packet is about (§10.9). */
+  topic?: { id: number; title: string }
 }): Packet {
   return buildPacket({
     messages: input.selected,
@@ -185,6 +194,7 @@ export function previewPacket(input: {
     intent: input.intent,
     redact: input.redact,
     ...(input.handoff === undefined ? {} : input.handoff),
+    ...(input.topic === undefined ? {} : { topic: input.topic }),
   })
 }
 
@@ -291,7 +301,7 @@ export function pinnedContext(pins: readonly Pin[], peers: readonly Peer[], isRe
     .filter(pin => pin.to.kind === 'main' && pin.messages.length > 0)
     .map(pin => {
       const peer = peers.find(one => one.id === pin.peer.id) ?? peerOf(pin.peer, [])
-      return buildPacket({ messages: pin.messages, peer, intent: { id: 'raw', text: '' }, redact: isRedacted, replay: false }).text
+      return buildPacket({ messages: pin.messages, peer, intent: { id: 'raw', text: '' }, redact: isRedacted, replay: false, ...packetTopic(pin.peer) }).text
     })
   return parts.length === 0 ? null : [PINNED_NOTE, ...parts].join('\n')
 }
@@ -322,6 +332,8 @@ export function draftArgv(draft: ReplyDraft, isDryRun: boolean, byOwner = false)
     '-',
     '--reply-to',
     String(draft.replyTo),
+    // Into the reply's topic by name: tg could derive it from --reply-to, but a forum write never relies on that (§10.9).
+    ...topicArgs(draft.peer.topic?.id),
     '--plain',
     '--json',
     ...(byOwner ? ['--yes'] : []),

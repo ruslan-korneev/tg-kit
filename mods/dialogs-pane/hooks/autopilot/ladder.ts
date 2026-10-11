@@ -36,8 +36,9 @@ const LADDER: Record<ChatKind, readonly ApRung[]> = {
   botfather: [],
 }
 
-export function ladderFor(kind: ChatKind): readonly ApRung[] {
-  return LADDER[kind]
+/** The chat's rungs; a closed forum topic takes no write, so it keeps only the ones that read (§10.9). */
+export function ladderFor(kind: ChatKind, isClosed = false): readonly ApRung[] {
+  return isClosed ? LADDER[kind].filter(rung => READS.includes(rung)) : LADDER[kind]
 }
 
 /** auto and delegate send on their own, so allow.toml gates them; a draft is sent by the owner's own key (decision 9). */
@@ -62,7 +63,8 @@ export function rungWhat(rung: ApRung, kind: ChatKind): string {
 }
 
 /** Why nothing writes in this kind of chat, for the card's last row; null where something may. */
-export function readOnlyKindText(kind: ChatKind): string | null {
+export function readOnlyKindText(kind: ChatKind, isClosed = false): string | null {
+  if (isClosed) return 'a closed topic: tg refuses every write into it, so an agent here only reads'
   if (kind === 'channel') return 'a channel: nobody answers in it, so nothing writes here'
   if (kind === 'bot') return 'a bot: it answers your own keys, so an agent here only reads'
   return null

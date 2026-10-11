@@ -37,7 +37,7 @@ const row = (id: number, over: Partial<TgDialog> = {}): TgDialog => ({
   muted: false,
   last_id: id,
   last_date: `2026-10-10T${String(11 - Math.floor((id - 3000) / 60)).padStart(2, '0')}:${String(59 - ((id - 3000) % 60)).padStart(2, '0')}:00Z`,
-  last_text: `placeholder note ${id}`,
+  forum: false, last_text: `placeholder note ${id}`,
   ...over,
 })
 
@@ -466,7 +466,7 @@ describe('passes (§8 T9)', () => {
 
   test("$.state holds only the view on screen, each last_text cut to 120; $.store the same view's rows", async ($, on) => {
     const { ui, seen, clock } = await openPane($, on)
-    seen.pass.rows = ROWS.map(one => (one.id === 3001 ? { ...one, last_text: 'x'.repeat(300) } : one))
+    seen.pass.rows = ROWS.map(one => (one.id === 3001 ? { ...one, forum: false, last_text: 'x'.repeat(300) } : one))
     await clock.advance(60_000)
     await clock.settle()
     await ui.press({ key: 'digit:2' })

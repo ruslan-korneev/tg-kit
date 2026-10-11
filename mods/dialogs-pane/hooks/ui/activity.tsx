@@ -12,7 +12,7 @@ import type { Color, RenderElement } from 'claude-code'
 
 import type { Els } from './components'
 import { CARD_INNER, Card, type CardBorder } from './frame'
-import { GLYPH } from './model'
+import { GLYPH, peerKey } from './model'
 import type { Colors, Role } from './palette'
 import {
   STOP_LABEL,
@@ -84,7 +84,7 @@ export function AutopilotSection(
     children: [
       SegRow(els, colors, gaugeLine(card.gauge, width), 'ap:gauge', isStale),
       SegRow(els, colors, stripLine(card.entries, width), 'ap:strip', isStale),
-      ...shown.map(lane => SegRow(els, colors, laneLine(lane, width), `ap:lane:${lane.peer.id}`, isStale)),
+      ...shown.map(lane => SegRow(els, colors, laneLine(lane, width), `ap:lane:${peerKey(lane.peer)}`, isStale)),
     ],
   })
 }
@@ -115,7 +115,7 @@ export function Activity(
   els: Els,
   props: {
     colors: Colors
-    rows: readonly { id: number; text: string; isStopped: boolean }[]
+    rows: readonly { /** The row's peer key (./model `peerKey`). */ id: string; text: string; isStopped: boolean }[]
     cursor: number
     watching: string | null
     card: AutopilotCard | null

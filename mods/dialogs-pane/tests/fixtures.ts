@@ -2,7 +2,7 @@
 import type { ProcessRunResult } from 'claude-code'
 import type { ElementQuery, FoundElement } from 'claude-code/testing'
 
-import type { FolderKind, TgDialog, TgMessage } from '../types'
+import type { FolderKind, TgDialog, TgMessage, Topic } from '../types'
 
 export const DIALOGS: TgDialog[] = [
   {
@@ -16,7 +16,7 @@ export const DIALOGS: TgDialog[] = [
     muted: false,
     last_id: 677792,
     last_date: '2026-10-10T11:02:00Z',
-    last_text: 'Main menu',
+    forum: false, last_text: 'Main menu',
   },
   {
     id: 1002,
@@ -29,7 +29,7 @@ export const DIALOGS: TgDialog[] = [
     muted: false,
     last_id: 500,
     last_date: '2026-10-10T10:58:00Z',
-    last_text: 'deploy is green',
+    forum: false, last_text: 'deploy is green',
   },
   {
     id: 1003,
@@ -42,7 +42,7 @@ export const DIALOGS: TgDialog[] = [
     muted: false,
     last_id: 42,
     last_date: '2026-10-09T08:20:00Z',
-    last_text: 'note',
+    forum: false, last_text: 'note',
   },
 ]
 
@@ -52,6 +52,7 @@ const me = { id: 1003, kind: 'self', username: null, name: 'Me' } as const
 const base: Omit<TgMessage, 'id' | 'date' | 'sender' | 'out' | 'text'> = {
   chat_id: 1001,
   reply_to: null,
+  topic_id: null,
   forward: null,
   edited: null,
   edits: 0,
@@ -88,8 +89,8 @@ export const MESSAGES: TgMessage[] = [
 
 // A person, a group with a member and the bot, a channel: §4.6's senders.
 export const MORE_DIALOGS: TgDialog[] = [
-  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', last_text: 'Can we call tomorrow at 10?' },
-  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', last_text: 'release 2.0 is out' },
+  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', forum: false, last_text: 'Can we call tomorrow at 10?' },
+  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', forum: false, last_text: 'release 2.0 is out' },
 ]
 
 const contact = { id: 1004, kind: 'user', username: null, name: 'Contact A' } as const
@@ -257,4 +258,55 @@ export const LEGEND_TEXT = '■ for you  ■ chats  ■ autopilot  ■ log'
 /** The dock's legend row as drawn. */
 export async function legendOf(ui: Finds): Promise<string | undefined> {
   return (await ui.find({ key: 'legend' }))?.text
+}
+
+// --- a forum (docs/design/dialogs-pane-ux.md §10.9) ---
+
+/** A placeholder forum: the pass counts 2 unread, its topics sum to 9 with a mention. */
+export const FORUM: TgDialog = {
+  id: 1008,
+  kind: 'supergroup',
+  title: 'Project team',
+  username: null,
+  unread: 2,
+  mentions: 0,
+  pinned: false,
+  muted: false,
+  last_id: 707,
+  last_date: '2026-10-10T11:52:00Z',
+  forum: true,
+  last_text: 'can you look at the header?',
+}
+
+const topic = (over: Partial<Topic> & Pick<Topic, 'id' | 'title'>): Topic => ({ icon_color: null, unread: 0, mentions: 0, pinned: false, closed: false, hidden: false, last_id: null, last_date: null, last_text: '', ...over })
+
+/** `tg topics 1008` in tg's order: pinned first, then by the newest message; General, and one closed. */
+export const TOPICS: Topic[] = [
+  topic({ id: 12, title: 'Releases', icon_color: 0x6fb9f0, unread: 5, pinned: true, last_id: 705, last_date: '2026-10-10T11:40:00Z', last_text: 'v2.4 is tagged' }),
+  topic({ id: 20, title: 'Design review', icon_color: 0xff93b2, unread: 1, mentions: 1, last_id: 707, last_date: '2026-10-10T11:52:00Z', last_text: 'can you look at the header?' }),
+  topic({ id: 1, title: 'General', unread: 3, last_id: 703, last_date: '2026-10-10T10:00:00Z', last_text: 'morning' }),
+  topic({ id: 30, title: 'Infra', icon_color: 0x123456, last_id: 704, last_date: '2026-10-10T09:00:00Z', last_text: 'disk at 80%' }),
+  topic({ id: 40, title: 'Old roadmap', icon_color: 0xfb6f5f, closed: true, last_id: 701, last_date: '2026-09-01T09:00:00Z', last_text: 'archived' }),
+]
+
+const ivan = { id: 2002, kind: 'user', username: null, name: 'Ivan Petrov' } as const
+
+/** The forum's messages, oldest first, each in its topic; a message straight into a topic replies to its id. */
+export const FORUM_MESSAGES: TgMessage[] = [
+  { ...base, chat_id: 1008, id: 701, date: '2026-09-01T09:00:00Z', sender: ivan, out: false, text: 'archived', topic_id: 40, reply_to: 40 },
+  { ...base, chat_id: 1008, id: 703, date: '2026-10-10T10:00:00Z', sender: ivan, out: false, text: 'morning', topic_id: 1 },
+  { ...base, chat_id: 1008, id: 704, date: '2026-10-10T11:00:00Z', sender: ivan, out: false, text: 'disk at 80%', topic_id: 30, reply_to: 30 },
+  { ...base, chat_id: 1008, id: 705, date: '2026-10-10T11:40:00Z', sender: ivan, out: false, text: 'v2.4 is tagged', topic_id: 12, reply_to: 12 },
+  { ...base, chat_id: 1008, id: 707, date: '2026-10-10T11:52:00Z', sender: ivan, out: false, text: 'can you look at the header?', topic_id: 20, reply_to: 20 },
+]
+
+/** What `tg read 1008 [--topic N]` answers: the topic's messages, or every topic's. */
+export function forumRead(argv: readonly string[]): TgMessage[] {
+  const at = argv.indexOf('--topic')
+  return at < 0 ? FORUM_MESSAGES : FORUM_MESSAGES.filter(one => one.topic_id === Number(argv[at + 1]))
+}
+
+/** A forum topic's row key as drawn now, `topic:<gen>:<chat>:<id>` (`all` for `≡ all topics`). */
+export async function topicKey(ui: Finder, id: number | 'all', chatId = FORUM.id): Promise<string> {
+  return (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').find(key => key.startsWith('topic:') && key.endsWith(`:${chatId}:${id}`)) ?? `topic:none:${chatId}:${id}`
 }

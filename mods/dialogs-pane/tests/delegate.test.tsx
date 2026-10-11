@@ -53,7 +53,7 @@ const fixture = <T,>(one: T | undefined): T => {
 /** The delegate chat is a person's (decision 8): the placeholder bot, Contact B, Saved Messages. */
 const CHATS: TgDialog[] = [
   fixture(DIALOGS[0]),
-  { id: PERSON, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 498, last_date: '2026-10-10T11:58:00Z', last_text: 'can you add a health check?' },
+  { id: PERSON, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 498, last_date: '2026-10-10T11:58:00Z', forum: false, last_text: 'can you add a health check?' },
   fixture(DIALOGS[2]),
 ]
 const me = { id: 1003, kind: 'self', username: null, name: 'Me' } as const
@@ -67,6 +67,7 @@ function message(id: number, text: string, over: Partial<TgMessage> = {}): TgMes
     out: false,
     text,
     reply_to: null,
+    topic_id: null,
     forward: null,
     edited: null,
     edits: 0,
