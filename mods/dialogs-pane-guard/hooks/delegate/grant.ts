@@ -4,12 +4,12 @@
 // grant holds whatever the prompt says. Pure.
 import type { DgCommands, DgDialog, DgDuration, DgGrant, DgSkip, DgStop, DgWeb } from './contract'
 import { isInside, isUnresolvable, resolvePath } from './paths'
-import { base, gitSub, operands, pathWords, readCommand, type Reading, type Simple } from './shell'
+import { base, gitSub, operands, pathWords, readArgv, readCommand, type Reading, type Simple } from './shell'
 import { DG_STOPS, type Place, type ToolUse } from './stops'
 
 export const DG_WEB = ['off', 'read', 'full'] as const satisfies readonly DgWeb[]
 export const WEB_LABEL = { off: 'off', read: 'read-only', full: 'full' } as const satisfies Record<DgWeb, string>
-export const COMMANDS_LABEL = { checks: "the repos' checks", any: 'any (permission rules decide)' } as const satisfies Record<DgCommands, string>
+export const COMMANDS_LABEL = { checks: "the repos' checks", any: 'any but tg (permission rules decide)' } as const satisfies Record<DgCommands, string>
 
 export const DEFAULT_GRANT: DgGrant = { web: 'read', repos: [], commands: 'checks', duration: { kind: 'done' } }
 export const DEFAULT_DG_DIALOG: DgDialog = { grant: DEFAULT_GRANT, skip: null, isWarned: false }
@@ -152,8 +152,12 @@ const refuse = (reason: string): GrantCheck => ({
   reason: `${reason}. That is outside the grant the owner set for this task: do without it, or end your turn with "FAIL: <what you need and why>".`,
 })
 
-/** What the Worker may touch: its worktrees; never the human's checkouts the worktrees came from. */
-export type Scope = Place & { checkouts: readonly string[]; checks: readonly string[] }
+/**
+ * What the Worker may touch: its worktrees; never the human's checkouts the
+ * worktrees came from, nor tg-kit's config directory (TG_KIT_CONFIG_DIR), in
+ * which the worktrees live.
+ */
+export type Scope = Place & { checkouts: readonly string[]; checks: readonly string[]; configDir: string }
 
 /** isLiteral: a Bash word the shell does not expand (`'$1'`), so a `$` in it is a letter. */
 function pathCheck(raw: string, scope: Scope, verb: string, cwd = scope.worktrees[0] ?? '/', isLiteral = false): GrantCheck {
@@ -212,9 +216,14 @@ function reaches(path: string, root: string, worktrees: readonly string[]): bool
   return !isInside(`/${[...rootParts, ...(firstGlob === -1 ? below : below.slice(0, firstGlob))].join('/')}`, worktrees)
 }
 
-/** A word with `~`, `$HOME` and `${HOME}` put in; null when a variable is left that the grant cannot know. */
+/** `$HOME`, `${HOME}`, `$TG_KIT_CONFIG_DIR` and `${TG_KIT_CONFIG_DIR}` put in. */
+function putVars(word: string, scope: Scope): string {
+  return word.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, scope.home).replace(/\$\{TG_KIT_CONFIG_DIR\}|\$TG_KIT_CONFIG_DIR(?![A-Za-z0-9_])/g, scope.configDir)
+}
+
+/** A word with `~` and the known variables put in; null when a variable is left that the grant cannot know. */
 function expandWord(word: string, scope: Scope): string | null {
-  const out = word.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, scope.home).replace(/^~(?=\/|$)/, scope.home)
+  const out = putVars(word, scope).replace(/^~(?=\/|$)/, scope.home)
   return /[$`]/.test(out) ? null : out
 }
 
@@ -225,8 +234,10 @@ const PATH_RUN = /^[^\s'"`;|&<>(){},]*/
  * The first place inside `roots` (and not in a worktree) that a command names:
  * in any word's path position, resolved from each place the command may
  * stand in; or spelled out anywhere in a word (an awk program, a `-c` text).
+ * isHomeRelative: a root under home also counts spelled from home on
+ * (`.config/tg-kit`), whatever comes before it.
  */
-function fenced(reading: Reading, roots: readonly string[], scope: Scope, cwds: (index: number) => readonly string[]): string | null {
+function fenced(reading: Reading, roots: readonly string[], scope: Scope, cwds: (index: number) => readonly string[], isHomeRelative = false): string | null {
   for (const [index, simple] of reading.commands.entries()) {
     for (const word of [simple[0] ?? '', ...pathWords(simple)]) {
       const expanded = expandWord(word, scope)
@@ -238,11 +249,12 @@ function fenced(reading: Reading, roots: readonly string[], scope: Scope, cwds: 
     }
   }
   for (const word of [...reading.commands.flat(), ...reading.assigns]) {
-    const text = word.replace(/\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g, scope.home).replace(/(^|[^A-Za-z0-9_])~(?=\/)/g, `$1${scope.home}`)
+    const text = putVars(word, scope).replace(/(^|[^A-Za-z0-9_])~(?=\/)/g, `$1${scope.home}`)
+    const lower = text.toLowerCase()
     for (const root of roots) {
-      const lower = text.toLowerCase()
-      for (let at = lower.indexOf(root.toLowerCase()); at !== -1; at = lower.indexOf(root.toLowerCase(), at + 1)) {
-        const path = resolvePath(`${root}${(PATH_RUN.exec(text.slice(at + root.length)) ?? [''])[0]}`, '/', scope.home)
+      const spelled = isHomeRelative && root.startsWith(`${scope.home}/`) ? root.slice(scope.home.length + 1) : root
+      for (let at = lower.indexOf(spelled.toLowerCase()); at !== -1; at = lower.indexOf(spelled.toLowerCase(), at + 1)) {
+        const path = resolvePath(`${root}${(PATH_RUN.exec(text.slice(at + spelled.length)) ?? [''])[0]}`, '/', scope.home)
         if (reaches(path, root, scope.worktrees)) return path
       }
     }
@@ -408,6 +420,75 @@ function programWords(simple: Simple, name: string): string[] {
   return read === null ? [] : [...read.programs, ...(read.bsdProgram === null ? [] : [read.bsdProgram])]
 }
 
+// --- tg: never the Worker's (dialogs-pane-ux.md §9 decision 11) ---
+
+const PYTHON = /^(python|pypy)(\d+(\.\d+)*)?$/
+/** The options of uv, uv run, uv tool run, uvx and pipx run that take a value. */
+const LAUNCHER_VALUE = new Set([
+  '--with', '--with-editable', '--with-requirements', '--from', '--python', '-p', '--package', '--project', '--directory', '--env-file', '--index',
+  '--default-index', '--index-url', '--extra-index-url', '--find-links', '-f', '--extra', '--group', '--only-group', '--no-group', '--config-file',
+  '--cache-dir', '-w', '--spec', '--pip-args', '--color',
+])
+
+/** Past a launcher's options to its next word; `-m X` is Python's module X. */
+function pastOptions(words: readonly string[]): string[] {
+  let rest = [...words]
+  for (;;) {
+    const word = rest[0]
+    if (word === undefined || !word.startsWith('-')) return rest
+    if (word === '--') return rest.slice(1)
+    if (word === '-m' || word === '--module') return ['python', '-m', rest[1] ?? '']
+    if (word.startsWith('--module=')) return ['python', '-m', word.slice(9)]
+    rest = rest.slice(word.includes('=') || !LAUNCHER_VALUE.has(word) ? 1 : 2)
+  }
+}
+
+/** What a launcher runs: `uv run X`, `uv tool run X`, `uvx X`, `pipx run X`; null when it is no launcher. */
+function launched(simple: Simple): string[] | null {
+  const name = base(simple[0] ?? '').toLowerCase()
+  if (name === 'uvx') return pastOptions(simple.slice(1))
+  if (name !== 'uv' && name !== 'pipx') return null
+  let rest = pastOptions(simple.slice(1))
+  if (name === 'uv' && rest[0] === 'tool') rest = pastOptions(rest.slice(1))
+  return rest[0] === 'run' ? pastOptions(rest.slice(1)) : null
+}
+
+/** Whether Python runs tg-kit's code: `-m tg_kit…`, a `-c` text or a script that names tg_kit. */
+function runsTgKit(simple: Simple): boolean {
+  const names = (text: string | undefined) => (text ?? '').toLowerCase().includes('tg_kit')
+  for (let i = 1; i < simple.length; i++) {
+    const word = simple[i] ?? ''
+    if (word === '--') return names(simple[i + 1])
+    if (!word.startsWith('-') || word === '-' || word.startsWith('--')) {
+      if (word.startsWith('--')) continue
+      return names(word)
+    }
+    // A cluster such as `-Im tg_kit`: the value is the rest of the word, or the next one.
+    for (let k = 1; k < word.length; k++) {
+      const letter = word[k] ?? ''
+      if (letter !== 'm' && letter !== 'c' && letter !== 'W' && letter !== 'X') continue
+      const value = k + 1 < word.length ? word.slice(k + 1) : simple[++i]
+      if (letter === 'm') return (value ?? '').toLowerCase().startsWith('tg_kit')
+      if (letter === 'c') return names(value)
+      break
+    }
+  }
+  return false
+}
+
+/** Whether a simple command runs tg: by any path, behind a launcher, or as Python on tg_kit. */
+function runsTg(simple: Simple, depth = 0): boolean {
+  const name = base(simple[0] ?? '').toLowerCase()
+  if (name === 'tg') return true
+  if (PYTHON.test(name)) return runsTgKit(simple)
+  const inner = launched(simple)
+  if (inner === null) return false
+  // A launcher in a launcher in a launcher: fail closed.
+  if (depth >= 3) return true
+  const reading = readArgv(inner)
+  return reading.isTooDeep || reading.commands.some(one => runsTg(one, depth + 1))
+}
+
 /** Variables that make a check run other code (git's config and helpers, preloads); refused under `checks`. */
 const RUNS_ENV = /^(GIT_[A-Z0-9_]*|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|NODE_OPTIONS|BASH_ENV|PAGER|EDITOR|VISUAL)=/
 /** git options that run a command of their own: fetch's upload-pack, push's receive-pack. */
@@ -416,8 +497,10 @@ const GIT_RUNS = /^(--upload-pack|--receive-pack|--exec)(=|$)/
 function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
   const reading = readCommand(command)
   const isChecks = grant.commands === 'checks'
-  if (isChecks && reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
-  if (isChecks && reading.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec)')
+  // Decision 11, before the mode: what is nested too deep may run tg, and is refused in both modes.
+  if (reading.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec, git rebase -x)')
+  const tg = reading.commands.find(simple => runsTg(simple))
+  if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run, in either commands mode; the Speaker is the only voice in the chat`)
   const start = scope.worktrees[0] ?? '/'
   // Where each simple command stands: its worktree, and where a `cd` before it went (null: it cannot be told).
   const cwds: string[][] = []
@@ -431,6 +514,10 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
       cwd = expanded === null ? null : resolvePath(expanded, cwd ?? start, scope.home)
     }
   }
+  // tg-kit's config directory, reads too, in either mode (decision 11): allow.toml, the sessions, the config.
+  const config = fenced(reading, [scope.configDir], scope, index => cwds[index] ?? [start], true)
+  if (config !== null) return refuse(`${config}: inside tg-kit's config directory (${scope.configDir}), which is never the Worker's, in either commands mode`)
+  if (isChecks && reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
   if (isChecks) {
     const runs = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))].find(word => RUNS_ENV.test(word))
     if (runs !== undefined) return refuse(`${runs.slice(0, runs.indexOf('='))}: a variable that makes a command run other code`)

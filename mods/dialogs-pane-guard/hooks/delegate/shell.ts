@@ -227,6 +227,11 @@ function expand(words: readonly string[], depth: number): Reading {
   return out
 }
 
+/** The commands an argv runs (a launcher's `uv run …`), read as one simple command of a Bash command is. */
+export function readArgv(words: readonly string[]): Reading {
+  return expand(words, 0)
+}
+
 /** The simple commands a Bash command runs, `sh -c '…'`, `eval '…'`, `find -exec` and `git rebase -x` read inside. */
 export function readCommand(text: string, depth = 0): Reading {
   const { tokens, isOpaque, expanded } = lex(text)

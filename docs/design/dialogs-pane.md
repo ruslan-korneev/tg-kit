@@ -310,7 +310,7 @@ card that you see in the pane:
 - **Web:** off / read-only (fetch pages and docs) / full.
 - **Repos:** a list of paths. The Worker works in a fresh worktree of each, never on your
   checkout.
-- **Commands:** `checks` (the default) or `any`.
+- **Commands:** `checks` (the default) or `any` (the card's `any but tg`).
   - `checks` allows the repo's own checks, read off `package.json`, `pyproject.toml` with
     `uv.lock`, `Makefile`, `justfile`, `Cargo.toml` and `go.mod`. It also allows local git (no
     stash, no config, since both are shared with your checkout) and local read-only commands.
@@ -320,6 +320,9 @@ card that you see in the pane:
     It refuses `git -c` and the variables that make git or a check run other code (`GIT_*`,
     `NODE_OPTIONS`, preloads).
   - `any` lets Claude Code's normal permission rules decide.
+  - In either mode the Worker never runs tg (by any path, behind `uv run`, `uvx` or `pipx run`,
+    or as Python on `tg_kit`) and never names a path in tg-kit's config directory outside its
+    worktrees, reads included (dialogs-pane-ux.md §9 decision 11).
   - Files are only in the worktrees, never in your checkouts, in both modes. A path counts
     wherever a command names one: an operand, `--out=/p`, `-o/p`, a redirect target attached or
     spaced. What `sh -c`, `eval`, `find -exec` and `git rebase -x` run is read too.
