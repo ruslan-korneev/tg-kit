@@ -2032,7 +2032,7 @@ task codes against these role names.
 | `saved` | ★ | `warning` | yellow `#F9E2AF` | `yellowBright` |
 | `dim` | time, preview, ◌, labels, the legend's words, the key line | `inactive` | overlay `#6C7086` | `gray` |
 | `subtext` | the second tier: `@username` in the chat card's title, the log's text | `inactive` | subtext `#A6ADC8` | `white` |
-| `text` | names and values (bold when unread) | `text` | text `#CDD6F4` | default |
+| `text` | names and values (bold when unread) | `text` | text `#CDD6F4` | none: the terminal's own foreground (`undefined`) |
 | `surface` | every card's border while the pane does not hold the keys, the LOG card's border | `subtle` | surface `#45475A` | `gray` |
 
 Sections take their role's colour: FOR YOU `mention`, CHATS `person`, AUTOPILOT `ok`, LOG
@@ -2054,17 +2054,20 @@ Notes:
 **Forum topic colours.** Telegram gives a topic one of six `icon_color` values. They map onto the
 palette as follows:
 
-| `icon_color` | Telegram | `mocha` | `theme` |
-| --- | --- | --- | --- |
-| `0x6FB9F0` | blue | blue `#89B4FA` | `permission` |
-| `0xFFD67E` | yellow | yellow `#F9E2AF` | `warning` |
-| `0xCB86DB` | violet | mauve `#CBA6F7` | `merged` |
-| `0x8EEE98` | green | green `#A6E3A1` | `success` |
-| `0xFF93B2` | rose | pink `#F5C2E7` | `claude` |
-| `0xFB6F5F` | red | maroon `#EBA0AC` | `error` |
+| `icon_color` | Telegram | `mocha` | `theme` | 16-colour |
+| --- | --- | --- | --- | --- |
+| `0x6FB9F0` | blue | blue `#89B4FA` | `permission` | `blue` |
+| `0xFFD67E` | yellow | yellow `#F9E2AF` | `warning` | `yellow` |
+| `0xCB86DB` | violet | mauve `#CBA6F7` | `merged` | `magenta` |
+| `0x8EEE98` | green | green `#A6E3A1` | `success` | `green` |
+| `0xFF93B2` | rose | pink `#F5C2E7` | `claude` | `magentaBright` |
+| `0xFB6F5F` | red | maroon `#EBA0AC` | `error` | `redBright` (SGR 91) |
 
-Red maps to maroon, not red, so that a topic's dot never reads as an unread count. Any other
-value draws in `dim`.
+Red maps away from `unread`'s red, so that a topic's dot never reads as an unread count: maroon
+in `mocha`, `redBright` (91) against `unread`'s `red` (31) in 16 colours. `theme` cannot: its
+only red key is `error`, the same as `unread`, so there the red topic and an unread count share a
+colour and only the column tells them apart (a known gap; T12's test records it). Any other value
+draws in `dim`.
 
 ### 10.3 Glyphs
 
@@ -2086,7 +2089,7 @@ The symbol column holds one symbol, chosen by this priority:
 | Symbol | Role | Means |
 | --- | --- | --- |
 | `@2` | `mention` | unread mentions of the owner, also in a muted chat (Telegram notifies those) |
-| `12` | `unread` | unread messages in a chat that is not muted; `99+` past 99 |
+| `12` | `unread` | unread messages in a chat that is not muted; `99+` past 99 (mentions: `@9+`) |
 | `12` | `dim` | the same count in a muted chat (§4.7: muted counts would bury the rest) |
 | `⊘` | `dim` | a closed topic: no writes, no agent (§10.9) |
 | `⚡` | `ok`, or `held` while it holds something for the owner | an agent is on here, at any level |
@@ -2128,7 +2131,8 @@ One line, in Chats, FOR YOU, the compact card and Topics:
 - **Columns**: cursor 1 · time 6 · space · glyph 1 · space · name · space · preview · space ·
   symbol 3. The fixed cells add up to 15, and the name and the preview share the rest.
   `name = min(20, rest − 12)`, and the preview gets what is left. When `name` would drop under 10,
-  the preview goes and the name takes the whole rest. So the name keeps its room and the preview
+  the preview goes and the name takes the whole rest; the space that separated them stays as
+  padding. So the name keeps its room and the preview
   gives way first: at 60 columns (a 56-cell card) it is name 20 and preview 21; at 44 it is
   13 and 12. Widths are counted in cells (`cells`, `labelCells`).
 - **Time**: `14:02` today, `Mon` within the last six days, `Oct 3` older, `2025` before this
@@ -2138,8 +2142,20 @@ One line, in Chats, FOR YOU, the compact card and Topics:
 - **Name**: the dialog's `title`, which for a user is first and last name; `Saved Messages` for
   `self`. Never `@username`: `dialogLabel` (`ui/model.ts:48`) stops returning it, and the username
   moves, dim, into the chat card's title. Routing still uses `peerArg` (`@username`, the id, or
-  `me`) and does not change.
-- **Preview**: the chat's `last_text`, one line (`oneLine`), dim; a media tag as in the thread. The
+  `me`) and does not change. The name is cut by cells (`cells`: an emoji counts two).
+- **Names where the owner confirms.** A title is not unique and anyone can copy one (decided by
+  tg-kit-25, 2026-10-11). Lists, the log and dividers show the name only. Wherever the owner
+  confirms something about a peer, the name carries its handle: `Ivan Petrov · @ivan_example`, or
+  the id when there is no username (`Project team · -1000000000205`). Those surfaces are:
+  - the allow.toml Yes/No dialog;
+  - send, press and `--yes` confirmations;
+  - the delegate grant, and an agent level starting (autopilot on);
+  - the band's hard-stop and undo items.
+
+  One helper builds that label, `peerConfirmLabel` in `ui/model.ts`, and a test checks that every
+  confirmation surface uses it.
+- **Preview**: the chat's `last_text`, one line (`oneLine`), dim. A dialog row has no media field
+  (`Dialog`, `types/index.d.ts:87`), so there is no media tag. The
   pass carries no sender, so a group's preview has none, and neither does a topic's: `tg topics`
   on `feat/tg-topics` gives `last_id`, `last_date` and `last_text` only (its worktree, uncommitted,
   2026-10-11). A builder adds a sender only after tg gains a field for it, which would be a CLI
