@@ -1880,8 +1880,9 @@ Decided by the owner during the build (2026-10-11):
     `<>`, `&>`, `&>>`, `N>`, `N>>`; `N>&M` names no file). Before, the grant read only operands
     that start with `/` or `~` or hold `..`. So under `checks`, `echo … >>/home/u/.zshrc`,
     `sort --output=/home/u/.zshrc` and `git log --output=/home/u/.zshrc` passed, while their
-    spaced forms were refused. The commands that `find -exec`, `-execdir`, `-ok`, `-okdir` and
-    `git rebase -x` (`--exec`) run are read as `sh -c`'s are, in both modes. Under `checks`,
+    spaced forms were refused. The commands that `find -exec`, `-execdir`, `-ok`, `-okdir`,
+    `git rebase -x` (`--exec`) and a launcher (`uv run`, `uvx`, `pipx run`) run are read, for their
+    paths as for tg, as `sh -c`'s are, in both modes. Under `checks`,
     `git -c` is refused, as git's config is, since a key such as `core.fsmonitor` runs a command.
     Under `checks` too, awk and sed count as local read-only commands only with a program that
     can neither write nor run anything. That leaves out awk's `>`, `>>` and `|` on output,
