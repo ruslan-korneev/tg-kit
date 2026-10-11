@@ -2948,8 +2948,8 @@ What the results change for T12–T16:
 ### 10.12 Tasks T11–T16
 
 Branches come off `design/pane-v2` (this doc), each in its own worktree. The checks are §8's (`tsc
--p mods/dialogs-pane`, `claude plugin validate`, `claude plugin test`, `uv run pytest`), plus a
-live run on the fake tg (Appendix A) in a 60-column and a 44-column dock, inline at 100×12, and
+-p mods/dialogs-pane`, `claude plugin validate`, `claude plugin test` behind Appendix A's lock,
+`uv run pytest`), plus a live run on the fake tg (Appendix A) in a 60-column and a 44-column dock, inline at 100×12, and
 the pane closed. Each task captures its live run into the commit body. No real names: Ivan Petrov,
 Project team, Dev chat, @example_bot.
 
@@ -3193,8 +3193,16 @@ Asked by the owner on 2026-10-11, through tg-kit-25:
   default).
 - Session: `claude --plugin-dir mods/dialogs-pane --plugin-dir mods/dialogs-pane-guard --settings
   '{"enabledPlugins":{"dialogs-pane@tg-kit":false,"dialogs-pane-guard@tg-kit":false}}'`, so the
-  installed copies do not load twice. A `--plugin-dir` run uses the store file
-  `~/.claude/plugins/store/dialogs-pane_inline-*.json`: back it up first and restore it after.
+  installed copies do not load twice.
+- The store. Every `--plugin-dir` run, so every lab running in parallel, shares one store file:
+  `~/.claude/plugins/store/dialogs-pane_inline-*.json`.
+  - Never back it up and restore it whole: a restore puts back the old state of every other lab
+    that wrote in between. T15's restore clobbered T14's live lab that way.
+  - Reset only the keys your own probe set, and only those.
+  - Never touch `dialogs-pane_tg-kit-*.json`, not to read, back up or reset it. That is the owner's
+    real store, the installed mod's.
+- Whole-mod test suites run one at a time, behind a shared lock:
+  `lockf /tmp/tg-kit-plugin-test.lock claude plugin test mods/dialogs-pane`.
 - The fake tg answers: `dialogs --limit N --json` · `read PEER --limit N --reverse --json` ·
   `msg PEER ID… --json` (exit 4 for missing) · `whoami --json` · `allow list --json` ·
   `send PEER - --plain [--wait …] [--reply-to ID] --json [--dry-run]` (stdin text; exit 7 outside
