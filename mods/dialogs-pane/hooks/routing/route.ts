@@ -196,19 +196,10 @@ export function spawnDescription(intent: RouteIntent, messageIds: readonly numbe
 
 // --- the ledger ---
 
-/** `12s`, `3m`, `2h`, `1d`. */
-export function age(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m`
-  if (s < 86_400) return `${Math.floor(s / 3600)}h`
-  return `${Math.floor(s / 86_400)}d`
-}
-
 function stateLabel(entry: LedgerEntry): string {
   switch (entry.state.kind) {
     case 'sent':
-      return '· sent'
+      return 'sent'
     case 'working':
       return `${GLYPH.working}working`
     case 'done':
@@ -218,12 +209,12 @@ function stateLabel(entry: LedgerEntry): string {
   }
 }
 
-/** LedgerRow: packet → agent, intent, state, age. */
-export function ledgerRowText(entry: LedgerEntry, now: number): string {
+/** A packet's line in the LOG card: what went, where, as what, and its state; the time and the chat are the log's own columns (§10.6). */
+export function packetLogText(entry: LedgerEntry): string {
   const ids = entry.messageIds.length === 1 ? `#${entry.messageIds[0]}` : `${entry.messageIds.length} msgs`
   const to = entry.to.kind === 'agent' && entry.to.isNew ? `+${entry.to.label}` : recipientLabel(entry.to)
   const missing = entry.missing.length === 0 ? '' : ` · ${entry.missing.length} parent${entry.missing.length === 1 ? '' : 's'} not found`
-  return `${ids} ${entry.peer.label} → ${to} · ${intentLabel(entry.intent)} · ${stateLabel(entry)} · ${age(now - entry.at)}${missing}`
+  return `${ids} → ${to} · ${intentLabel(entry.intent)} · ${stateLabel(entry)}${missing}`
 }
 
 const LEDGER_MAX = 50

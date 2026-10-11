@@ -277,8 +277,9 @@ describe('auto', () => {
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
     // l from the card: Activity's log, one line a burst (§5.7).
-    const ledger = await ui.find({ type: 'Text', text: /→ "Merged, thanks"/ })
-    expect(ledger?.text).toMatch(/^ {2}\d\d:\d\d ⟳ Dev Team · → "Merged, thanks" · conf 0\.93 · ✓ sent · undone$/)
+    const ledger = await ui.find({ type: 'Text', text: /sent "Merged, thanks"/ })
+    // The time and the chat are the log's columns, the text what happened (§10.6).
+    expect(ledger?.text).toMatch(/^\d\d:\d\d {2}Dev Team {6}sent "Merged, thanks" · 0\.93 · undone$/)
     await band.unmount()
     await ui.unmount()
   })
@@ -423,7 +424,7 @@ describe('auto', () => {
     expect(seen.toasts.at(-1)).toBe('tg: ⟳ auto on for Dev Team. 0 or /tg stop stops every chat.')
     // The audit trail, now that no `!` row shows the add.
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⟳ Dev Team · allow.toml \+ Dev Team \(1002\), your Yes$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\d\d:\d\d {2}Dev Team +allow.toml \+ Dev Team \(1002\), your Yes$/ })).toBeDefined()
     await ui.unmount()
   })
 

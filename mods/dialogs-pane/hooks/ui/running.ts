@@ -3,11 +3,11 @@
 // task), read by the dock's running strip, Activity's running rows and the kill
 // switch's answer; and Activity's log, the packet ledger and the autopilot's
 // merged by time. Pure.
-import type { ActivityView, ApEntry, ApLevel, ApPhase, LedgerEntry, PeerRef, PinWatch } from '../../types'
+import type { ActivityView, ApDialog, ApEntry, ApLevel, ApOutcome, ApPhase, LedgerEntry, PeerRef, PinWatch, TgPeerKind } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
-import { entryLines } from '../autopilot/ledger'
-import { ledgerRowText } from '../routing/route'
-import { GLYPH, clockText, labelCells } from './model'
+import { packetLogText } from '../routing/route'
+import { GLYPH, NARROW_GLYPHS, cells as wideCells, clockText, labelCells, oneLine } from './model'
+import type { Role } from './palette'
 
 /** One chat with something on it. */
 export type RunRow = {
@@ -178,28 +178,384 @@ export function activityTarget(row: RunRow | null): 'card' | 'chat' {
   return row !== null && row.agent !== null && row.task === null ? 'card' : 'chat'
 }
 
-export type LogTone = 'plain' | 'ok' | 'warn' | 'danger'
-export type LogRow = { key: string; at: number; text: string; tone: LogTone }
+// --- the AUTOPILOT card and the log (§10.6, T14) ---
+
+/** A run of text in one role; `null` is the card's own colour. Rows of the card are lists of these, so the drawing only colours them. */
+export type Seg = { text: string; role: Role | null }
+
+/** A card under this many inner cells drops the words: `11 · 2 · 1`, `0:12`, `AUTOPILOT · 2` (a 52-column pane, §10.5). */
+export const WIDE_INNER = 48
+
+const HOUR_MS = 3_600_000
+
+/** `0:41`, `41:07`: minutes and seconds, for the lanes' clocks and `↻` (decision 4). */
+export function minSec(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+/**
+ * The card's own glyphs a terminal draws in one cell (East Asian Width N or A,
+ * §10.3). T12 adds them to NARROW_GLYPHS; the union keeps the count right
+ * before and after that lands.
+ */
+const CARD_NARROW: ReadonlySet<string> = new Set([...NARROW_GLYPHS, '…', '▰', '▱', '━', '■', '↻', '▣', '✓', '✗'])
+
+/** Cells of a card row: its narrow glyphs as drawn, everything else as `cells` counts it (erring wide). */
+export function cardCells(text: string): number {
+  return wideCells(text) - [...text].filter(char => CARD_NARROW.has(char)).length
+}
+
+/** `text` cut to `room` cells with `…`, counted as the terminal draws it (`cardCells`). */
+export function cutCells(text: string, room: number): string {
+  if (cardCells(text) <= room) return text
+  let out = ''
+  for (const char of text) {
+    if (cardCells(`${out}${char}…`) > room) break
+    out += char
+  }
+  return `${out}…`
+}
+
+/** `text` cut to `width` cells and padded to exactly that. */
+function column(text: string, width: number): string {
+  const cut = cutCells(text, width)
+  return `${cut}${' '.repeat(Math.max(0, width - cardCells(cut)))}`
+}
+
+// The gauge: the chat nearest its limit.
+
+/** The running chat nearest its hourly limit: its sends in the last hour, the limit, and when the oldest of them leaves the hour. */
+export type Gauge = { peer: PeerRef; sent: number; perHour: number; freeInMs: number | null }
+
+/**
+ * The chat nearest its limit, by sends over `perHour` (the gate's own count,
+ * `sentLastHour`: auto sends in the last hour); ties go to the one with more
+ * sends, then the first started. A chat without a limit has no gauge; none
+ * with one is null.
+ */
+export function gauge(dialogs: readonly ApDialog[], ledger: readonly ApEntry[], now: number): Gauge | null {
+  let best: Gauge | null = null
+  for (const dialog of dialogs) {
+    if (dialog.perHour === null) continue
+    const counted = ledger.filter(entry => entry.peer.id === dialog.peer.id && entry.outcome.kind === 'sent' && entry.outcome.by === 'auto' && entry.at > now - HOUR_MS)
+    const oldest = counted.reduce((min, entry) => Math.min(min, entry.at), Number.POSITIVE_INFINITY)
+    const one: Gauge = { peer: dialog.peer, sent: counted.length, perHour: dialog.perHour, freeInMs: counted.length === 0 ? null : oldest + HOUR_MS - now }
+    const ratio = (g: Gauge) => g.sent / g.perHour
+    if (best === null || ratio(one) > ratio(best) || (ratio(one) === ratio(best) && one.sent > best.sent)) best = one
+  }
+  return best
+}
+
+export const GAUGE_CELLS = 5
+
+/** How many of the five `▰` are filled (any send fills one), and their role: `held` from 80 %, `unread` at the limit. */
+export function gaugeBar(g: Gauge): { filled: number; role: Role } {
+  const ratio = g.sent / g.perHour
+  const filled = Math.min(GAUGE_CELLS, Math.ceil(ratio * GAUGE_CELLS))
+  return { filled, role: ratio >= 1 ? 'unread' : ratio >= 0.8 ? 'held' : 'ok' }
+}
+
+/** `12/50`: the compact card's and the Hidden line's pair. */
+export function gaugePair(g: Gauge): string {
+  return `${g.sent}/${g.perHour}`
+}
+
+/** `▰▰▱▱▱ 12/50`: the bar and the pair, as the card, the compact card and Activity draw them. */
+export function gaugeSegs(g: Gauge): Seg[] {
+  const bar = gaugeBar(g)
+  return [
+    { text: '▰'.repeat(bar.filled), role: bar.role },
+    { text: '▱'.repeat(GAUGE_CELLS - bar.filled), role: 'dim' },
+    { text: ` ${gaugePair(g)}`, role: 'text' },
+  ]
+}
+
+/** The card's first row: `▰▰▱▱▱ 12/50 per hour · Dev chat  ↻ 0:41`; no limit anywhere, `no hourly limit`. */
+export function gaugeLine(g: Gauge | null, width: number): Seg[] {
+  if (g === null) return [{ text: '∞/h · no hourly limit', role: 'dim' }]
+  const isWide = width >= WIDE_INNER
+  const free = g.freeInMs === null ? '' : `${isWide ? '  ' : ' '}↻ ${minSec(g.freeInMs)}`
+  const head = gaugeSegs(g)
+  const per = isWide ? ' per hour' : ''
+  const used = cardCells(head.map(seg => seg.text).join('')) + per.length + 3 + cardCells(free)
+  return [
+    ...head,
+    { text: per, role: 'dim' },
+    { text: ' · ', role: 'dim' },
+    { text: cutCells(g.peer.label, Math.max(4, width - used)), role: 'text' },
+    { text: free, role: 'dim' },
+  ]
+}
+
+// The cell strip.
+
+export const CELL_KINDS = ['sent', 'held', 'asked', 'refused'] as const
+export type CellKind = (typeof CELL_KINDS)[number]
+
+export const CELL_ROLE = { sent: 'ok', held: 'held', asked: 'mention', refused: 'unread' } as const satisfies Record<CellKind, Role>
+
+/** §10.6's map from an outcome to its cell; `working`, `listened`, `dropped` and `allowed` draw none. */
+export function cellOf(outcome: ApOutcome): CellKind | null {
+  switch (outcome.kind) {
+    case 'sent':
+      return 'sent'
+    case 'drafted':
+      return 'held'
+    case 'stop':
+      return 'asked'
+    case 'failed':
+    case 'skipped':
+      return 'refused'
+    case 'working':
+    case 'listened':
+    case 'dropped':
+    case 'allowed':
+      return null
+  }
+}
+
+/** The strip: the newest `room` cells, oldest first (newest at the right), and every event's count (not just the shown). */
+export type Strip = { cells: CellKind[]; counts: Record<CellKind, number> }
+
+export function cells(entries: readonly ApEntry[], room: number): Strip {
+  const all = [...entries]
+    .sort((a, b) => a.at - b.at || a.seq - b.seq)
+    .flatMap(entry => {
+      const cell = cellOf(entry.outcome)
+      return cell === null ? [] : [cell]
+    })
+  const counts: Record<CellKind, number> = { sent: 0, held: 0, asked: 0, refused: 0 }
+  for (const cell of all) counts[cell] += 1
+  return { cells: room <= 0 ? [] : all.slice(-room), counts }
+}
+
+/** `sent 11 · held 2 · asked 1 · refused 1`, each word in its cell's role, zeros left out; narrow, the numbers only. */
+function countSegs(counts: Strip['counts'], isWide: boolean): Seg[] {
+  return CELL_KINDS.filter(kind => counts[kind] > 0).flatMap((kind, index) => [
+    ...(index === 0 ? [] : [{ text: ' · ', role: 'dim' as const }]),
+    { text: isWide ? `${kind} ${counts[kind]}` : String(counts[kind]), role: CELL_ROLE[kind] },
+  ])
+}
+
+/** The card's second row: as many cells as fit beside the counts. */
+export function stripLine(entries: readonly ApEntry[], width: number): Seg[] {
+  const isWide = width >= WIDE_INNER
+  const counted = cells(entries, 0).counts
+  const tail = countSegs(counted, isWide)
+  if (tail.length === 0) return [{ text: 'no replies yet', role: 'dim' }]
+  const tailCells = cardCells(tail.map(seg => seg.text).join(''))
+  const strip = cells(entries, width - 2 - tailCells)
+  // Runs of one kind draw as one Text.
+  const runs: Seg[] = []
+  for (const cell of strip.cells) {
+    const last = runs.at(-1)
+    if (last !== undefined && last.role === CELL_ROLE[cell]) last.text += '■'
+    else runs.push({ text: '■', role: CELL_ROLE[cell] })
+  }
+  return [...runs, { text: '  ', role: null }, ...tail]
+}
+
+// The lanes.
+
+/** One running chat as the card reads it: its newest ledger entry, the burst it waits on, a draft held, a live task. */
+export type LaneInput = {
+  peer: PeerRef
+  level: ApLevel
+  phase: ApPhase
+  gapS: number
+  /** The newest incoming message of the burst not answered yet; null with no burst. */
+  burstAt: number | null
+  /** This chat's newest ledger entry. */
+  latest: ApEntry | null
+  hasDraft: boolean
+  /** A delegate's live task: when it started. */
+  taskAt: number | null
+}
+
+export type LaneState =
+  | { kind: 'drafting'; ms: number }
+  | { kind: 'waits' }
+  | { kind: 'task'; minutes: number }
+  | { kind: 'sent'; confidence: number | null }
+  | { kind: 'listening' }
+
+/** One lane: the level glyph, the name, how much of the burst's gap has passed (0–1; null with no burst waiting), and the state. */
+export type Lane = { peer: PeerRef; glyph: string; gap: number | null; state: LaneState }
+
+/** `sent 0.93` stays this long at most; then, or at the next burst, `listening` (the designer's call on §10.6). */
+export const SENT_SHOWN_MS = 5 * 60_000
+
+const DRAFTING: ReadonlySet<ApPhase> = new Set(['thinking', 'checking', 'sending'])
+
+/**
+ * The lanes, in the order the chats started. The lane is the burst's wait:
+ * the time since its newest message against the gap. The state, first that
+ * holds: drafting (the clock since the burst's entry began), a draft waits,
+ * a delegate's task, a send in the last five minutes, listening.
+ */
+export function lanes(running: readonly LaneInput[], now: number): Lane[] {
+  return running.map(one => {
+    const gap = one.burstAt === null ? null : Math.min(1, Math.max(0, (now - one.burstAt) / (one.gapS * 1000)))
+    const latest = one.latest
+    const state: LaneState =
+      DRAFTING.has(one.phase)
+        ? { kind: 'drafting', ms: latest !== null && latest.outcome.kind === 'working' ? now - latest.at : 0 }
+        : one.hasDraft
+          ? { kind: 'waits' }
+          : one.taskAt !== null
+            ? { kind: 'task', minutes: Math.max(0, Math.floor((now - one.taskAt) / 60_000)) }
+            : latest !== null && latest.outcome.kind === 'sent' && one.burstAt === null && now - latest.at < SENT_SHOWN_MS
+              ? { kind: 'sent', confidence: latest.confidence }
+              : { kind: 'listening' }
+    return { peer: one.peer, glyph: LEVEL_GLYPH[one.level], gap, state }
+  })
+}
+
+function stateSeg(state: LaneState, isWide: boolean): Seg {
+  switch (state.kind) {
+    case 'drafting':
+      return { text: isWide ? `drafting ${minSec(state.ms)}` : minSec(state.ms), role: 'text' }
+    case 'waits':
+      return { text: 'draft waits', role: 'held' }
+    case 'task':
+      return { text: `task ${state.minutes} min`, role: 'subtext' }
+    case 'sent':
+      return { text: state.confidence === null ? 'sent' : `sent ${state.confidence.toFixed(2)}`, role: 'ok' }
+    case 'listening':
+      return { text: 'listening', role: 'dim' }
+  }
+}
+
+/** The lane's cells: 20 at most, and what the name and the widest state leave. */
+export function laneCells(width: number): number {
+  const isWide = width >= WIDE_INNER
+  return Math.max(4, Math.min(20, width - 2 - (isWide ? 13 : 12) - (isWide ? 2 : 1) - 13))
+}
+
+/** `⟳ Dev chat     ━━━━━━━━━━··········  drafting 0:12`. */
+export function laneLine(lane: Lane, width: number): Seg[] {
+  const isWide = width >= WIDE_INNER
+  const cellsWide = laneCells(width)
+  const done = Math.round((lane.gap ?? 0) * cellsWide)
+  return [
+    { text: `${lane.glyph} `, role: 'ok' },
+    { text: `${column(lane.peer.label, isWide ? 12 : 11)} `, role: 'text' },
+    { text: '━'.repeat(done), role: 'ok' },
+    { text: '·'.repeat(cellsWide - done), role: 'dim' },
+    { text: isWide ? '  ' : ' ', role: null },
+    stateSeg(lane.state, isWide),
+  ]
+}
+
+/** At most three lanes on the dock's card; Activity shows them all. */
+export const MAX_LANES = 3
+
+/** The card's content rows: none with no agent on, else the gauge, the strip and a lane per chat (three at most). */
+export function autopilotRows(lanes: number, max: number = MAX_LANES): number {
+  return lanes === 0 ? 0 : 2 + Math.min(max, lanes)
+}
+
+/** `AUTOPILOT · 2 chats`, `AUTOPILOT · 5 chats · +2`; narrow `AUTOPILOT · 2`. */
+export function autopilotTitle(chats: number, shown: number, width: number): string {
+  const more = chats > shown ? ` · +${chats - shown}` : ''
+  return width >= WIDE_INNER ? `AUTOPILOT · ${chats} chat${chats === 1 ? '' : 's'}${more}` : `AUTOPILOT · ${chats}${more}`
+}
+
+/** Everything the AUTOPILOT card draws, read once per draw. */
+export type AutopilotCard = { gauge: Gauge | null; entries: readonly ApEntry[]; lanes: readonly Lane[] }
+
+// The log.
+
+/** A log line's text colour: `subtext`, or its outcome's role. */
+export type LogTone = Extract<Role, 'subtext' | 'ok' | 'held' | 'mention' | 'unread'>
+/** One line of the log: the time and the chat are their own columns, coloured apart from the text (§10.6). */
+export type LogRow = { key: string; at: number; peer: { label: string; kind: TgPeerKind }; text: string; tone: LogTone }
 
 const PACKET = '▣'
 
+export const KIND_ROLE = {
+  self: 'saved',
+  user: 'person',
+  bot: 'bot',
+  group: 'group',
+  supergroup: 'group',
+  channel: 'channel',
+  unknown: 'person',
+} as const satisfies Record<TgPeerKind, Role>
+
+const conf = (confidence: number | null) => (confidence === null ? '' : ` · ${confidence.toFixed(2)}`)
+
+/** `u` on an auto reply: the log says it was taken back, or why not. */
+function undoTail(undo: ApEntry['undo']): string {
+  if (undo === null) return ''
+  switch (undo.state) {
+    case 'undone':
+      return ' · undone'
+    case 'failed':
+      return ` · undo failed: ${undo.reason}`
+    case 'open':
+    case 'expired':
+      return ''
+  }
+}
+
+/** What the autopilot did with a burst, in the log's words: `sent "Merged, thanks" · 0.93`. */
+function entryText(entry: ApEntry): string {
+  const outcome = entry.outcome
+  switch (outcome.kind) {
+    case 'working':
+      return `${GLYPH.working}working`
+    case 'sent':
+      return `sent${outcome.by === 'you' ? ' by you' : ''} "${oneLine(entry.reply, 60)}"${conf(entry.confidence)}${undoTail(entry.undo)}`
+    case 'drafted':
+      return `draft waits${outcome.reasons.length === 0 ? '' : ` · ${outcome.reasons.join(' · ')}`}${conf(entry.confidence)}`
+    case 'dropped':
+      return 'draft dropped'
+    case 'listened':
+      return `summarized: ${oneLine(entry.reply, 60)}`
+    case 'allowed':
+      return outcome.line
+    case 'skipped':
+      return `skipped: ${outcome.reason}`
+    case 'failed':
+      return `${GLYPH.error} ${outcome.reason}`
+    // ── delegate ──
+    case 'stop':
+      return outcome.answer === 'skipped'
+        ? `skipped stop: ${outcome.stops.join(', ')} ${outcome.what}`
+        : `asked ${outcome.stops.join(' + ')}: ${outcome.what} → ${outcome.answer} (${outcome.why})`
+  }
+}
+
 /**
- * Activity's log: packets that left the pane, the autopilot's bursts and
- * drafts, and the hard stops (the guard's events come in as entries too),
- * newest first by time.
+ * The log: packets that left the pane, the autopilot's bursts and drafts, and
+ * the hard stops (the guard's events come in as entries too), newest first.
  */
-export function mergedLog(packets: readonly LedgerEntry[], entries: readonly ApEntry[], now: number, width: number): LogRow[] {
+export function mergedLog(packets: readonly LedgerEntry[], entries: readonly ApEntry[]): LogRow[] {
   const fromPackets = packets.map(
     (entry): LogRow => ({
       key: `ledger:${entry.seq}`,
       at: entry.at,
-      text: `${clockText(entry.at)} ${PACKET} ${ledgerRowText(entry, now)}`,
-      tone: entry.state.kind === 'done' ? 'ok' : entry.state.kind === 'failed' ? 'danger' : 'plain',
+      peer: { label: entry.peer.label, kind: entry.peer.kind },
+      text: `${PACKET} ${packetLogText(entry)}`,
+      tone: entry.state.kind === 'done' ? 'ok' : entry.state.kind === 'failed' ? 'unread' : 'subtext',
     }),
   )
   const fromEntries = entries.map((entry): LogRow => {
-    const tone: LogTone = entry.outcome.kind === 'failed' ? 'danger' : entry.outcome.kind === 'drafted' || entry.outcome.kind === 'stop' ? 'warn' : 'plain'
-    return { key: `ap:entry:${entry.seq}`, at: entry.at, text: `${clockText(entry.at)} ${LEVEL_GLYPH[entry.level]} ${entry.peer.label} · ${entryLines(entry, now, width)[1].trim()}`, tone }
+    const cell = cellOf(entry.outcome)
+    return { key: `ap:entry:${entry.seq}`, at: entry.at, peer: { label: entry.peer.label, kind: entry.peer.kind }, text: entryText(entry), tone: cell === null ? 'subtext' : CELL_ROLE[cell] }
   })
   return [...fromPackets, ...fromEntries].sort((a, b) => b.at - a.at)
+}
+
+/** One log line in its columns: `14:02  Dev chat      sent "Merged, thanks" · 0.93`, the name 13 cells wide (12 narrow), the text cut to fit. */
+export function logLine(row: LogRow, width: number): Seg[] {
+  const name = width >= WIDE_INNER ? 13 : 12
+  const head = 5 + 2 + name + 1
+  return [
+    { text: `${clockText(row.at)}  `, role: 'dim' },
+    { text: `${column(row.peer.label, name)} `, role: KIND_ROLE[row.peer.kind] },
+    { text: cutCells(row.text, Math.max(1, width - head)), role: row.tone },
+  ]
 }

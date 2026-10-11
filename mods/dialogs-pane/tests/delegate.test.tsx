@@ -549,7 +549,7 @@ describe('a task', () => {
     expect(await bandKeyProblems(band)).toEqual([])
     await band.unmount()
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ↯ Contact B · skipped stop: publish git push origin tg\/y$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\d\d:\d\d {2}Contact B +skipped stop: publish git push origin tg\/y$/ })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -634,7 +634,7 @@ describe('the Speaker in a delegate dialog', () => {
     expect(sends(seen)).toEqual(['write to someone@example.com'])
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ↯ Contact B · skipped stop: share personal data in/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\d\d:\d\d {2}Contact B +skipped stop: share personal data in/ })).toBeDefined()
     await ui.unmount()
   })
 

@@ -240,7 +240,7 @@ describe('the send sheet: send to main', () => {
     expect(await ui.find({ key: 'bar' })).toBeDefined()
 
     await ui.press({ key: 'key:activity' })
-    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('#677791 @example_bot → main · Fix · · sent')
+    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('@example_bot  ▣ #677791 → main · Fix · sent')
     await $.turn.start({ text: '', turnId: 't-1' })
     expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('…working')
     await $.turn.complete({ answer: 'fixed', durationMs: 10, isAborted: false, turnId: 't-1', reason: 'answer' })
@@ -464,7 +464,7 @@ describe('the send sheet: another agent', () => {
     expect(seen.spawned).toHaveLength(1)
     expect(seen.spawned[0]).toContain('<tg-packet v="1" intent="fix"')
     await ui.press({ key: 'key:activity' })
-    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('→ +tg Fix #677791 · Fix · · sent')
+    expect((await ui.find({ key: 'ledger:1' }))?.text).toContain('→ +tg Fix #677791 · Fix · sent')
     await ui.unmount()
   })
 
@@ -622,8 +622,9 @@ describe('the packet ledger, in Activity (§5.7)', () => {
     await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'header' }))?.text).toContain('tg › activity')
     const row = await ui.find({ key: 'ledger:1' })
+    // A line of the LOG card: the time, the chat's column, then the packet (§10.6).
     expect(row?.type).toBe('Box')
-    expect(row?.text).toMatch(/^ {2}\d\d:\d\d ▣ #677791 @example_bot → main · Fix/)
+    expect(row?.text).toMatch(/^\d\d:\d\d {2}@example_bot {2}▣ #677791 → main · Fix/)
     expect((await ui.findAll({ type: 'Button' })).filter(one => String(one.props.key ?? '').startsWith('ledger:'))).toEqual([])
     await ui.unmount()
   })

@@ -5,6 +5,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
 import { KEYS, STRAY_KEYS, helpLines, hotkeyTable } from '../hooks/ui/keys'
+import { PALETTES } from '../hooks/ui/palette'
 import type { ApDraft, Autopilot, PeerRef, TgDialog, TgMessage } from '../types'
 import { DIALOGS, STARTED, MESSAGES, PERSON_MESSAGES, chatIds, chatKey, findChat, folderRun, messagesFor } from './fixtures'
 import { FOOTER, HINT, bandKeyProblems, engineSites, siteText } from './surfaces'
@@ -1730,7 +1731,8 @@ describe('the visual pass (§7, T7)', () => {
     await openChat(ui, 1001)
     await ui.press({ key: 'key:follow' })
     const stop = (await texts(ui, 'running')).find(one => one.text === '0: stop all')
-    expect(stop?.props.color).toBe('red')
+    // The strip names a role (§10.2): `unread`, the theme's `error` under the default palette.
+    expect(stop?.props.color).toBe(PALETTES.theme.unread)
     await ui.press({ key: 'key:menu' })
     expect((await texts(ui, 'menu:stop')).map(one => one.props.color)).toEqual(['red'])
     await ui.unmount()
