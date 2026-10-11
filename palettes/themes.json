@@ -1,0 +1,740 @@
+{
+  "version": 1,
+  "roles": [
+    "accent",
+    "unread",
+    "mention",
+    "held",
+    "ok",
+    "person",
+    "group",
+    "channel",
+    "bot",
+    "saved",
+    "dim",
+    "subtext",
+    "text",
+    "surface"
+  ],
+  "senderOrder": [
+    "red",
+    "orange",
+    "violet",
+    "green",
+    "cyan",
+    "blue",
+    "pink"
+  ],
+  "topicKeys": [
+    "6FB9F0",
+    "FFD67E",
+    "CB86DB",
+    "8EEE98",
+    "FF93B2",
+    "FB6F5F"
+  ],
+  "themes": {
+    "catppuccin-mocha": {
+      "display": "Catppuccin Mocha",
+      "appearance": "dark",
+      "source": {
+        "url": "https://github.com/catppuccin/palette/blob/main/palette.json",
+        "license": "MIT"
+      },
+      "background": "#1E1E2E",
+      "foreground": "#CDD6F4",
+      "roles": {
+        "accent": "#CBA6F7",
+        "unread": "#F38BA8",
+        "mention": "#FAB387",
+        "held": "#F9E2AF",
+        "ok": "#A6E3A1",
+        "person": "#89B4FA",
+        "group": "#94E2D5",
+        "channel": "#89DCEB",
+        "bot": "#F5C2E7",
+        "saved": "#F9E2AF",
+        "dim": "#6C7086",
+        "subtext": "#A6ADC8",
+        "text": "#CDD6F4",
+        "surface": "#45475A"
+      },
+      "roleNames": {
+        "accent": "mauve",
+        "unread": "red",
+        "mention": "peach",
+        "held": "yellow",
+        "ok": "green",
+        "person": "blue",
+        "group": "teal",
+        "channel": "sky",
+        "bot": "pink",
+        "saved": "yellow",
+        "dim": "overlay0",
+        "subtext": "subtext0",
+        "text": "text",
+        "surface": "surface1"
+      },
+      "senders": [
+        "#EBA0AC",
+        "#FA9C87",
+        "#B4BEFE",
+        "#A6E3A1",
+        "#89DCEB",
+        "#89B4FA",
+        "#F5C2E7"
+      ],
+      "senderNames": [
+        "maroon",
+        "peach -12°",
+        "lavender",
+        "green",
+        "sky",
+        "blue",
+        "pink"
+      ],
+      "topics": {
+        "6FB9F0": "#89B4FA",
+        "FFD67E": "#F9E2AF",
+        "CB86DB": "#CBA6F7",
+        "8EEE98": "#A6E3A1",
+        "FF93B2": "#F5C2E7",
+        "FB6F5F": "#EBA0AC"
+      },
+      "variant256": {
+        "roles": {
+          "unread": "#F37AA8",
+          "mention": "#FAAF7A",
+          "held": "#F9E6AF",
+          "saved": "#F9E6AF",
+          "person": "#7AAFFA",
+          "channel": "#7ADCEB"
+        },
+        "senders": {
+          "5": "#7AAFFA",
+          "1": "#E59C87"
+        },
+        "topics": {
+          "6FB9F0": "#7AAFFA",
+          "FFD67E": "#F9E6AF"
+        }
+      }
+    },
+    "catppuccin-latte": {
+      "display": "Catppuccin Latte",
+      "appearance": "light",
+      "source": {
+        "url": "https://github.com/catppuccin/palette/blob/main/palette.json",
+        "license": "MIT"
+      },
+      "background": "#EFF1F5",
+      "foreground": "#4C4F69",
+      "roles": {
+        "accent": "#8839EF",
+        "unread": "#D20F39",
+        "mention": "#E45401",
+        "held": "#B87518",
+        "ok": "#3C9628",
+        "person": "#1E66F5",
+        "group": "#179299",
+        "channel": "#038DC4",
+        "bot": "#E23FB6",
+        "saved": "#B87518",
+        "dim": "#7C7F93",
+        "subtext": "#5C5F77",
+        "text": "#4C4F69",
+        "surface": "#ACB0BE"
+      },
+      "roleNames": {
+        "accent": "mauve",
+        "unread": "red",
+        "mention": "peach",
+        "held": "yellow",
+        "ok": "green",
+        "person": "blue",
+        "group": "teal",
+        "channel": "sky",
+        "bot": "pink",
+        "saved": "yellow",
+        "dim": "overlay2",
+        "subtext": "subtext1",
+        "text": "text",
+        "surface": "surface2"
+      },
+      "adjusted": {
+        "roles": {
+          "mention": {
+            "from": "#FE640B",
+            "to": "#E45401"
+          },
+          "held": {
+            "from": "#DF8E1D",
+            "to": "#B87518"
+          },
+          "saved": {
+            "from": "#DF8E1D",
+            "to": "#B87518"
+          },
+          "ok": {
+            "from": "#40A02B",
+            "to": "#3C9628"
+          },
+          "channel": {
+            "from": "#04A5E5",
+            "to": "#038DC4"
+          },
+          "bot": {
+            "from": "#EA76CB",
+            "to": "#E23FB6"
+          }
+        },
+        "senders": {
+          "2": {
+            "from": "#7287FD",
+            "to": "#6178FD"
+          },
+          "3": {
+            "from": "#40A02B",
+            "to": "#3C9628"
+          },
+          "4": {
+            "from": "#04A5E5",
+            "to": "#038DC4"
+          },
+          "6": {
+            "from": "#EA76CB",
+            "to": "#E23FB6"
+          }
+        },
+        "topics": {
+          "FFD67E": {
+            "from": "#DF8E1D",
+            "to": "#B87518"
+          },
+          "8EEE98": {
+            "from": "#40A02B",
+            "to": "#3C9628"
+          },
+          "FF93B2": {
+            "from": "#EA76CB",
+            "to": "#E23FB6"
+          }
+        }
+      },
+      "senders": [
+        "#E64553",
+        "#FE330B",
+        "#6178FD",
+        "#3C9628",
+        "#038DC4",
+        "#1E66F5",
+        "#E23FB6"
+      ],
+      "senderNames": [
+        "maroon",
+        "peach -12°",
+        "lavender",
+        "green",
+        "sky",
+        "blue",
+        "pink"
+      ],
+      "topics": {
+        "6FB9F0": "#1E66F5",
+        "FFD67E": "#B87518",
+        "CB86DB": "#8839EF",
+        "8EEE98": "#3C9628",
+        "FF93B2": "#E23FB6",
+        "FB6F5F": "#E64553"
+      },
+      "variant256": {
+        "roles": {
+          "saved": "#B8751A",
+          "held": "#B8751A"
+        },
+        "senders": {},
+        "topics": {}
+      }
+    },
+    "tokyo-night": {
+      "display": "Tokyo Night",
+      "appearance": "dark",
+      "source": {
+        "url": "https://github.com/folke/tokyonight.nvim/blob/main/lua/tokyonight/colors/storm.lua (night.lua overrides bg)",
+        "license": "Apache-2.0"
+      },
+      "background": "#1A1B26",
+      "foreground": "#C0CAF5",
+      "roles": {
+        "accent": "#BB9AF7",
+        "unread": "#F7768E",
+        "mention": "#FF9E64",
+        "held": "#E0AF68",
+        "ok": "#9ECE6A",
+        "person": "#7AA2F7",
+        "group": "#73DACA",
+        "channel": "#7DCFFF",
+        "bot": "#FF007C",
+        "saved": "#E0AF68",
+        "dim": "#737AA2",
+        "subtext": "#A9B1D6",
+        "text": "#C0CAF5",
+        "surface": "#3B4261"
+      },
+      "roleNames": {
+        "accent": "magenta",
+        "unread": "red",
+        "mention": "orange",
+        "held": "yellow",
+        "ok": "green",
+        "person": "blue",
+        "group": "green1",
+        "channel": "cyan",
+        "bot": "magenta2",
+        "saved": "yellow",
+        "dim": "dark5",
+        "subtext": "fg_dark",
+        "text": "fg",
+        "surface": "fg_gutter"
+      },
+      "senders": [
+        "#DB4B4B",
+        "#FF7F64",
+        "#9D7CD8",
+        "#9ECE6A",
+        "#7DCFFF",
+        "#7AA2F7",
+        "#FF007C"
+      ],
+      "senderNames": [
+        "red1",
+        "orange -12°",
+        "purple",
+        "green",
+        "cyan",
+        "blue",
+        "magenta2"
+      ],
+      "topics": {
+        "6FB9F0": "#7AA2F7",
+        "FFD67E": "#E0AF68",
+        "CB86DB": "#BB9AF7",
+        "8EEE98": "#9ECE6A",
+        "FF93B2": "#FF007C",
+        "FB6F5F": "#DB4B4B"
+      }
+    },
+    "rose-pine-moon": {
+      "display": "Rosé Pine Moon",
+      "appearance": "dark",
+      "source": {
+        "url": "https://github.com/rose-pine/palette/blob/main/palette.json",
+        "license": "MIT"
+      },
+      "background": "#232136",
+      "foreground": "#E0DEF4",
+      "roles": {
+        "accent": "#C4A7E7",
+        "unread": "#EB6F92",
+        "mention": "#EA9A97",
+        "held": "#F6C177",
+        "ok": "#9CCFD8",
+        "person": "#3E8FB0",
+        "group": "#9CCFD8",
+        "channel": "#908CAA",
+        "bot": "#C4A7E7",
+        "saved": "#F6C177",
+        "dim": "#6E6A86",
+        "subtext": "#908CAA",
+        "text": "#E0DEF4",
+        "surface": "#393552"
+      },
+      "roleNames": {
+        "accent": "iris",
+        "unread": "love",
+        "mention": "rose",
+        "held": "gold",
+        "ok": "foam",
+        "person": "pine",
+        "group": "foam",
+        "channel": "subtle",
+        "bot": "iris",
+        "saved": "gold",
+        "dim": "muted",
+        "subtext": "subtle",
+        "text": "text",
+        "surface": "overlay"
+      },
+      "senders": [
+        "#EB6FAB",
+        "#EA97A5",
+        "#B7A7E7",
+        "#9CCFD8",
+        "#9CCFD8",
+        "#3E8FB0",
+        "#EAAB97"
+      ],
+      "senderNames": [
+        "love -12°",
+        "rose -12°",
+        "iris -12°",
+        "foam",
+        "foam",
+        "pine",
+        "rose +12°"
+      ],
+      "topics": {
+        "6FB9F0": "#3E8FB0",
+        "FFD67E": "#F6C177",
+        "CB86DB": "#C4A7E7",
+        "8EEE98": "#9CCFD8",
+        "FF93B2": "#EA9A97",
+        "FB6F5F": "#EB6F92"
+      },
+      "variant256": {
+        "roles": {},
+        "senders": {
+          "0": "#E56FAB",
+          "1": "#E597A5",
+          "6": "#EAB397",
+          "2": "#B7A7E5"
+        },
+        "topics": {}
+      }
+    },
+    "gruvbox-dark": {
+      "display": "Gruvbox Dark",
+      "appearance": "dark",
+      "source": {
+        "url": "https://github.com/morhetz/gruvbox/blob/master/colors/gruvbox.vim",
+        "license": "MIT"
+      },
+      "background": "#282828",
+      "foreground": "#EBDBB2",
+      "roles": {
+        "accent": "#D3869B",
+        "unread": "#FB4934",
+        "mention": "#FE8019",
+        "held": "#FABD2F",
+        "ok": "#B8BB26",
+        "person": "#83A598",
+        "group": "#8EC07C",
+        "channel": "#458588",
+        "bot": "#B16286",
+        "saved": "#FABD2F",
+        "dim": "#928374",
+        "subtext": "#A89984",
+        "text": "#EBDBB2",
+        "surface": "#504945"
+      },
+      "roleNames": {
+        "accent": "bright_purple",
+        "unread": "bright_red",
+        "mention": "bright_orange",
+        "held": "bright_yellow",
+        "ok": "bright_green",
+        "person": "bright_blue",
+        "group": "bright_aqua",
+        "channel": "neutral_blue",
+        "bot": "neutral_purple",
+        "saved": "bright_yellow",
+        "dim": "gray_245",
+        "subtext": "light4",
+        "text": "light1",
+        "surface": "dark2"
+      },
+      "adjusted": {
+        "topics": {
+          "FB6F5F": {
+            "from": "#CC241D",
+            "to": "#E1332C"
+          }
+        }
+      },
+      "senders": [
+        "#FB3447",
+        "#D65D0E",
+        "#D386AA",
+        "#B8BB26",
+        "#8EC07C",
+        "#83A598",
+        "#B16286"
+      ],
+      "senderNames": [
+        "bright_red -12°",
+        "neutral_orange",
+        "bright_purple -12°",
+        "bright_green",
+        "bright_aqua",
+        "bright_blue",
+        "neutral_purple"
+      ],
+      "topics": {
+        "6FB9F0": "#83A598",
+        "FFD67E": "#FABD2F",
+        "CB86DB": "#D3869B",
+        "8EEE98": "#B8BB26",
+        "FF93B2": "#B16286",
+        "FB6F5F": "#E1332C"
+      },
+      "variant256": {
+        "roles": {
+          "subtext": "#B3997F"
+        },
+        "senders": {
+          "0": "#FB344D",
+          "2": "#D37FAA"
+        },
+        "topics": {}
+      }
+    },
+    "nord": {
+      "display": "Nord",
+      "appearance": "dark",
+      "source": {
+        "url": "https://github.com/nordtheme/nord/blob/develop/src/nord.css",
+        "license": "MIT"
+      },
+      "background": "#2E3440",
+      "foreground": "#ECEFF4",
+      "roles": {
+        "accent": "#88C0D0",
+        "unread": "#C56F77",
+        "mention": "#D08770",
+        "held": "#EBCB8B",
+        "ok": "#A3BE8C",
+        "person": "#81A1C1",
+        "group": "#8FBCBB",
+        "channel": "#6A8AB2",
+        "bot": "#B48EAD",
+        "saved": "#EBCB8B",
+        "dim": "#77849E",
+        "subtext": "#D8DEE9",
+        "text": "#ECEFF4",
+        "surface": "#4C566A"
+      },
+      "roleNames": {
+        "accent": "nord8",
+        "unread": "nord11",
+        "mention": "nord12",
+        "held": "nord13",
+        "ok": "nord14",
+        "person": "nord9",
+        "group": "nord7",
+        "channel": "nord10",
+        "bot": "nord15",
+        "saved": "nord13",
+        "dim": "nord3",
+        "subtext": "nord4",
+        "text": "nord6",
+        "surface": "nord3"
+      },
+      "adjusted": {
+        "roles": {
+          "dim": {
+            "from": "#4C566A",
+            "to": "#77849E"
+          },
+          "unread": {
+            "from": "#BF616A",
+            "to": "#C56F77"
+          },
+          "channel": {
+            "from": "#5E81AC",
+            "to": "#6A8AB2"
+          }
+        }
+      },
+      "senders": [
+        "#BF617D",
+        "#D07470",
+        "#B48EAD",
+        "#A3BE8C",
+        "#8FBCBB",
+        "#81A1C1",
+        "#B48EAD"
+      ],
+      "senderNames": [
+        "nord11 -12°",
+        "nord12 -12°",
+        "nord15",
+        "nord14",
+        "nord7",
+        "nord9",
+        "nord15"
+      ],
+      "topics": {
+        "6FB9F0": "#81A1C1",
+        "FFD67E": "#EBCB8B",
+        "CB86DB": "#B48EAD",
+        "8EEE98": "#A3BE8C",
+        "FF93B2": "#D08770",
+        "FB6F5F": "#BF616A"
+      },
+      "variant256": {
+        "roles": {
+          "group": "#7FBCBB",
+          "dim": "#777F9E"
+        },
+        "senders": {
+          "0": "#BF6180",
+          "1": "#E67470",
+          "4": "#7FBCBB"
+        },
+        "topics": {
+          "FB6F5F": "#B2616A"
+        }
+      }
+    },
+    "dracula": {
+      "display": "Dracula",
+      "appearance": "dark",
+      "source": {
+        "url": "https://github.com/dracula/dracula-theme/blob/main/README.md (the colour palette table)",
+        "license": "MIT"
+      },
+      "background": "#282A36",
+      "foreground": "#F8F8F2",
+      "roles": {
+        "accent": "#BD93F9",
+        "unread": "#FF5555",
+        "mention": "#FFB86C",
+        "held": "#F1FA8C",
+        "ok": "#50FA7B",
+        "person": "#8BE9FD",
+        "group": "#50FA7B",
+        "channel": "#BD93F9",
+        "bot": "#FF79C6",
+        "saved": "#F1FA8C",
+        "dim": "#6272A4",
+        "subtext": "#6272A4",
+        "text": "#F8F8F2",
+        "surface": "#44475A"
+      },
+      "roleNames": {
+        "accent": "purple",
+        "unread": "red",
+        "mention": "orange",
+        "held": "yellow",
+        "ok": "green",
+        "person": "cyan",
+        "group": "green",
+        "channel": "purple",
+        "bot": "pink",
+        "saved": "yellow",
+        "dim": "comment",
+        "subtext": "comment",
+        "text": "foreground",
+        "surface": "current_line"
+      },
+      "senders": [
+        "#FF5577",
+        "#FF9B6C",
+        "#A993F9",
+        "#50FA7B",
+        "#8BE9FD",
+        "#6272A4",
+        "#FF79C6"
+      ],
+      "senderNames": [
+        "red -12°",
+        "orange -12°",
+        "purple -12°",
+        "green",
+        "cyan",
+        "comment",
+        "pink"
+      ],
+      "topics": {
+        "6FB9F0": "#8BE9FD",
+        "FFD67E": "#F1FA8C",
+        "CB86DB": "#BD93F9",
+        "8EEE98": "#50FA7B",
+        "FF93B2": "#FF79C6",
+        "FB6F5F": "#FF5555"
+      },
+      "variant256": {
+        "roles": {},
+        "senders": {
+          "0": "#FF4C77"
+        },
+        "topics": {}
+      }
+    },
+    "kanagawa": {
+      "display": "Kanagawa Wave",
+      "appearance": "dark",
+      "source": {
+        "url": "https://github.com/rebelot/kanagawa.nvim/blob/master/lua/kanagawa/colors.lua",
+        "license": "MIT"
+      },
+      "background": "#1F1F28",
+      "foreground": "#DCD7BA",
+      "roles": {
+        "accent": "#957FB8",
+        "unread": "#FF5D62",
+        "mention": "#FFA066",
+        "held": "#E6C384",
+        "ok": "#98BB6C",
+        "person": "#7E9CD8",
+        "group": "#7AA89F",
+        "channel": "#7FB4CA",
+        "bot": "#D27E99",
+        "saved": "#E6C384",
+        "dim": "#727169",
+        "subtext": "#C8C093",
+        "text": "#DCD7BA",
+        "surface": "#54546D"
+      },
+      "roleNames": {
+        "accent": "oniViolet",
+        "unread": "peachRed",
+        "mention": "surimiOrange",
+        "held": "carpYellow",
+        "ok": "springGreen",
+        "person": "crystalBlue",
+        "group": "waveAqua2",
+        "channel": "springBlue",
+        "bot": "sakuraPink",
+        "saved": "carpYellow",
+        "dim": "fujiGray",
+        "subtext": "oldWhite",
+        "text": "fujiWhite",
+        "surface": "sumiInk6"
+      },
+      "senders": [
+        "#E46876",
+        "#FF9E3B",
+        "#B8B4D0",
+        "#98BB6C",
+        "#7AA89F",
+        "#7E9CD8",
+        "#D27E99"
+      ],
+      "senderNames": [
+        "waveRed",
+        "roninYellow",
+        "oniViolet2",
+        "springGreen",
+        "waveAqua2",
+        "crystalBlue",
+        "sakuraPink"
+      ],
+      "topics": {
+        "6FB9F0": "#7E9CD8",
+        "FFD67E": "#E6C384",
+        "CB86DB": "#957FB8",
+        "8EEE98": "#98BB6C",
+        "FF93B2": "#D27E99",
+        "FB6F5F": "#C34043"
+      },
+      "variant256": {
+        "roles": {
+          "surface": "#4C546D"
+        },
+        "senders": {},
+        "topics": {}
+      }
+    }
+  }
+}

@@ -2026,13 +2026,22 @@ hotkey. §10.10 lists exactly what v2 changes in §3–§7, rule by rule.
 ### 10.2 Tokens and the `palette` option
 
 `palette` is a new `userConfig` option in `mods/dialogs-pane/.claude-plugin/plugin.json`:
+`palette = theme | ansi | <catalogue name> | <catalogue name>256` (decision 9; the catalogue is
+below, under "The theme catalogue").
 
-- `theme` (the default) uses Claude Code's theme key names, so the pane follows the owner's theme,
-  light themes included.
-- `mocha` uses Catppuccin Mocha's fixed colours and is meant for dark terminals.
-- `mocha256` is `mocha` with five hex values moved so that each lands on a 256-colour cell of its
-  own. It is meant for tmux, where the engine draws at 256 colours (P7).
-- `ansi` uses the 16 colour names, for a terminal without 256 colours (P7).
+- `theme` uses Claude Code's theme key names, so the pane follows the owner's theme, light themes
+  included. It stays outside the catalogue: it has no hex values.
+- `ansi` uses the 16 colour names, for a terminal without 256 colours (P7). Also outside the
+  catalogue.
+- A catalogue name (`catppuccin-mocha`, `nord`, …) uses that theme's fixed colours.
+- `<name>256` is the theme with the few hex values moved that would share a 256-colour cell in
+  tmux, where the engine draws at 256 colours (P7). It exists only for a theme that needs it.
+- **The default is `tokyo-night`**, for the pane's `palette` and the CLI alike (decision 9).
+  `theme` stays selectable but is no longer the default.
+
+`mocha` and `mocha256`, as the first draft of §10.2 and decision 8 named them, are the catalogue's
+`catppuccin-mocha` and `catppuccin-mocha256`, with the same values. No alias is kept, since v2
+has not shipped.
 
 This is the same shape as flightdeck's `palette` (`theme` and `pastel`). Code names a role, never
 a colour. The role table below is the contract: it replaces `TOKEN` (`ui/model.ts:14`), and every
@@ -2052,7 +2061,7 @@ task codes against these role names.
 | `saved` | ★ | `warning` | yellow `#F9E2AF` | `#F9E6AF` (229) | `yellow` |
 | `dim` | time, preview, ◌, labels, the legend's words, the key line | `inactive` | overlay `#6C7086` | = (103) | `gray` |
 | `subtext` | the second tier: `@username` in the chat card's title, the log's text | `inactive` | subtext `#A6ADC8` | = (146) | `white` |
-| `text` | names and values (bold when unread) | `text` | text `#CDD6F4` | = (189) | default |
+| `text` | names and values (bold when unread) | `text` | text `#CDD6F4` | = (189) | none: the terminal's own foreground (`undefined`) |
 | `surface` | every card's border while the pane does not hold the keys, the LOG card's border | `subtle` | surface `#45475A` | = (60) | `gray` |
 
 Sections take their role's colour: FOR YOU `mention`, CHATS `person`, AUTOPILOT `ok`, LOG
@@ -2091,17 +2100,271 @@ Notes:
 **Forum topic colours.** Telegram gives a topic one of six `icon_color` values. They map onto the
 palette as follows:
 
-| `icon_color` | Telegram | `mocha` | `theme` |
-| --- | --- | --- | --- |
-| `0x6FB9F0` | blue | blue `#89B4FA` (`mocha256` `#7AAFFA`) | `permission` |
-| `0xFFD67E` | yellow | yellow `#F9E2AF` (`mocha256` `#F9E6AF`) | `warning` |
-| `0xCB86DB` | violet | mauve `#CBA6F7` | `merged` |
-| `0x8EEE98` | green | green `#A6E3A1` | `success` |
-| `0xFF93B2` | rose | pink `#F5C2E7` | `claude` |
-| `0xFB6F5F` | red | maroon `#EBA0AC` | `error` |
+| `icon_color` | Telegram | `mocha` | `theme` | `ansi` |
+| --- | --- | --- | --- | --- |
+| `0x6FB9F0` | blue | blue `#89B4FA` (`mocha256` `#7AAFFA`) | `permission` | `blue` |
+| `0xFFD67E` | yellow | yellow `#F9E2AF` (`mocha256` `#F9E6AF`) | `warning` | `yellow` |
+| `0xCB86DB` | violet | mauve `#CBA6F7` | `merged` | `magenta` |
+| `0x8EEE98` | green | green `#A6E3A1` | `success` | `green` |
+| `0xFF93B2` | rose | pink `#F5C2E7` | `claude` | `magentaBright` |
+| `0xFB6F5F` | red | maroon `#EBA0AC` | `error` | `redBright` (SGR 91) |
 
-Red maps to maroon, not red, so that a topic's dot never reads as an unread count. Any other
-value draws in `dim`.
+Red maps away from `unread`'s red, so that a topic's dot never reads as an unread count: maroon
+in `mocha`, `redBright` (91) against `unread`'s `red` (31) in 16 colours. `theme` cannot: its
+only red key is `error`, the same as `unread`, so there the red topic and an unread count share a
+colour and only the column tells them apart (a known gap; T12's test records it). Any other value
+draws in `dim`.
+
+#### The theme catalogue
+
+Asked by the owner on 2026-10-11 (decision 9): several colour themes, each a full palette, shared
+by the `tg` CLI and the pane. The owner looks at all of them and picks the default.
+
+**Where the data lives.** `palettes/themes.json` at the repo root is the source of truth. The two
+tools each keep a byte-identical copy:
+
+- `src/tg_kit/themes.json`: package data, since an installed `tg` cannot read the repo root;
+- `mods/dialogs-pane/hooks/ui/themes.json`: the engine loads no file from outside a plugin's
+  folder, as `tests/unit/test_mod_shared_rules.py` notes for the guard's copies.
+
+A test in the same style, `tests/unit/test_themes_shared.py`, pins both copies to the root file.
+The builders do the wiring: `feat/cli-colors` on the CLI side, T17 in the pane.
+
+**The file**, one object per theme under `themes`, keyed by the catalogue name (kebab-case, which
+is also the CLI's name):
+
+```json
+{
+  "version": 1,
+  "roles": ["accent", "unread", "…14 names, in §10.2's order"],
+  "senderOrder": ["red", "orange", "violet", "green", "cyan", "blue", "pink"],
+  "topicKeys": ["6FB9F0", "FFD67E", "CB86DB", "8EEE98", "FF93B2", "FB6F5F"],
+  "themes": {
+    "catppuccin-mocha": {
+      "display": "Catppuccin Mocha",
+      "appearance": "dark",
+      "source": {"url": "https://github.com/catppuccin/palette/blob/main/palette.json", "license": "MIT"},
+      "background": "#1E1E2E",
+      "foreground": "#CDD6F4",
+      "roles": {"accent": "#CBA6F7", "…": "every role, #RRGGBB"},
+      "roleNames": {"accent": "mauve", "…": "the upstream name each role took"},
+      "senders": ["#F38BA8", "…7, in senderOrder"],
+      "topics": {"6FB9F0": "#89B4FA", "…": "6, keyed by icon_color"},
+      "variant256": {"roles": {"unread": "#F37AA8"}, "senders": {"5": "#7AAFFA"}, "topics": {}}
+    }
+  }
+}
+```
+
+- `roles`: §10.2's 14 roles. The CLI uses 13 of them; `surface` is the pane's borders.
+- `senders`: the 7 colours of a sender's name, in Telegram's peer colour order (`abs(id) % 7`
+  picks one). `senderNames` gives the upstream name each took, or `name ±N°` for a hue-shifted
+  one.
+- **No sender colour equals `unread`, `mention` or `accent`** in its theme, in hex or in its 256
+  cell. Otherwise a sender's name reads as an unread count, a mention or `me` (rule from tg-kit-25,
+  2026-10-11, after tg-cli-colors found the red sender equal to `unread` in seven themes and the
+  violet one equal to `accent` in six). A clash takes the theme's neighbour first:
+  - Catppuccin: maroon for red, lavender for violet;
+  - `tokyo-night`: red1;
+  - `gruvbox-dark`: neutral_orange;
+  - `nord`: nord7 for cyan;
+  - `kanagawa`: roninYellow and oniViolet2.
+
+  Where no neighbour exists, the upstream colour is hue-shifted, −12° first (red toward crimson,
+  orange toward red, violet toward blue), keeping its lightness and saturation and at least 3:1
+  on the background. The derived senders are:
+  - Catppuccin's orange (peach −12°);
+  - `tokyo-night`'s orange;
+  - `rose-pine-moon`'s red, orange, violet and pink;
+  - `gruvbox-dark`'s red and violet;
+  - `nord`'s red and orange;
+  - `dracula`'s red, orange and violet.
+
+  The 256 cells are kept apart by `variant256.senders`.
+- `topics`: one per Telegram `icon_color`, keyed by its hex.
+- `adjusted`: the values that are not upstream's, as `{"roles": {…}, "senders": {"2": …},
+  "topics": {…}}`, each entry `{"from": upstream, "to": used}` (`catppuccin-latte`, `nord`,
+  `gruvbox-dark`, below). `roleNames` and `senderNames` keep the upstream names.
+- `variant256`: only the entries `<name>256` changes. The file has the key only when the theme
+  needs a 256 variant.
+- `background` and `foreground` feed `tg themes`' preview and the contrast check. They are not
+  roles: `text` in the CLI stays the terminal's own foreground.
+- `ansi` and its 16 names stay in code, not in the file.
+
+The test checks:
+
+- every theme has the same 14 role keys, 7 senders and 6 topic keys;
+- every value is `#RRGGBB`;
+- `appearance` is `dark` or `light`;
+- every `variant256` key exists in the base;
+- after applying `variant256` (or with none), no two roles of different hex share a 256 cell by
+  §10.2's formula, except the pairs a theme shares on purpose (below);
+- no sender equals `unread`, `mention` or `accent` in hex, and after `variant256` no sender
+  shares a 256 cell with them or with a sender of different hex;
+- no topic shares a 256 cell with `unread` unless its hex is `unread`'s (the single-red themes).
+- every data role (all but `surface`), every sender and every topic reaches 3:1 on the theme's
+  `background`;
+- every `adjusted` entry's `to` is the value in `roles`, `senders` or `topics`, and its `from`
+  differs from it;
+- the sender rule bans both the `from` and the `to` of an adjusted `unread`, `mention` or
+  `accent`.
+
+**Themes and sources.** Each uses the upstream's own published hex, read from the file named in
+`source.url` on 2026-10-11:
+
+| Theme | `appearance` | Source | Licence |
+| --- | --- | --- | --- |
+| `catppuccin-mocha` | dark | catppuccin/palette `palette.json` | MIT |
+| `catppuccin-latte` | light | catppuccin/palette `palette.json` | MIT |
+| `tokyo-night` | dark | folke/tokyonight.nvim `colors/storm.lua`, `night.lua` overriding `bg` | Apache-2.0 |
+| `rose-pine-moon` | dark | rose-pine/palette `palette.json` (`moon`) | MIT |
+| `gruvbox-dark` | dark | morhetz/gruvbox `colors/gruvbox.vim` | MIT/X11 (README) |
+| `nord` | dark | nordtheme/nord `src/nord.css` | MIT |
+| `dracula` | dark | dracula/dracula-theme `README.md`, the palette table | MIT |
+| `kanagawa` | dark | rebelot/kanagawa.nvim `lua/kanagawa/colors.lua` (wave) | MIT |
+
+Every licence allows reuse. MIT asks that the notice travel with copies, and Apache-2.0 asks for
+the licence and attribution. So README's themes section credits each upstream, with its licence,
+next to `palettes/themes.json`. Tokyo Night's original VS Code theme (enkia) is MIT too; the hex
+here is folke's.
+
+**Roles per theme** (upstream name, then hex; `*` marks a role in `adjusted`, not upstream's
+colour):
+
+| Role | `catppuccin-mocha` | `catppuccin-latte` | `tokyo-night` | `rose-pine-moon` | `gruvbox-dark` | `nord` | `dracula` | `kanagawa` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `accent` | mauve `#CBA6F7` | mauve `#8839EF` | magenta `#BB9AF7` | iris `#C4A7E7` | bright_purple `#D3869B` | nord8 `#88C0D0` | purple `#BD93F9` | oniViolet `#957FB8` |
+| `unread` | red `#F38BA8` | red `#D20F39` | red `#F7768E` | love `#EB6F92` | bright_red `#FB4934` | nord11* `#C56F77` | red `#FF5555` | peachRed `#FF5D62` |
+| `mention` | peach `#FAB387` | peach* `#E45401` | orange `#FF9E64` | rose `#EA9A97` | bright_orange `#FE8019` | nord12 `#D08770` | orange `#FFB86C` | surimiOrange `#FFA066` |
+| `held` | yellow `#F9E2AF` | yellow* `#B87518` | yellow `#E0AF68` | gold `#F6C177` | bright_yellow `#FABD2F` | nord13 `#EBCB8B` | yellow `#F1FA8C` | carpYellow `#E6C384` |
+| `ok` | green `#A6E3A1` | green* `#3C9628` | green `#9ECE6A` | foam `#9CCFD8` | bright_green `#B8BB26` | nord14 `#A3BE8C` | green `#50FA7B` | springGreen `#98BB6C` |
+| `person` | blue `#89B4FA` | blue `#1E66F5` | blue `#7AA2F7` | pine `#3E8FB0` | bright_blue `#83A598` | nord9 `#81A1C1` | cyan `#8BE9FD` | crystalBlue `#7E9CD8` |
+| `group` | teal `#94E2D5` | teal `#179299` | green1 `#73DACA` | foam `#9CCFD8` | bright_aqua `#8EC07C` | nord7 `#8FBCBB` | green `#50FA7B` | waveAqua2 `#7AA89F` |
+| `channel` | sky `#89DCEB` | sky* `#038DC4` | cyan `#7DCFFF` | subtle `#908CAA` | neutral_blue `#458588` | nord10* `#6A8AB2` | purple `#BD93F9` | springBlue `#7FB4CA` |
+| `bot` | pink `#F5C2E7` | pink* `#E23FB6` | magenta2 `#FF007C` | iris `#C4A7E7` | neutral_purple `#B16286` | nord15 `#B48EAD` | pink `#FF79C6` | sakuraPink `#D27E99` |
+| `saved` | yellow `#F9E2AF` | yellow* `#B87518` | yellow `#E0AF68` | gold `#F6C177` | bright_yellow `#FABD2F` | nord13 `#EBCB8B` | yellow `#F1FA8C` | carpYellow `#E6C384` |
+| `dim` | overlay0 `#6C7086` | overlay2 `#7C7F93` | dark5 `#737AA2` | muted `#6E6A86` | gray_245 `#928374` | nord3* `#77849E` | comment `#6272A4` | fujiGray `#727169` |
+| `subtext` | subtext0 `#A6ADC8` | subtext1 `#5C5F77` | fg_dark `#A9B1D6` | subtle `#908CAA` | light4 `#A89984` | nord4 `#D8DEE9` | comment `#6272A4` | oldWhite `#C8C093` |
+| `text` | text `#CDD6F4` | text `#4C4F69` | fg `#C0CAF5` | text `#E0DEF4` | light1 `#EBDBB2` | nord6 `#ECEFF4` | foreground `#F8F8F2` | fujiWhite `#DCD7BA` |
+| `surface` | surface1 `#45475A` | surface2 `#ACB0BE` | fg_gutter `#3B4261` | overlay `#393552` | dark2 `#504945` | nord3 `#4C566A` | current_line `#44475A` | sumiInk6 `#54546D` |
+| background | `#1E1E2E` | `#EFF1F5` | `#1A1B26` | `#232136` | `#282828` | `#2E3440` | `#282A36` | `#1F1F28` |
+
+How each theme keeps the meanings stable: `unread` is the theme's red, `mention` its orange or
+peach, `held` and `saved` its yellow, `ok` its green, and `dim` a grey dimmer than `text`. Where a
+palette lacks a hue, a role borrows one and says so. These pairs share a hex on purpose, and the
+glyph's shape still tells the kind:
+
+- every theme: `held` and `saved` (by design, as in `mocha`);
+- `rose-pine-moon` has no green, so `ok` is foam (upstream's colour for added lines) and `group`
+  shares it. It has six hues for ten coloured roles, so `bot` shares `accent` (iris) and
+  `channel` shares `subtext` (subtle). Its green and cyan senders are both foam;
+- `dracula` has no blue and one grey: `person` is cyan, `group` shares `ok` (green), `channel`
+  shares `accent` (purple), and `dim` and `subtext` are both Comment. Its blue sender is Comment;
+- `nord` has no pink and one dark grey: its violet and pink senders are both nord15. `surface`
+  is nord3, and `dim` is nord3 lightened (below). `accent` is nord8, upstream's primary accent;
+- `catppuccin-latte` takes the darker greys for `dim`, `subtext` and `surface` (overlay2,
+  subtext1, surface2), since on a light background `mocha`'s choices sit too close to the base.
+
+A red topic needs a second red, away from `unread`. These themes have one:
+
+- Catppuccin uses maroon;
+- `tokyo-night` uses red1;
+- `gruvbox-dark` uses neutral_red;
+- `kanagawa` uses autumnRed.
+
+`rose-pine-moon`, `nord` and `dracula` have a single red, so their red topic is `unread`'s, the same
+known gap as `theme`.
+
+**Contrast** of each role on the theme's own background (WCAG ratio). Data roles should reach
+3:1; bold marks a failure. `surface` is a border, not data, and is listed for reference.
+
+| Role | `catppuccin-mocha` | `catppuccin-latte` | `tokyo-night` | `rose-pine-moon` | `gruvbox-dark` | `nord` | `dracula` | `kanagawa` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `accent` | 8.07 | 4.79 | 7.39 | 7.47 | 5.37 | 6.24 | 5.90 | 4.67 |
+| `unread` | 7.08 | 4.80 | 6.46 | 5.38 | 4.29 | 3.52 | 4.53 | 5.44 |
+| `mention` | 9.27 | 3.34 | 8.40 | 7.13 | 5.84 | 4.39 | 8.36 | 8.15 |
+| `held` | 12.91 | 3.32 | 8.55 | 9.55 | 8.69 | 8.00 | 12.74 | 9.73 |
+| `ok` | 11.03 | 3.32 | 9.35 | 9.19 | 7.14 | 6.13 | 10.38 | 7.52 |
+| `person` | 7.79 | 4.34 | 6.79 | 4.29 | 5.48 | 4.64 | 10.29 | 5.94 |
+| `group` | 11.01 | 3.31 | 10.26 | 9.19 | 7.01 | 5.99 | 10.38 | 6.17 |
+| `channel` | 10.54 | 3.31 | 9.96 | 4.86 | 3.48 | 3.50 | 5.90 | 7.23 |
+| `bot` | 10.74 | 3.30 | 4.51 | 7.47 | 3.48 | 4.41 | 5.97 | 5.59 |
+| `saved` | 12.91 | 3.32 | 8.55 | 9.55 | 8.69 | 8.00 | 12.74 | 9.73 |
+| `dim` | 3.36 | 3.49 | 4.10 | 3.03 | 4.02 | 3.32 | 3.03 | 3.33 |
+| `subtext` | 7.37 | 5.53 | 8.10 | 4.86 | 5.30 | 9.25 | 3.03 | 8.89 |
+| `text` | 11.34 | 7.06 | 10.59 | 11.86 | 10.75 | 10.84 | 13.36 | 11.26 |
+| `surface` | 1.80 | 1.91 | 1.74 | 1.34 | 1.67 | 1.69 | 1.56 | 2.23 |
+
+Every data role now passes. Upstream, two themes failed, and the owner had their roles moved in
+lightness only, hue and saturation kept, until they reach 3.3:1 (3.5 for the two that sat on the
+edge). Each move is in `adjusted.roles` (decision 9):
+
+| Theme | Role | Upstream | Used | Contrast before → after |
+| --- | --- | --- | --- | --- |
+| `catppuccin-latte` | `mention` | peach `#FE640B` | `#E45401` | 2.64 → 3.34 |
+| `catppuccin-latte` | `held`, `saved` | yellow `#DF8E1D` | `#B87518` | 2.31 → 3.32 |
+| `catppuccin-latte` | `ok` | green `#40A02B` | `#3C9628` | 2.96 → 3.32 |
+| `catppuccin-latte` | `channel` | sky `#04A5E5` | `#038DC4` | 2.47 → 3.31 |
+| `catppuccin-latte` | `bot` | pink `#EA76CB` | `#E23FB6` | 2.34 → 3.30 |
+| `nord` | `dim` | nord3 `#4C566A` | `#77849E` | 1.69 → 3.32 |
+| `nord` | `unread` | nord11 `#BF616A` | `#C56F77` | 3.05 → 3.52 |
+| `nord` | `channel` | nord10 `#5E81AC` | `#6A8AB2` | 3.10 → 3.50 |
+
+Latte's roles get darker, on a light background. Nord's get lighter, on a dark one: the owner's
+"darken" read as "toward contrast". Still borderline but passing: `dim` in `rose-pine-moon` (3.03)
+and `dracula` (3.03, also its `subtext`).
+
+Senders and topics are data too: a sender's name is how one reads who wrote. So every sender and
+topic colour under 3:1, in any theme, moves the same way to 3.3:1, into `adjusted.senders` and
+`adjusted.topics` (tg-kit-25, 2026-10-11). Hue-shifted senders already keep 3:1. The moves:
+
+| Theme | Value | Upstream | Used |
+| --- | --- | --- | --- |
+| `catppuccin-latte` | violet sender | lavender `#7287FD` | `#6178FD` |
+| `catppuccin-latte` | green sender, green topic | green `#40A02B` | `#3C9628` |
+| `catppuccin-latte` | cyan sender | sky `#04A5E5` | `#038DC4` |
+| `catppuccin-latte` | pink sender, rose topic | pink `#EA76CB` | `#E23FB6` |
+| `catppuccin-latte` | yellow topic | yellow `#DF8E1D` | `#B87518` |
+| `gruvbox-dark` | red topic | neutral_red `#CC241D` | `#E1332C` |
+
+The other six themes need none.
+
+The sender rule compares against both values of an adjusted role. A sender still at upstream's
+colour would look like the role it was taken from: Latte's peach sender stays shifted, and Nord's
+red sender (nord11, which `unread` came from) is shifted too.
+
+**256 colours.** Each theme's hex runs through the engine's downsample in tmux (§10.2's note on
+`mocha256`: `16 + 36·r + 6·g + b`, each channel `round(v / 51)`). Roles, senders, and topics with
+`unread` are each checked for two different hex values on one cell. Where a pair collides, the
+lower role in `unread, accent, ok, mention, held, saved, person, group, channel, bot, text,
+subtext, dim, surface` moves to the nearest hex (fewest channel steps) on a free cell:
+
+| Theme | Collides | `<name>256` moves |
+| --- | --- | --- |
+| `catppuccin-mocha` | peach and yellow (223), blue and sky (153), red and maroon (217); senders cyan and blue (153) | T11's five, unchanged (unread `#F37AA8`, mention `#FAAF7A`, held and saved `#F9E6AF`, person `#7AAFFA`, channel `#7ADCEB`); the blue topic `#7AAFFA`, the yellow topic `#F9E6AF` |
+| `gruvbox-dark` | `person` and `subtext` (145) | subtext `#A89984` → `#B3997F` |
+| `catppuccin-latte` | adjusted `mention` and `held` (172) | held and saved `#B87518` → `#B8751A` |
+| `nord` | `accent` and `group` (152); adjusted `dim` and `channel` (109) | group `#8FBCBB` → `#7FBCBB`; dim `#77849E` → `#777F9E`; the red topic (nord11) off adjusted `unread`'s cell, `#B2616A` |
+| `kanagawa` | `dim` and `surface` (102) | surface `#54546D` → `#4C546D` |
+| `tokyo-night`, `rose-pine-moon`, `dracula` | none among roles | no role moves |
+
+Senders are checked the same way, against `unread`, `mention`, `accent` and each other, and their
+moves go in `variant256.senders`:
+
+- `catppuccin-mocha`: blue `#7AAFFA` (T11's), orange `#E59C87`;
+- `rose-pine-moon`: red, orange, violet, pink;
+- `gruvbox-dark`: red, violet;
+- `nord`: red, orange, cyan;
+- `dracula`: red.
+
+So `rose-pine-moon` and `dracula` have a `variant256` for their senders alone. Only
+`tokyo-night`, the default, has none.
+
+T11 saw `mocha256`'s cells live in tmux. The other variants are computed by the same formula and
+have not been seen live yet; T17's live run looks at them.
+
+**The CLI**: `tg --theme NAME` or `TG_THEME=NAME`, with a catalogue name or `<name>256`, and
+`tg themes` to preview them (`feat/cli-colors`). Its default is `tokyo-night`, as the pane's is.
 
 ### 10.3 Glyphs
 
@@ -2122,11 +2385,12 @@ The symbol column holds one symbol, chosen by this priority:
 
 | Symbol | Role | Means |
 | --- | --- | --- |
+| `⚠` | `unread` | a delegate chat running with hard stops skipped (`dangerouslySkipHardStops`, v1's red `⚠ no stops` tail). Above everything: the one state that is dangerous, not merely waiting. The AUTOPILOT lane and the chat card's corner spell it out (`⚠ no stops`) |
 | `@2` | `mention` | unread mentions of the owner, also in a muted chat (Telegram notifies those) |
-| `12` | `unread` | unread messages in a chat that is not muted; `99+` past 99 |
+| `12` | `unread` | unread messages in a chat that is not muted; `99+` past 99 (mentions: `@9+`) |
 | `12` | `dim` | the same count in a muted chat (§4.7: muted counts would bury the rest) |
 | `⊘` | `dim` | a closed topic: no writes, no agent (§10.9) |
-| `⚡` | `ok`, or `held` while it holds something for the owner | an agent is on here, at any level |
+| `⚡` | `ok`, or `held` while it holds something for the owner | an agent is on here, at any level, follow (→ main, ladder level 1, decision 2) included |
 | `ro` | `held` | BotFather, read-only (it took the watch column in v1) |
 | `✎` | `held` | FOR YOU only: a draft waits for the owner |
 | `◌` | `dim` | muted, nothing unread |
@@ -2165,7 +2429,8 @@ One line, in Chats, FOR YOU, the compact card and Topics:
 - **Columns**: cursor 1 · time 6 · space · glyph 1 · space · name · space · preview · space ·
   symbol 3. The fixed cells add up to 15, and the name and the preview share the rest.
   `name = min(20, rest − 12)`, and the preview gets what is left. When `name` would drop under 10,
-  the preview goes and the name takes the whole rest. So the name keeps its room and the preview
+  the preview goes and the name takes the whole rest; the space that separated them stays as
+  padding. So the name keeps its room and the preview
   gives way first: at 60 columns (a 56-cell card) it is name 20 and preview 21; at 44 it is
   13 and 12. Widths are counted in cells (`cells`, `labelCells`).
 - **Time**: `14:02` today, `Mon` within the last six days, `Oct 3` older, `2025` before this
@@ -2175,8 +2440,20 @@ One line, in Chats, FOR YOU, the compact card and Topics:
 - **Name**: the dialog's `title`, which for a user is first and last name; `Saved Messages` for
   `self`. Never `@username`: `dialogLabel` (`ui/model.ts:48`) stops returning it, and the username
   moves, dim, into the chat card's title. Routing still uses `peerArg` (`@username`, the id, or
-  `me`) and does not change.
-- **Preview**: the chat's `last_text`, one line (`oneLine`), dim; a media tag as in the thread. The
+  `me`) and does not change. The name is cut by cells (`cells`: an emoji counts two).
+- **Names where the owner confirms.** A title is not unique and anyone can copy one (decided by
+  tg-kit-25, 2026-10-11). Lists, the log and dividers show the name only. Wherever the owner
+  confirms something about a peer, the name carries its handle: `Ivan Petrov · @ivan_example`, or
+  the id when there is no username (`Project team · -1000000000205`). Those surfaces are:
+  - the allow.toml Yes/No dialog;
+  - send, press and `--yes` confirmations;
+  - the delegate grant, and an agent level starting (autopilot on);
+  - the band's hard-stop and undo items.
+
+  One helper builds that label, `peerConfirmLabel` in `ui/model.ts`, and a test checks that every
+  confirmation surface uses it.
+- **Preview**: the chat's `last_text`, one line (`oneLine`), dim. A dialog row has no media field
+  (`Dialog`, `types/index.d.ts:87`), so there is no media tag. The
   pass carries no sender, so a group's preview has none, and neither does a topic's: `tg topics`
   on `feat/tg-topics` gives `last_id`, `last_date` and `last_text` only (its worktree, uncommitted,
   2026-10-11). A builder adds a sender only after tg gains a field for it, which would be a CLI
@@ -2308,8 +2585,15 @@ location. Its parts:
 - `N UNREAD` (chats that are not muted, as §4.5 counts them);
 - `@N` (unread mentions), when no FOR YOU part shows them;
 - `N FOR YOU`;
-- `AUTOPILOT N CHATS`, in `held` when an agent holds something;
+- `AUTOPILOT N CHATS`, in `held` when an agent holds something: autopilot and delegate chats,
+  the same chats as the AUTOPILOT card's lanes;
+- `⌁ N`, dim and without a word: chats that follow into main (`p`). Appendix A's check still
+  reads `⌁1` here;
 - `◎ N NEW` (watched).
+
+v1's header chips move to the card they describe: `● rec 3` goes to the CHAT card's corner in
+`unread`, before `◎ watched`, and the agent card's `○ off` or `● draft · listening` goes to the
+AGENT card's corner.
 
 Zero parts are left out, and `…` ends the row while something loads. On an error the header reads
 `TG ⚠` in `unread`. Where the pane is now goes to the card titles (`CHATS  Work 15`, `○ Ivan
@@ -2354,11 +2638,34 @@ takes the lower part:
 - Its border is in the chat's kind role.
 - Message rows are §7.3's.
 
+Search and moves. With no strip there is no `s: search` Button above the list. `s` joins the
+dock's key line in Chats, as it already does inline, and a query shows in the CHATS title
+(`CHATS  "anna"`). `↑N` (moves that wait, §8 T9) leads the CHATS corner (`↑3 · 1-9 folders`).
+Over the Folders list or the For you view it rides the legend row's notice slot, as it does today.
+
+The top card. Chats draws CHATS. `y` draws `FOR YOU` (`mention`, no tabs), and the FOR YOU
+section is not drawn while that view is on top. `h` draws `FOLDERS` (`person`, no tabs).
+
 FOR YOU, AUTOPILOT and LOG fold while a chat is open. Their counts stay in the header, and what
 runs shows in the legend row. The card, the send sheet, Folders, the menu and Activity each take
-the same lower part as a card titled after them (`AGENT · Ivan Petrov`, `SEND · 1 message`,
-`FOLDERS`, `MENU`, `ACTIVITY`). Activity is the AUTOPILOT and LOG cards at full height, with the
-running rows as Buttons, as built.
+the same lower part as a card titled after them:
+
+- the agent card: `AGENT · Ivan Petrov`, with ` · options` or ` · ↯ delegate` on its steps;
+- the send sheet: `SEND · Ivan Petrov`;
+- its targets: `SEND TO · …`;
+- the rest: `INSPECT · …`, `DIFF · …`, `SUMMARY · …`, `ACTIVITY`, `MENU`.
+
+Activity is the AUTOPILOT and LOG cards at full height, with the running rows as Buttons, as
+built. Inline, the one card carries the same titles, and Chats is `CHATS` with its tabs.
+
+The folded layout follows the cursor, not the thread. While ▸ is in the chat or in a layer over
+it (the agent card, the send sheet, diff, summary, Activity, the send box), CHATS keeps 3 rows and
+the CHAT card or the layer's card takes the lower part. `h` back to Chats brings the home layout
+back (FOR YOU, CHATS, AUTOPILOT, LOG). The thread stays loaded and its row keeps `›`, so ⏎ brings
+the card straight back. v1 kept the thread below while ▸ was in Chats, and no key closed it; with
+folding, the sections would never have come back. `h` already starts a layout generation, so no
+stop moves while the cursor stays. While ▸ is in Chats the chat is not on screen, so the band
+shows its drafts again (§4.4).
 
 **Inline** (the main screen, up to 12 rows): the header, the view's one card, and the key line.
 There is no legend row; the notice row stays as §7.3 has it. FOR YOU, AUTOPILOT and LOG never draw
@@ -2392,8 +2699,10 @@ draws no ring stop, and the stops above the cursor keep their count (§4.3 rule 
 
 **The grey fill.** The owner saw the Pane's grey background run the full height, with the content
 stopping halfway. In flightdeck's screenshot the docked pane shows the same lighter fill, so the
-fill is most likely the engine's. P4 checks whether the mod can drop it. Either way, LOG grows to
-the bottom, so the fill never shows as an empty half.
+fill is most likely the engine's. P4 checks whether the mod can drop it. Either way, the last card
+drawn grows to the bottom: LOG when it shows, else AUTOPILOT, else CHATS. So the fill never shows
+as an empty half below a closed border. With no chat open, v1's "⏎ on a chat opens it here." line
+goes, and the sections take the lower part.
 
 ### 10.6 The AUTOPILOT card and the log
 
@@ -2412,7 +2721,7 @@ the bottom, so the fill never shows as an empty half.
   uses five cells, `▰` in `ok`, then `held` from 80 %, then `unread` at the limit, with `▱` in
   `dim`. A chat with no limit (`∞/h`) has no gauge. The hour is rolling, so nothing "resets": the
   owner's `↻ resets 0:41` is drawn `↻ 0:41`, the time until the oldest counted send leaves the
-  hour and a slot frees (§10.13, decision 4). The compact card and the Hidden line show the same pair
+  hour and a slot frees, as `m:ss` like the lanes' clocks (`↻ 41:07`, `↻ 0:41`) (§10.13, decision 4). The compact card and the Hidden line show the same pair
   (`12/50`).
 - **The cell strip.** One `■` per autopilot event, newest at the right, as many as fit. The cells
   map from `ApOutcome` (`types/index.d.ts:466`) as follows:
@@ -2424,13 +2733,15 @@ the bottom, so the fill never shows as an empty half.
   | `stop` | asked | `mention` |
   | `failed`, and `skipped` | refused | `unread` |
 
-  `working`, `listened`, `dropped` and `allowed` draw no cell. The counts after the strip leave
-  zeros out.
+  `working`, `listened`, `dropped` and `allowed` draw no cell. The counts after the strip
+  (`sent 11 · held 2 · asked 1 · refused 1`, each word in its cell's role) are over every event in
+  the session's ledger, while the strip is cut to the newest; zeros are left out.
 - **Lanes.** One per chat on, with the level glyph, the name, and a lane as wide as the card
   allows. The lane is the burst's wait: `━` is the time since the last incoming message, against
   the burst gap (`gapS`, 20 s by default), and `·` is what remains. Then the state, in this order:
   `drafting 0:12` (the clock since the draft started), `draft waits` (`held`), `sent 0.93`,
-  `listening`. An idle lane is all `·`. A delegate lane shows its task's minutes (`task 42 min`)
+  `listening`. `sent 0.93` shows while the chat's newest ledger entry is that send, for 5 minutes
+  at most; then, or at the next burst, the lane goes back to `listening`. An idle lane is all `·`. A delegate lane shows its task's minutes (`task 42 min`)
   instead. At most three lanes; past that the title counts the rest (`AUTOPILOT · 5 chats · +2`).
 - **The log.** Each line holds the time (`HH:MM`, dim), the chat's name (in its kind role, a fixed
   column of 13 cells), and the text in `subtext`, or in its tone (`ok`, `held`, `unread`) for an
@@ -2453,14 +2764,22 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
 ```
 
 - **Where**: AbovePrompt, right-aligned, `width = min(46, bodyColumns − 2)`, as statuspane draws
-  its card (`justifyContent="flex-end"`, a rounded border). Under 40 columns it is one line, the
-  title's. It calls `next(e)` and draws what the plugins beneath drew above itself, as statuspane
-  does, so the two cards stack (P3).
+  its card (`justifyContent="flex-end"`, a rounded border). Under 40 columns it is one
+  right-aligned line without a border, `tg · ● 3 waiting · ⚡ 12/50`, itself the ring stop (⏎
+  opens Wide, `q` hides). It always calls `next(e)` and draws what the plugins beneath drew above
+  itself, as statuspane does, so the two cards stack (P3). Top to bottom: the band's item (full
+  width), what `next(e)` drew (statuspane's card), our card. v1's band item replaced `next(e)`;
+  v2 always chains.
 - **Lines**: the title `tg` in the top border, in `accent`. Then a status line. Then the top two
   chats in the row format: For you's first two, else the current folder's first two unread, else
   none. The status line shows two things:
-  - `● 3 chats waiting`: the chats in For you, `●` in `mention`;
-  - the gauge pair `⚡ ▰▰▱▱▱ 12/50`, while an agent is on.
+  - `● 3 chats waiting`, `●` in `mention`: the distinct chats in For you, its people rows (from
+    the last pass, or the latest dialogs before the first pass) and its drafts and hard stops. A
+    chat with both a draft and a mention counts once;
+  - with For you empty: `● 15 unread`, `●` in `unread`; with nothing unread and no agent on: `all
+    read`, dim;
+  - the gauge pair `⚡ ▰▰▱▱▱ 12/50`, while an agent is on; `⚡ autopilot on` when no chat on has a
+    limit (`∞/h`).
 - **When the band holds an item** (a draft, a hard stop, an undo; §5.3, §5.4), the item keeps its
   full-width rows above the card, since a draft is read whole there (decision 9). The card drops
   to its status line.
@@ -2469,14 +2788,28 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
   `⏎ open · q: hide`. The owner's `▾ hide` is drawn as `q: hide`, because the engine draws a
   Button's hotkey before its label (§1) and `q` already means hide (§6). No digits, as §11 has it
   for the band.
+- **A known limit: the keys after ⏎ when statuspane is installed** (decision 10).
+  - Without statuspane, ⏎ opens Wide and the keys go to the pane. T15 saw this live: `● keys`
+    showed, and `k` moved ▸.
+  - With statuspane installed, the keys stay with the band, and the owner presses ctrl+x tab
+    once more. Engine 2.1.296 refuses a pane's `focus` while an element of the band holds the
+    keys. statuspane's `▾ hide` Button stays in the band after our card leaves, so the band
+    still holds them.
+  - No plugin API moves the keys from the band to a pane: `$.ui.focus` is denied in a site that
+    does not hold them, and there is no blur. So there is no workaround in the mod, and none is
+    attempted.
+  - Appendix A re-checks it after every engine upgrade.
 - **Rows** are text in the band's ring: the row under the band's cursor is the one Button that
   draws (`autoFocus`), and the other is text. The card adds no ring stops above the prompt beyond
   the band's own.
 
 ### 10.8 Hidden
 
-The owner's line: `● tg: 15 unread · @2 · autopilot 12/50`. Zero parts are left out, and `●` takes
-the most urgent part's role.
+The owner's line: `● tg: 15 unread · @2 · autopilot 12/50`. Zero parts are left out. In the
+footer label `●` cannot take a role (`SessionMode`'s `modes` is `string[]`), so the whole label is
+dim. The label shows this line in every state, not only Hidden, in place of v1's
+`tg 22 · ⌁1 ⟳1 · ◎ 3 new · 2 for you`: `tg …` while loading, `tg ⚠` or `tg ⚠ not logged in` on a
+failure, `tg` when every part is zero, and `autopilot on` when agents run with no limit.
 
 **The footer label, not the status line** (§10.13, decision 2). The owner first said "a status-line entry". The engine, however,
 draws a plugin's status line as a yellow `⚠ name:` notice. That is audit #11, and flightdeck's
@@ -2626,8 +2959,8 @@ What the results change for T12–T16:
 ### 10.12 Tasks T11–T16
 
 Branches come off `design/pane-v2` (this doc), each in its own worktree. The checks are §8's (`tsc
--p mods/dialogs-pane`, `claude plugin validate`, `claude plugin test`, `uv run pytest`), plus a
-live run on the fake tg (Appendix A) in a 60-column and a 44-column dock, inline at 100×12, and
+-p mods/dialogs-pane`, `claude plugin validate`, `claude plugin test` behind Appendix A's lock,
+`uv run pytest`), plus a live run on the fake tg (Appendix A) in a 60-column and a 44-column dock, inline at 100×12, and
 the pane closed. Each task captures its live run into the commit body. No real names: Ivan Petrov,
 Project team, Dev chat, @example_bot.
 
@@ -2741,7 +3074,8 @@ to T13).
   - ⏎ `j k q` after ctrl+x tab;
   - the bottom border `⏎ open · q: hide`.
 - States in `$.store`: Wide, Compact, Hidden. `q` in the pane closes to Compact; `q` in the card
-  and `/tg hide` go to Hidden; `/tg` opens Wide.
+  and `/tg hide` go to Hidden; `/tg` and `/tg wide` open Wide; `/tg compact` goes to Compact
+  (v1 made it an alias of `/tg`).
 - The Hidden line in the `SessionMode` footer label (§10.8, decision 2). `$.ui.status`
   keeps its three alarms.
 - Tests:
@@ -2753,6 +3087,25 @@ to T13).
   - the Hidden text with zero parts left out;
   - `$.ui.status` set only for the alarms.
 - Live: at 100 and 60 columns, with statuspane installed and without it (P3).
+
+**T17 — the theme catalogue in the pane** (½ day; after T12; decision 9).
+
+- `mods/dialogs-pane/hooks/ui/themes.json`, a copy of `palettes/themes.json`.
+  `tests/unit/test_themes_shared.py` pins it, and the CLI's copy, to the root file and checks the
+  schema (§10.2, "The theme catalogue").
+- `palette.ts` reads the catalogue. `Palette` becomes the union of `'theme'`, `'ansi'`,
+  every catalogue name, and `<name>256` where that theme has a `variant256`. `PALETTES` is built
+  from the file. `mocha` and `mocha256` become `catppuccin-mocha` and `catppuccin-mocha256`.
+  `plugin.json`'s `palette` options list every value, and its default is `tokyo-night`
+  (decision 9).
+- `TOPIC_COLOR` comes from each theme's `topics`.
+- Tests:
+  - every catalogue role resolves in every theme;
+  - a `256` value applies only its `variant256` entries;
+  - unknown names are refused by the option's list;
+  - mocha's values are unchanged.
+- Live: each theme in the dock at 60 columns, outside and inside tmux (the `256` variants of
+  gruvbox, nord and kanagawa), and `catppuccin-latte` on a light terminal.
 
 **T16 — forum topics in the pane** (1–1½ days; after `feat/tg-topics` lands, and T12 and T13).
 
@@ -2806,6 +3159,29 @@ Decided after T11's probes, by the owner through tg-kit-25 (2026-10-11):
    by itself and tells no plugin the depth (P7). `mocha256` keeps `mocha`'s roles apart in tmux's
    256 colours, and `ansi` keeps borders visible at 16 colours (§10.2).
 
+Asked by the owner on 2026-10-11, through tg-kit-25:
+
+9. **A theme catalogue shared by the CLI and the pane**: eight themes from their upstream hex
+   (§10.2, "The theme catalogue"), in `palettes/themes.json`. `palette` becomes `theme | ansi |
+   <name> | <name>256`, and the CLI takes `--theme` and `TG_THEME`. This widens decision 8's four
+   values; `mocha` and `mocha256` are renamed into the catalogue.
+
+   Resolved by the owner the same day:
+   - **The default is `tokyo-night`**, for the CLI and for the pane's `palette`, where it
+     replaces `theme` as the default; `theme` stays selectable.
+   - **`catppuccin-latte` and `nord` have their failing roles moved** in lightness only, hue kept,
+     until every data role passes 3:1 (3.5 for Nord's `unread` and `channel`, which sat on the
+     edge). Each move is recorded in `adjusted`, from upstream to used, so no one takes those
+     values for upstream's (§10.2).
+
+Accepted by the owner through tg-kit-25 (2026-10-11), after T15's live run:
+
+10. **With statuspane installed, ⏎ in the compact card opens Wide but leaves the keys in the
+    band**, and the owner presses ctrl+x tab once more (§10.7). Engine 2.1.296 refuses the pane's
+    `focus` while a band element holds the keys, and no plugin API can move them. Rejected: focus
+    hacks (the owner's option 1 was "no focus hacks"), since a workaround would have to reach into
+    another plugin's drawing or lean on engine behaviour the docs do not promise.
+
 ## 11. Rejected
 
 - **Engine tabs for views** (several panes): the probe showed the tab strip, but reaching a tab
@@ -2836,8 +3212,16 @@ Decided after T11's probes, by the owner through tg-kit-25 (2026-10-11):
   default).
 - Session: `claude --plugin-dir mods/dialogs-pane --plugin-dir mods/dialogs-pane-guard --settings
   '{"enabledPlugins":{"dialogs-pane@tg-kit":false,"dialogs-pane-guard@tg-kit":false}}'`, so the
-  installed copies do not load twice. A `--plugin-dir` run uses the store file
-  `~/.claude/plugins/store/dialogs-pane_inline-*.json`: back it up first and restore it after.
+  installed copies do not load twice.
+- The store. Every `--plugin-dir` run, so every lab running in parallel, shares one store file:
+  `~/.claude/plugins/store/dialogs-pane_inline-*.json`.
+  - Never back it up and restore it whole: a restore puts back the old state of every other lab
+    that wrote in between. T15's restore clobbered T14's live lab that way.
+  - Reset only the keys your own probe set, and only those.
+  - Never touch `dialogs-pane_tg-kit-*.json`, not to read, back up or reset it. That is the owner's
+    real store, the installed mod's.
+- Whole-mod test suites run one at a time, behind a shared lock:
+  `lockf /tmp/tg-kit-plugin-test.lock claude plugin test mods/dialogs-pane`.
 - The fake tg answers: `dialogs --limit N --json` · `read PEER --limit N --reverse --json` ·
   `msg PEER ID… --json` (exit 4 for missing) · `whoami --json` · `allow list --json` ·
   `send PEER - --plain [--wait …] [--reply-to ID] --json [--dry-run]` (stdin text; exit 7 outside
@@ -2854,6 +3238,10 @@ Decided after T11's probes, by the owner through tg-kit-25 (2026-10-11):
 - Sizes: with `window-size latest` and another tmux client attached, `new-session -x -y` is
   ignored and the session takes that client's size (T11 got 180×51 for every lab). Run
   `tmux resize-window -t <session> -x 100 -y 40` after the start and check `#{window_width}`.
+- After every engine upgrade, with statuspane installed and the pane closed: ctrl+x tab, then ⏎ in
+  the compact card. Today the keys stay in the band (§10.7, decision 10). If the pane shows
+  `● keys` and `k` moves ▸, the engine now lets a pane take the keys from the band, and §10.7's
+  limit can go.
 - After every engine upgrade, with the pane holding the keys and the menu closed: `j` moves the
   cursor, `p` in a bot chat puts `⌁1` in the header (`p` again stops it), `q` hides the pane. If
   one does nothing, the engine no longer presses hidden Buttons (§1, §6).
