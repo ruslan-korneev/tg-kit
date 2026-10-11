@@ -104,6 +104,8 @@ function world(
   const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], opens: [], store: new Map(Object.entries(STARTED)), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  // session.start reads HOME (── delegate ──); unanswered, the hook is skipped and the session starts only in part.
+  on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
   on('store.set', (_$, e) => {
     seen.store.set(e.key, e.value)
@@ -235,7 +237,9 @@ describe('auto', () => {
   test('a burst waits its gap, the Speaker writes, tg send goes through the guard, u undoes it', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { ui, child } = await handOver($, clock, seen, '3')
+    const { ui: card, child } = await handOver($, clock, seen, '3')
+    // No pane while the clock runs: every state change would redraw it, and nothing here reads it (the band does).
+    await card.unmount()
     expect(child?.argv).toEqual(['tg', 'watch', '1002', '--jsonl'])
     expect(seen.store.get('autopilot.dialogs')).toMatchObject({ [String(GROUP)]: { level: 'auto', perHour: 50, gapS: 20, threshold: 0.8, quiet: null } })
 
@@ -269,6 +273,7 @@ describe('auto', () => {
     await band.press({ key: 'ap:band:undo-press' })
     expect(seen.runs.at(-1)?.argv).toEqual(['tg', 'delete', '1002', '900', '--yes', '--json'])
 
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
     // l from the card: Activity's log, one line a burst (§5.7).
@@ -304,7 +309,9 @@ describe('auto', () => {
   test('typing holds 60 s at most', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { ui, child } = await handOver($, clock, seen, '3')
+    // No pane while 90 s of typing run: each event would redraw it, and the test reads only the Speaker's calls.
+    await ui.unmount()
     watchMessage(child, message(500, 'hi'))
     for (let s = 0; s < 90; s += 5) {
       child?.line({ event: 'typing', chat_id: GROUP, date: '2026-10-10T12:00:00Z', sender: alice, action: 'typing' })
