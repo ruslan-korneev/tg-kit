@@ -135,6 +135,7 @@ describe('hidden keys and the menu', () => {
   test('the menu lists a key that waits, with its step; one that never works is not there', () => {
     const entries = menu(at('chat', 'bot')).flatMap(section => section.entries)
     expect(entries.find(entry => entry.def.id === 'diff')?.needs).toBe('needs two replies marked (x)')
+    // 0 waits for something to run, but the menu lists it quietly: see the T4 tests below.
     expect(entries.find(entry => entry.def.id === 'stop')?.needs).toBe('nothing runs')
     expect(entries.find(entry => entry.def.id === 'mark')?.needs).toBeNull()
     expect(menu(at('chat', 'person')).flatMap(section => section.entries).some(entry => entry.def.id === 'record')).toBe(false)
@@ -182,5 +183,35 @@ describe('the send sheet (§5.1)', () => {
     expect(ids(hiddenKeys(at('chat', 'person'), new Set()))).toContain('inspect')
     expect(ids(hiddenKeys(at('chat', 'person', { rows: 0 }), new Set()))).not.toContain('inspect')
     expect(KEYS.some(def => def.label(at('sheet', 'bot', { sheet: 'intents' })) === 'intent')).toBe(false)
+  })
+})
+
+describe('what runs and the kill switch (§4.6, §5.6, T4)', () => {
+  test('in the dock the running strip says 0: stop all, so the bar never does; inline the bar does', () => {
+    for (const where of ['chats', 'chat', 'card', 'activity', 'diff'] as const) {
+      expect(ids(actionBar(at(where, 'bot', { isRunning: true }, 'dock')))).not.toContain('stop')
+      expect(ids(actionBar(at(where, 'bot', { isRunning: true }, 'inline')))).toContain('stop')
+    }
+    // Still live in the dock: the frame keeps it as a hidden hotkey.
+    expect(ids(hiddenKeys(at('chat', 'bot', { isRunning: true }, 'dock'), new Set()))).toContain('stop')
+  })
+
+  test('the menu: 0 stays in safety, quiet while nothing runs; u is listed only while its window is open', () => {
+    const idle = menu(at('chat', 'bot')).flatMap(section => section.entries)
+    const stop = idle.find(entry => entry.def.id === 'stop')
+    expect(stop?.label).toBe('stop every agent and Worker · /tg stop')
+    expect(stop?.isQuiet).toBe(true)
+    expect(idle.some(entry => entry.def.id === 'undo')).toBe(false)
+    const busy = menu(at('chat', 'bot', { isRunning: true, undoLeft: 9 })).flatMap(section => section.entries)
+    expect(busy.find(entry => entry.def.id === 'stop')?.needs).toBeNull()
+    expect(busy.find(entry => entry.def.id === 'undo')?.label).toBe('undo 9s')
+  })
+
+  test('Activity: ⏎ open, d dismisses ended tasks once there is one, h back; j and k move among its rows', () => {
+    expect(ids(actionBar(at('activity', null, { rows: 2 })))).toEqual(['open', 'back', 'menu'])
+    expect(ids(actionBar(at('activity', null, { rows: 2, hasFinished: true })))).toEqual(['open', 'dismiss', 'back', 'menu'])
+    expect(actionBar(at('activity', null, { rows: 2, hasFinished: true })).find(one => one.id === 'dismiss')?.label).toBe('dismiss ended tasks')
+    expect(ids(actionBar(at('activity', null, { rows: 0 })))).toEqual(['back', 'menu'])
+    for (const id of ['down', 'up'] as const) expect(exists(keyDef(id), at('activity', null))).toBe(true)
   })
 })

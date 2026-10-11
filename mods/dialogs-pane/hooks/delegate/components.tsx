@@ -1,7 +1,7 @@
 // The delegate's components (docs/design/dialogs-pane.md §6 mockups): the
-// grant and hard-stop rows of the autopilot card, the task card in the pane,
-// its one-line form for Compact, and the band row of a hard stop waiting for
-// your answer. Plain functions over the surface's element table.
+// grant and hard-stop rows of the autopilot card, the task card on top of its
+// chat's thread, its one-line form inline, and the band row of a hard stop
+// waiting for your answer. Plain functions over the surface's element table.
 import type { RenderElement } from 'claude-code'
 
 import type { DgDialog, DgPending, DgTask } from '../../types'
@@ -114,32 +114,27 @@ const TONE: Record<CardLine['tone'], { color?: string; dim: boolean }> = {
   plain: { dim: false },
 }
 
-/** The task card (design §6 mockup), in Wide: header, steps, the current action, hard stops, the last chat message. */
-export function TaskCard(
-  els: Els,
-  props: { task: DgTask; view: TaskView; now: number; width: number; rows: number; noStops: string | null; onStop: () => void; onDismiss: () => void },
-): RenderElement {
-  const { Box, Text, Button } = els
+/**
+ * The task card on top of its chat's thread, drawn as dialogs-pane-ux.md §5.5
+ * has it, without a border: a header, then at most `lines` of steps, the
+ * current action, hard stops, the last chat message and how it ended. Text
+ * only: it sits above the thread's cursor row, so it carries no ring stop
+ * (§4.3 rule 1); `0` stops it, the agent card stops its chat, `d` in Activity
+ * dismisses it once it ended.
+ */
+export function TaskCard(els: Els, props: { task: DgTask; view: TaskView; now: number; width: number; lines: number; noStops: string | null }): RenderElement {
+  const { Box, Text } = els
   const { task } = props
   const isLive = task.status === 'starting' || task.status === 'working' || task.status === 'asking'
-  const lines = cardLines(task, props.view, props.rows)
+  const lines = fitLines(cardLines(task, props.view, props.lines), props.lines)
   const isHeld = isLive && holdsOf(task, props.view).length > 0
   return (
-    <Box key={`dg:task:${task.id}`} flexDirection="column" borderStyle="round" borderColor={isHeld ? TOKEN.warn : TOKEN.accent} paddingX={1}>
+    <Box key={`dg:task:${task.id}`} flexDirection="column">
       <Box flexDirection="row" justifyContent="space-between">
-        <Text color={TOKEN.accent} bold wrap="truncate-end">{`⚡ ${task.peer.label} · ${oneLine(task.summary, Math.max(10, props.width - task.peer.label.length - 30))}`}</Text>
-        <Box flexDirection="row" gap={2}>
+        <Text color={isHeld ? TOKEN.warn : TOKEN.accent} bold wrap="truncate-end">{`⚡ ${task.peer.label} · ${oneLine(task.summary, Math.max(10, props.width - task.peer.label.length - 30))}`}</Text>
+        <Box flexDirection="row" gap={2} flexShrink={0}>
           {props.noStops === null ? null : <Text color={TOKEN.danger}>{props.noStops}</Text>}
           <Text dimColor>{elapsedText(task.startedAt, props.now)}</Text>
-          {isLive ? (
-            <Button key={`dg:stop:${task.id}`} plain onPress={props.onStop}>
-              <Text color={TOKEN.danger}>stop</Text>
-            </Button>
-          ) : (
-            <Button key={`dg:dismiss:${task.id}`} plain dimColor onPress={props.onDismiss}>
-              dismiss
-            </Button>
-          )}
         </Box>
       </Box>
       {...lines.map(line => (
@@ -151,16 +146,36 @@ export function TaskCard(
   )
 }
 
-/** The task card's one line, for Compact. */
-export function TaskRow({ Box, Text, Button }: Els, props: { task: DgTask; view: TaskView; noStops: string | null; onStop: () => void }): RenderElement {
+/** Lines a docked chat's task card gets, from the lower part's height: at most 6, and a third of it with its header. */
+export function chatCardLines(lower: number): number {
+  return Math.min(6, Math.floor(lower / 3) - 1)
+}
+
+/** Rows a chat's task takes: the card's header and its lines, or one TaskRow when fewer than 2 lines fit. */
+export function chatTaskRows(lines: number): number {
+  return lines < 2 ? 1 : 1 + lines
+}
+
+/** At most `max` lines: the oldest steps go first, then the worktrees, then the oldest of the rest. */
+export function fitLines(lines: readonly CardLine[], max: number): CardLine[] {
+  const kept = [...lines]
+  for (const prefix of ['step:', 'wt:']) {
+    while (kept.length > max) {
+      const index = kept.findIndex(line => line.key.startsWith(prefix))
+      if (index === -1) break
+      kept.splice(index, 1)
+    }
+  }
+  return kept.slice(-Math.max(0, max))
+}
+
+/** The task's one line on top of its chat's thread, inline: Text, as the card. */
+export function TaskRow({ Box, Text }: Els, props: { task: DgTask; view: TaskView; noStops: string | null }): RenderElement {
   const { task } = props
   return (
     <Box key={`dg:row:${task.id}`} flexDirection="row" gap={1}>
       <Text color={holdsOf(task, props.view).length > 0 ? TOKEN.warn : TOKEN.accent} wrap="truncate-end">{taskLine(task, props.view)}</Text>
       {props.noStops === null ? null : <Text color={TOKEN.danger}>{props.noStops}</Text>}
-      <Button key={`dg:row-stop:${task.id}`} plain onPress={props.onStop}>
-        <Text color={TOKEN.danger}>stop</Text>
-      </Button>
     </Box>
   )
 }

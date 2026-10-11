@@ -64,6 +64,8 @@ export type KeyFacts = {
   rows: number
   /** A follow, an autopilot or a Worker runs: `0` has something to stop. */
   isRunning: boolean
+  /** Activity lists a delegate task that ended: `d` dismisses them. */
+  hasFinished: boolean
   /** Seconds left to undo the last auto reply; 0 when no window is open. */
   undoLeft: number
   hasNotice: boolean
@@ -91,6 +93,7 @@ export type KeyContext = { where: Where; seat: Seat; kind: ChatKind | null; fact
 export const NO_FACTS: KeyFacts = {
   rows: 0,
   isRunning: false,
+  hasFinished: false,
   undoLeft: 0,
   hasNotice: false,
   marks: 0,
@@ -122,12 +125,22 @@ type Def = {
   label: (c: KeyContext) => string
   /** The step it waits for, or null when it works now. */
   needs?: (c: KeyContext) => string | null
+  /**
+   * The menu while it waits: `quiet` lists it dim without the step (the safety
+   * row teaches `0` and /tg stop in every chat); `hidden` leaves it out (`u`
+   * means nothing until an auto reply goes out). Absent: dim, with the step.
+   */
+  whileWaiting?: 'quiet' | 'hidden'
+  /** The menu's words, where they differ from the bar's. */
+  menuLabel?: (c: KeyContext) => string
   /** Digits drawn next to their options (folders, levels, targets): the content draws them. */
   isDigits?: true
 }
 
 const PANE: readonly Where[] = ['chats', 'chat', 'sheet', 'card', 'activity', 'diff', 'editor']
 const LISTS: readonly Where[] = ['chats', 'chat']
+/** Views with a cursor that j and k move: the two columns, and Activity's running rows. */
+const MOVES: readonly Where[] = [...LISTS, 'activity']
 /** §4.6's "what exists in which chat" table, one constant per row. */
 const WRITE: readonly ChatKind[] = ['bot', 'person', 'group', 'saved']
 /** The chats the owner can write to: `n`, and the send sheet's Draft reply to a person (§4.6). */
@@ -143,9 +156,18 @@ const noRows = (what: string) => (c: KeyContext) => (c.facts.rows === 0 ? `needs
 const onIntents = (c: KeyContext) => (c.facts.sheet === 'intents' ? null : 'needs the intents (h)')
 
 export const KEYS = [
-  { id: 'down', key: 'j', hotkey: 'j', group: 'move', where: LISTS, kinds: 'any', label: () => 'down' },
-  { id: 'up', key: 'k', hotkey: 'k', group: 'move', where: LISTS, kinds: 'any', label: () => 'up' },
-  { id: 'open', key: 'o', hotkey: 'o', group: 'chats', where: ['chats', 'band'], kinds: 'any', label: () => 'open', needs: noRows('a chat in the list') },
+  { id: 'down', key: 'j', hotkey: 'j', group: 'move', where: MOVES, kinds: 'any', label: () => 'down' },
+  { id: 'up', key: 'k', hotkey: 'k', group: 'move', where: MOVES, kinds: 'any', label: () => 'up' },
+  {
+    id: 'open',
+    key: 'o',
+    hotkey: 'o',
+    group: 'chats',
+    where: ['chats', 'activity', 'band'],
+    kinds: 'any',
+    label: () => 'open',
+    needs: c => noRows(c.where === 'activity' ? 'something running' : 'a chat in the list')(c),
+  },
   { id: 'send', key: '⏎', hotkey: null, group: 'message', where: ['chat'], kinds: 'any', label: () => 'send…', needs: noRows('a message') },
   { id: 'start', key: '⏎', hotkey: null, group: 'chat', where: ['card'], kinds: AGENT, label: c => (c.facts.isAgentOn ? 'stop' : 'start') },
   { id: 'mark', key: 'x', hotkey: 'x', group: 'message', where: ['chat'], kinds: 'any', label: () => 'mark', needs: noRows('a message') },
@@ -217,8 +239,27 @@ export const KEYS = [
     isDigits: true,
   },
   { id: 'edit', key: 'e', hotkey: 'e', group: 'chat', where: ['card', 'band'], kinds: 'any', label: c => (c.where === 'card' ? 'brief' : 'edit') },
-  { id: 'dismiss', key: 'd', hotkey: 'd', group: 'pane', where: ['chat', 'card', 'band'], kinds: 'any', label: () => 'dismiss', needs: c => (c.where === 'band' || c.facts.hasNotice ? null : 'needs a notice') },
-  { id: 'undo', key: 'u', hotkey: 'u', group: 'safety', where: [...PANE, 'band'], kinds: 'any', label: c => (c.facts.undoLeft > 0 ? `undo ${c.facts.undoLeft}s` : 'undo'), needs: c => (c.where === 'band' || c.facts.undoLeft > 0 ? null : 'needs an auto reply in its 30 s') },
+  {
+    id: 'dismiss',
+    key: 'd',
+    hotkey: 'd',
+    group: 'pane',
+    where: ['chat', 'card', 'activity', 'band'],
+    kinds: 'any',
+    label: c => (c.where === 'activity' ? 'dismiss ended tasks' : 'dismiss'),
+    needs: c => (c.where === 'band' ? null : c.where === 'activity' ? (c.facts.hasFinished ? null : 'needs a task that ended') : c.facts.hasNotice ? null : 'needs a notice'),
+  },
+  {
+    id: 'undo',
+    key: 'u',
+    hotkey: 'u',
+    group: 'safety',
+    where: [...PANE, 'band'],
+    kinds: 'any',
+    label: c => (c.facts.undoLeft > 0 ? `undo ${c.facts.undoLeft}s` : 'undo'),
+    needs: c => (c.where === 'band' || c.facts.undoLeft > 0 ? null : 'needs an auto reply in its 30 s'),
+    whileWaiting: 'hidden',
+  },
   { id: 'activity', key: 'l', hotkey: 'l', group: 'pane', where: ['chats', 'chat', 'card'], kinds: 'any', label: () => 'activity' },
   { id: 'reload', key: 'g', hotkey: 'g', group: 'pane', where: LISTS, kinds: 'any', label: () => 'reload' },
   {
@@ -232,7 +273,18 @@ export const KEYS = [
   },
   { id: 'menu', key: 'm', hotkey: 'm', group: 'pane', where: [...PANE, 'menu'], kinds: 'any', label: c => (c.where === 'menu' ? 'close' : 'menu') },
   { id: 'hide', key: 'q', hotkey: 'q', group: 'pane', where: PANE, kinds: 'any', label: () => 'hide' },
-  { id: 'stop', key: '0', hotkey: '0', group: 'safety', where: PANE, kinds: 'any', label: () => 'stop all', needs: c => (c.facts.isRunning ? null : 'nothing runs') },
+  {
+    id: 'stop',
+    key: '0',
+    hotkey: '0',
+    group: 'safety',
+    where: PANE,
+    kinds: 'any',
+    label: () => 'stop all',
+    needs: c => (c.facts.isRunning ? null : 'nothing runs'),
+    whileWaiting: 'quiet',
+    menuLabel: () => 'stop every agent and Worker · /tg stop',
+  },
 ] as const satisfies readonly Def[]
 
 export type KeyId = (typeof KEYS)[number]['id']
@@ -297,6 +349,7 @@ function verbs(c: KeyContext): readonly KeyId[] {
     case 'card':
       return ['start', 'edit', 'activity', 'back']
     case 'activity':
+      return ['open', 'dismiss', 'back']
     case 'editor':
       return ['back']
     case 'diff':
@@ -319,12 +372,14 @@ export const BAR_GAP = 2
  * The action bar: this context's live verbs in §4.6's order, then `u` and `0`
  * while they work, then `m`; never more than seven, and never wider than
  * `width`. Verbs leave from the end first; the rest stay in the menu and on
- * their hotkeys.
+ * their hotkeys. In the dock the running strip says `0: stop all` (§4.6, §5.6),
+ * so the bar does not: never both.
  */
 export function actionBar(c: KeyContext, width = Infinity): ShownKey[] {
   const live = (id: KeyId) => isLive(keyDef(id), c)
   const head = verbs(c).filter(live)
-  const tail: KeyId[] = [...(['undo', 'stop'] as const).filter(live), ...(c.where === 'band' ? [] : (['menu'] as const))]
+  const safety: readonly KeyId[] = c.seat === 'dock' ? ['undo'] : ['undo', 'stop']
+  const tail: KeyId[] = [...safety.filter(live), ...(c.where === 'band' ? [] : (['menu'] as const))]
   const fixed = new Set<KeyId>(['back', 'undo', 'stop', 'menu'])
   let picked = [...head, ...tail]
   const cells = (ids: readonly KeyId[]) => ids.reduce((sum, id, index) => sum + barCells(shown(keyDef(id), c)) + (index === 0 ? 0 : BAR_GAP), 0)
@@ -348,7 +403,8 @@ export function hiddenKeys(c: KeyContext, drawn: ReadonlySet<string>): ShownKey[
   return TABLE.filter(def => def.hotkey !== null && !drawn.has(def.hotkey) && isLive(def, c)).map(def => shown(def, c))
 }
 
-export type MenuEntry = { def: KeyDef; label: string; needs: string | null }
+/** `needs` is the step it waits for; `isQuiet` draws it dim without that step. */
+export type MenuEntry = { def: KeyDef; label: string; needs: string | null; isQuiet: boolean }
 export type MenuSection = { group: MenuGroup; entries: MenuEntry[] }
 
 /**
@@ -361,7 +417,10 @@ export type MenuSection = { group: MenuGroup; entries: MenuEntry[] }
 export function menu(c: KeyContext): MenuSection[] {
   const listed = TABLE.filter(def => exists(def, c) && def.group !== 'move' && def.id !== 'back' && def.id !== 'menu')
   return MENU_GROUPS.flatMap(group => {
-    const entries = listed.filter(def => def.group === group).map(def => ({ def, label: def.label(c), needs: needsOf(def, c) }))
+    const entries = listed
+      .filter(def => def.group === group)
+      .map(def => ({ def, label: (def.menuLabel ?? def.label)(c), needs: needsOf(def, c), isQuiet: def.whileWaiting === 'quiet' }))
+      .filter(entry => entry.needs === null || entry.def.whileWaiting !== 'hidden')
     return entries.length === 0 ? [] : [{ group, entries }]
   })
 }

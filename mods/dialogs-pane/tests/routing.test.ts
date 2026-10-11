@@ -608,16 +608,19 @@ describe('the send sheet keeps the ring on ▸ (the engine keeps it by place amo
   })
 })
 
-describe('the ledger', () => {
-  test('Enter on a row opens the dialog with the cursor on the message', async ($, on) => {
+describe('the packet ledger, in Activity (§5.7)', () => {
+  test('a packet that left the pane is a line of the log, not a ring stop: the log grows above older lines', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     mock.session(on)
     world(on)
     const ui = await openAndSelect($, clock)
     await sendTo(ui)
     await ui.press({ key: 'key:activity' })
-    await ui.press({ key: 'ledger:1' })
-    expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('▸')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › activity')
+    const row = await ui.find({ key: 'ledger:1' })
+    expect(row?.type).toBe('Box')
+    expect(row?.text).toMatch(/^ {2}\d\d:\d\d ▣ #677791 @example_bot → main · Fix/)
+    expect((await ui.findAll({ type: 'Button' })).filter(one => String(one.props.key ?? '').startsWith('ledger:'))).toEqual([])
     await ui.unmount()
   })
 })
@@ -666,6 +669,22 @@ describe('live pin', () => {
     // Two children in all (bot testing's, then the shared restart): unpinning started none.
     expect(seen.spawns).toHaveLength(2)
     expect((await ui.find({ key: 'dialog:1001' }))?.text).not.toContain('⌁')
+    await ui.unmount()
+  })
+
+  test('/tg stop stops a follow too, while main is mid-turn, and names it (T4)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on, { gate: new Promise<void>(() => {}) })
+    const ui = await openAndSelect($, clock)
+    await ui.press({ key: 'key:follow' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('⌁1')
+    await $.turn.start({ text: 'working on something', turnId: 't-0' })
+    const answer = await $.command.run({ ...WIDE, args: 'stop' })
+    expect(answer.text).toBe('tg: stopped @example_bot (follow).\n/tg, then p in the chat, follows it again.')
+    expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
+    expect((await ui.find({ key: 'key:follow' }))?.text).toBe('follow → main')
+    expect((await ui.find({ key: 'header' }))?.text).not.toContain('⌁1')
+    expect((await $.command.run({ ...WIDE, args: 'stop' })).text).toBe('tg: nothing was running.')
     await ui.unmount()
   })
 

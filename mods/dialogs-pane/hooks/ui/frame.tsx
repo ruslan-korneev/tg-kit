@@ -181,11 +181,11 @@ export function Menu(els: Els, props: { sections: readonly MenuSection[]; onKey:
             {section.entries.map(entry => {
               const { def } = entry
               const head = def.key === '' ? entry.label : def.hotkey === null ? `${def.key} ${entry.label}` : `${def.key}: ${entry.label}`
-              // Not pressable: a Box carries the key, as a Text keeps none.
+              // Not pressable: a Box carries the key, as a Text keeps none. A quiet one names no step.
               if (entry.needs !== null) {
                 return (
                   <Box key={`menu:${def.id}`}>
-                    <Text dimColor>{`${head} · ${entry.needs}`}</Text>
+                    <Text dimColor>{entry.isQuiet ? head : `${head} · ${entry.needs}`}</Text>
                   </Box>
                 )
               }
@@ -237,8 +237,8 @@ export function MarksLine({ Box, Text }: Els, props: { count: number; isRangeOpe
 }
 
 /**
- * The frame: header, strip, what runs on top, the view's slot, the temporary
- * rows, the bar. Docked, the root takes the room's rows, so the bar sits at
+ * The frame: header, the running strip (dock), the folder strip, the search
+ * field, the view's slot, the temporary rows, the bar. Docked, the root takes the room's rows, so the bar sits at
  * the bottom and a slot taller than its room is cut, never the bar. Inline
  * the engine fits the frame to what it holds (seen live: a 12-row room drew 9
  * rows for 7 chats), so the windows are sized to the room instead.
@@ -248,6 +248,8 @@ export function Frame(
   props: {
     rows: number
     header: RenderElement
+    /** The dock's running strip (./activity), while something runs or was just stopped. */
+    running: RenderElement | null
     strip: RenderElement | null
     top: readonly RenderElement[]
     slot: readonly RenderElement[]
@@ -259,6 +261,7 @@ export function Frame(
   return (
     <Box key="frame" flexDirection="column" height={Math.max(3, props.rows)}>
       {props.header}
+      {props.running}
       {props.strip}
       {...props.top}
       <Box key="slot" flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden">

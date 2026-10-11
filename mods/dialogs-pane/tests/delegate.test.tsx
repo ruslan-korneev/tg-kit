@@ -105,6 +105,13 @@ function world(
     session?: string
     /** Runs while the engine's dialog is up, before it is answered. */
     whileAsked?: () => Promise<void>
+    /**
+     * `$.store.delete` rejects (the kit skips a hook that throws, then finds
+     * nothing beneath it): releasing a dialog's lease throws inside the kill
+     * switch. A generator that throws on `return` cannot stand in for a watch
+     * that will not end: the kit skips that hook too, and `return` resolves.
+     */
+    isDeleteFailing?: boolean
   } = {},
 ): World {
   const seen: World = {
@@ -133,6 +140,7 @@ function world(
     return { value: undefined }
   })
   on('store.delete', (_$, e) => {
+    if (options.isDeleteFailing === true) throw new Error('the store would not delete')
     seen.store.delete(e.key)
     return { value: undefined }
   })
@@ -299,11 +307,11 @@ const WITH_GUARD = { plugins: [fakeGuard] }
 const tgCommand = (args: string) => ({ command: 'tg', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } }) as const
 
 /** /tg wide, Dev Team's card, 4 twice (the warning, then the level), the repo, ⏎ start. */
-async function handOver($: Engine, clock: MockClock, seen: World) {
+async function handOver($: Engine, clock: MockClock, seen: World, props = PANE_PROPS) {
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   await $.command.run(tgCommand('wide'))
   await clock.settle()
-  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props })
   await ui.press({ key: 'key:down' })
   await ui.press({ key: 'key:agent' })
   await clock.settle()
@@ -434,6 +442,9 @@ describe('a task', () => {
     expect(seen.registered[0]?.prompt).toContain('uv run pytest')
     expect(seen.spawned[0]).toMatchObject({ subagent_type: 'dialogs-pane:worker-1', cwd: WT, prompt: expect.stringContaining('Task: add a /health endpoint') })
     expect(String(seen.spawned[0]?.prompt)).toContain('<tg-packet')
+    // The task's card sits on top of its chat's thread (T4), not on top of the pane.
+    expect(await ui.find({ key: 'dg:task:1' })).toBeUndefined()
+    await ui.press({ key: 'dialog:1002' })
     expect(await ui.find({ type: 'Text', text: '✓ worktree app-task-1 · branch tg/add-a-health-endpoint-1' })).toBeDefined()
     expect(seen.status.at(-1)).toContain('⚡ 1 task')
     await ui.unmount()
@@ -447,6 +458,7 @@ describe('a task', () => {
     await report($, 'holds', [{ id: 1, taskId: 1, stops: ['publish'], what: 'git push origin tg/x', since: NOW }])
     await report($, 'events', [{ seq: 1, at: NOW + 1, taskId: 1, peer: { id: GROUP, arg: '1002', label: 'Dev Team', kind: 'supergroup' }, summary: 'add a /health endpoint', stops: ['publish'], what: 'git push origin tg/y', answer: 'skipped', why: 'dangerouslySkipHardStops' }])
     await clock.settle()
+    await ui.press({ key: 'dialog:1002' })
     expect(await ui.find({ type: 'Text', text: '✓ read the code (3)' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '… ran uv run pytest' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '⏸ HARD STOP publish: git push origin tg/x? (answer in the dialog)' })).toBeDefined()
@@ -454,9 +466,8 @@ describe('a task', () => {
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect((await band.find({ type: 'Text', text: /⏸ HARD STOP/ }))?.text).toBe('⏸ HARD STOP publish: git push origin tg/x? (answer in the dialog)')
     await band.unmount()
-    await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: '  skipped stop: publish git push origin tg/y' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⚡ Dev Team · skipped stop: publish git push origin tg\/y$/ })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -539,7 +550,7 @@ describe('the Speaker in a delegate dialog', () => {
     expect(sends(seen)).toEqual(['write to someone@example.com'])
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}skipped stop: share personal data in/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⚡ Dev Team · skipped stop: share personal data in/ })).toBeDefined()
     await ui.unmount()
   })
 
@@ -574,7 +585,7 @@ describe('stopping', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     await startTask($, clock, seen)
-    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg autopilot off: 1 dialog stopped.')
+    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg: stopped Dev Team (delegate and its Worker).\nSettings are kept; /tg, then a, restarts one.')
     expect(seen.stopped).toEqual([WORKER])
     expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
     expect(seen.ran).toEqual([])
@@ -607,6 +618,136 @@ describe('stopping', () => {
     await ui.unmount()
   })
 })
+describe('what runs: the strip, the kill switch, Activity, the card on top of its chat (T4)', () => {
+  /** Ring stops before the element keyed `key`, in document order. */
+  async function stopsBefore(ui: Awaited<ReturnType<typeof handOver>>['ui'], key: string): Promise<number> {
+    let count = 0
+    let isDone = false
+    const walk = (node: unknown) => {
+      if (isDone || typeof node !== 'object' || node === null) return
+      const one = node as { type?: unknown; props?: { key?: unknown }; children?: unknown }
+      if (one.props?.key === key) {
+        isDone = true
+        return
+      }
+      if (one.type === 'Button' || one.type === 'Input' || one.type === 'Select') count += 1
+      if (Array.isArray(one.children)) for (const child of one.children) walk(child)
+    }
+    walk(await ui.drawn())
+    return count
+  }
+
+  /** The bar's keys as drawn: the `key:<id>` Buttons inside the bar. */
+  async function barKeys(ui: Awaited<ReturnType<typeof handOver>>['ui']): Promise<string[]> {
+    const ids: string[] = []
+    const walk = (node: unknown) => {
+      if (typeof node !== 'object' || node === null) return
+      const { type, props, children } = node as { type?: unknown; props?: { key?: unknown }; children?: unknown }
+      if (type === 'Button' && typeof props?.key === 'string' && props.key.startsWith('key:')) ids.push(props.key.slice(4).replace(/:enter$/, ''))
+      if (Array.isArray(children)) for (const child of children) walk(child)
+    }
+    walk(await ui.find({ key: 'bar' }))
+    return ids
+  }
+
+  test('0 empties the follows, the running dialogs and the live tasks (TaskStop), and says what it stopped', WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    const { ui } = await startTask($, clock, seen)
+    await ui.press({ key: 'dialog:1001' })
+    await ui.press({ key: 'key:follow' })
+    await clock.settle()
+    expect((await ui.find({ key: 'running' }))?.text).toBe('⚡ Dev Team · ⌁ @example_bot → main0: stop all')
+    await ui.press({ key: 'key:stop' })
+    await clock.settle()
+    expect(seen.stopped).toEqual([WORKER])
+    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: Dev Team, @example_bot')
+    expect(seen.toasts.at(-1)).toBe('tg: stopped Dev Team (delegate and its Worker), @example_bot (follow). Settings are kept; /tg, then a (p for a follow), restarts one.')
+    // Empty: no follow (prompt.context has no pinned block), no dialog, no live task.
+    expect((await $.prompt.context({ blocks: [] })).blocks.filter(block => block.name === 'tgPinned')).toEqual([])
+    expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
+    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg: nothing was running.')
+    expect(await ui.find({ key: 'key:stop' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a part that throws stops nothing else: the Worker (TaskStop), the dialog and the follow stop, and the answer names what failed', WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { isDeleteFailing: true })
+    on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    const { ui } = await startTask($, clock, seen)
+    await ui.press({ key: 'dialog:1001' })
+    await ui.press({ key: 'key:follow' })
+    await clock.settle()
+    const answer = (await $.command.run(tgCommand('stop'))).text
+    expect(answer).toMatch(/^tg: stopped Dev Team \(delegate and its Worker\), @example_bot \(follow\)\.\n⚠ not stopped cleanly: Dev Team \(autopilot\): .+\.\n/)
+    expect(seen.stopped).toEqual([WORKER])
+    expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
+    expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
+    expect((await $.prompt.context({ blocks: [] })).blocks.filter(block => block.name === 'tgPinned')).toEqual([])
+    expect((await $.command.run(tgCommand('stop'))).text).toBe('tg: nothing was running.')
+    await ui.unmount()
+  })
+
+  // A short dock gets the one-line TaskRow; the others a card of 3 to 6 lines, sized from the lower part.
+  for (const { bodyRows, card } of [
+    { bodyRows: 16, card: 'dg:row:1' },
+    { bodyRows: 30, card: 'dg:task:1' },
+    { bodyRows: 60, card: 'dg:task:1' },
+  ]) test(`${bodyRows} rows: a task starting while the cursor is in its chat’s thread puts ${card} on top, and nothing above the cursor moves`, WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    // A thread longer than its window, so a window that shrank would scroll.
+    seen.history = Array.from({ length: 40 }, (_, index) => message(400 + index, `line ${index}`))
+    const { ui, child } = await handOver($, clock, seen, { ...PANE_PROPS, scroll: { offset: 0, bodyRows } })
+    await ui.press({ key: 'dialog:1002' })
+    await clock.settle()
+    // Off the newest row, which a new message moves the cursor past.
+    for (let i = 0; i < 3; i++) await ui.press({ key: 'key:up' })
+    const cursor = 'msg:436'
+    expect((await ui.find({ key: cursor }))?.props.autoFocus).toBe(true)
+    const before = { stops: await stopsBefore(ui, cursor), rows: (await ui.findAll({ type: 'Button' })).map(one => String(one.props.key)).filter(key => key.startsWith('msg:')) }
+    const all = (await ui.findAll({ type: 'Button' })).map(one => String(one.props.key))
+    const keysBefore = all.slice(0, all.indexOf(cursor))
+    expect(await ui.find({ key: card })).toBeUndefined()
+    child?.line({ event: 'message', ...message(500, 'please add a /health endpoint to the app') })
+    await clock.advance(20_000)
+    await clock.settle()
+    expect(await ui.find({ key: card })).toBeDefined()
+    expect(await ui.findAll({ type: 'Button' }).then(all => all.filter(one => String(one.props.key ?? '').startsWith('dg:')))).toEqual([])
+    const rows = (await ui.findAll({ type: 'Button' })).map(one => String(one.props.key)).filter(key => key.startsWith('msg:'))
+    const keysNow = (await ui.findAll({ type: 'Button' })).map(one => String(one.props.key))
+    expect(keysNow.slice(0, keysNow.indexOf(cursor))).toEqual(keysBefore)
+    expect({ stops: await stopsBefore(ui, cursor), rows: rows.slice(0, before.rows.length) }).toEqual(before)
+    await ui.unmount()
+  })
+
+  test('Activity: ⏎ on a task’s row opens its chat with the card; after it ended, d dismisses it', WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const { ui } = await startTask($, clock, seen)
+    await ui.press({ key: 'key:activity' })
+    expect((await ui.find({ key: 'act:1002' }))?.text).toMatch(/^▸ ⚡ {2}Dev Team {7}delegate · listening · task 0 min · … starting$/)
+    // The ack "on it" went out a moment ago: its undo window is open.
+    expect(await barKeys(ui)).toEqual(['open', 'back', 'undo', 'menu'])
+    await ui.press({ key: 'act:1002' })
+    expect(await ui.find({ key: 'dg:task:1' })).toBeDefined()
+    await ui.press({ key: 'key:stop' })
+    await clock.settle()
+    await ui.press({ key: 'key:activity' })
+    expect((await ui.find({ key: 'act:1002' }))?.text).toContain('task 0 min · stopped')
+    expect(await barKeys(ui)).toEqual(['open', 'dismiss', 'back', 'undo', 'menu'])
+    await ui.press({ key: 'key:dismiss' })
+    expect((await ui.find({ key: 'act:1002' }))?.text).toContain('■  Dev Team       stopped')
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'dg:task:1' })).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
 describe('the cross-session lease', () => {
   test('a dialog running in another session does not start here; a stale lease is free', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
@@ -631,7 +772,7 @@ describe('the cross-session lease', () => {
     expect(seen.store.get(`autopilot.lease.${GROUP}`)).toEqual({ session: 'session-a', beat: NOW })
     await clock.advance(30_000)
     expect(seen.store.get(`autopilot.lease.${GROUP}`)).toEqual({ session: 'session-a', beat: NOW + 30_000 })
-    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg autopilot off: 1 dialog stopped.')
+    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg: stopped Dev Team (draft).\nSettings are kept; /tg, then a, restarts one.')
     expect(seen.store.has(`autopilot.lease.${GROUP}`)).toBe(false)
     await ui.unmount()
   })

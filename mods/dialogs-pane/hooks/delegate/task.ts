@@ -193,18 +193,18 @@ export function cardLines(task: DgTask, view: TaskView, rows: number): CardLine[
   return out
 }
 
-/** One line for Compact and `/tg autopilot`: `⚡ Contact B · add payment provider · … edit src/pay.ts`. */
-export function taskLine(task: DgTask, view: TaskView): string {
+/** Where a task is: a hard stop waiting, a question to the chat, the Worker's current step, or how it ended. */
+export function taskWhere(task: DgTask, view: TaskView): string {
   const hold = holdsOf(task, view)[0]
-  const where =
-    hold !== undefined
-      ? `⏸ HARD STOP ${hold.stops.join(' + ')}`
-      : task.question !== null
-        ? 'asked the chat'
-        : task.status === 'working' || task.status === 'starting'
-          ? `… ${view.work?.current ?? view.work?.steps.at(-1)?.text ?? 'starting'}`
-          : task.status
-  return `⚡ ${task.peer.label} · ${short(task.summary, 40)} · ${where}`
+  if (hold !== undefined) return `⏸ HARD STOP ${hold.stops.join(' + ')}`
+  if (task.question !== null) return 'asked the chat'
+  if (task.status === 'working' || task.status === 'starting') return `… ${view.work?.current ?? view.work?.steps.at(-1)?.text ?? 'starting'}`
+  return task.status
+}
+
+/** One line for a task on top of its chat inline, and `/tg autopilot`: `⚡ Contact B · add payment provider · … edit src/pay.ts`. */
+export function taskLine(task: DgTask, view: TaskView): string {
+  return `⚡ ${task.peer.label} · ${short(task.summary, 40)} · ${taskWhere(task, view)}`
 }
 
 /** Tasks that still hold a Worker: the kill switch and the hooks care about these. */
