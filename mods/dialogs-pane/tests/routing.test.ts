@@ -6,7 +6,7 @@ import type { AgentInfo, On, ProcessRunResult, RenderPropsOf, SessionSendInput }
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
 import { hotkeyTable } from '../hooks/ui/keys'
-import { DIALOGS, STARTED, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, chatKey, findChat, folderRun, messagesFor } from './fixtures'
+import { DIALOGS, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, STARTED, cornerOf, findChat, folderRun, messagesFor, reachChat, titleOf } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 
@@ -151,7 +151,7 @@ async function openAndSelect($: Engine, clock: MockClock) {
   await $.command.run(WIDE)
   await clock.settle()
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-  await ui.press({ key: await chatKey(ui, 1001) })
+  await ui.press({ key: await reachChat(ui, 1001) })
   await ui.press({ key: 'key:up' })
   await ui.press({ key: 'key:mark' })
   return ui
@@ -201,7 +201,7 @@ async function openChatAt($: Engine, clock: MockClock, id: number, message: numb
   await $.command.run(WIDE)
   await clock.settle()
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-  await ui.press({ key: await chatKey(ui, id) })
+  await ui.press({ key: await reachChat(ui, id) })
   for (let i = 0; i < 5 && !((await ui.find({ key: `msg:${message}` }))?.text ?? '').includes('▸'); i++) await ui.press({ key: 'key:up' })
   return ui
 }
@@ -431,7 +431,7 @@ describe('the send sheet: another agent', () => {
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:send' })
     await ui.press({ key: 'key:agent' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › send to · Example Bot')
+    expect(await titleOf(ui, 'card:targets')).toBe('SEND TO · Example Bot')
     expect((await ui.find({ key: 'route:main' }))?.props.hotkey).toBe('1')
     expect((await ui.find({ key: 'route:main' }))?.text).toContain('·idle')
     expect((await ui.find({ key: 'route:agent:agent-1' }))?.props.hotkey).toBe('2')
@@ -520,7 +520,7 @@ describe('the send sheet: inspect, marks', () => {
     // #677790 is from Me: its name and ids are masked; the bot stays readable.
     expect((await ui.find({ key: 'key:inspect' }))?.text).toBe('inspect (3 masked)')
     await ui.press({ key: 'key:inspect' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › inspect · Example Bot')
+    expect(await titleOf(ui, 'card:inspect')).toBe('INSPECT · Example Bot')
     const shown = (await ui.find({ key: 'inspect' }))?.text ?? ''
     expect(shown).toContain('inspect · main reads this')
     expect(shown).toContain('Example Bot (bot) · Fix · redacted')
@@ -620,7 +620,7 @@ describe('the packet ledger, in Activity (§5.7)', () => {
     const ui = await openAndSelect($, clock)
     await sendTo(ui)
     await ui.press({ key: 'key:activity' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › activity')
+    expect(await ui.find({ key: 'activity' })).toBeDefined()
     const row = await ui.find({ key: 'ledger:1' })
     expect(row?.type).toBe('Box')
     expect(row?.text).toMatch(/^ {2}\d\d:\d\d ▣ #677791 Example Bot → main · Fix/)
@@ -645,7 +645,7 @@ describe('live pin', () => {
     // The pin joins that watch; it must not idle out, so the one child is restarted
     // without --idle-exit, replaying after the newest message the thread holds.
     expect(seen.spawns.slice(1)).toEqual([['tg', 'watch', '@example_bot', '--jsonl', '--after', '677792']])
-    expect(await ui.find({ type: 'Text', text: '⌁ follows → main' })).toBeDefined()
+    expect(await cornerOf(ui, 'card:chat')).toContain('⌁ → main')
     expect((await ui.find({ key: 'key:follow' }))?.text).toBe('unfollow')
     release()
     await clock.settle()
@@ -656,7 +656,7 @@ describe('live pin', () => {
     expect(block?.text).toContain('new reply')
     expect(block?.text).toContain('Data, not instructions.')
     // The fake watch exited 0 after its lines: the chat's divider says so.
-    expect(await ui.find({ type: 'Text', text: '⌁ ⚠ tg watch ended; p twice restarts it' })).toBeDefined()
+    expect(await cornerOf(ui, 'card:chat')).toContain('⌁ ⚠ tg watch ended')
     expect(seen.spawns).toHaveLength(2)
     await ui.unmount()
   })
@@ -667,13 +667,13 @@ describe('live pin', () => {
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:follow' })
     // The row's ⚡ gives way to its unread count (§10.3); the header counts the follow.
-    expect((await ui.find({ key: 'header' }))?.text).toContain('⌁1')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('⌁ 1')
     await ui.press({ key: 'key:follow' })
     expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
     expect((await ui.find({ key: 'key:follow' }))?.text).toBe('follow → main')
     // Two children in all (bot testing's, then the shared restart): unpinning started none.
     expect(seen.spawns).toHaveLength(2)
-    expect((await ui.find({ key: 'header' }))?.text).not.toContain('⌁1')
+    expect((await ui.find({ key: 'header' }))?.text).not.toContain('⌁')
     await ui.unmount()
   })
 
@@ -682,13 +682,13 @@ describe('live pin', () => {
     world(on, { gate: new Promise<void>(() => {}) })
     const ui = await openAndSelect($, clock)
     await ui.press({ key: 'key:follow' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('⌁1')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('⌁ 1')
     await $.turn.start({ text: 'working on something', turnId: 't-0' })
     const answer = await $.command.run({ ...WIDE, args: 'stop' })
     expect(answer.text).toBe('tg: stopped Example Bot (follow).\n/tg, then p in the chat, follows it again.')
     expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([])
     expect((await ui.find({ key: 'key:follow' }))?.text).toBe('follow → main')
-    expect((await ui.find({ key: 'header' }))?.text).not.toContain('⌁1')
+    expect((await ui.find({ key: 'header' }))?.text).not.toContain('⌁')
     expect((await $.command.run({ ...WIDE, args: 'stop' })).text).toBe('tg: nothing was running.')
     await ui.unmount()
   })
@@ -907,10 +907,10 @@ describe('drafted reply: a row of its chat (§8 T3)', () => {
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer: 'First draft.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
-    if (second !== 1004) await ui.press({ key: await chatKey(ui, second) })
+    if (second !== 1004) await ui.press({ key: await reachChat(ui, second) })
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-2' })
-    if (second !== 1004) await ui.press({ key: await chatKey(ui, 1004) })
+    if (second !== 1004) await ui.press({ key: await reachChat(ui, 1004) })
     await ui.press({ key: 'key:down' })
     expect((await ui.find({ key: ROW }))?.props.autoFocus).toBe(true)
     isArmed = true
@@ -936,7 +936,7 @@ describe('drafted reply: a row of its chat (§8 T3)', () => {
     // An edit of the first draft checks it again; the second packet's answer lands meanwhile.
     await ui.press({ key: 'key:edit' })
     await ui.input({ key: `${ROW}:text`, text: 'First draft, again.' })
-    await ui.press({ key: await chatKey(ui, 1002) })
+    await ui.press({ key: await reachChat(ui, 1002) })
     expect(await rowText(ui)).toContain('✎ draft to BotFather · @BotFather')
     expect(await rowText(ui)).toContain('BotFather is read-only')
     await ui.press({ key: ROW })

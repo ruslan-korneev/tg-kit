@@ -206,28 +206,28 @@ export function cutCells(text: string, max: number): string {
   return `${out}…`
 }
 
-/** One tab as the strip writes it: `2: ‹Work 3›`, the digit only while the digits are live. */
-export function tabText(entry: Entry, isCurrent: boolean, isLive: boolean): string {
+/** One tab as the CHATS title writes it (§10.5): `Work 3`. No digit is drawn, and the current one is marked by colour. */
+export function tabText(entry: Entry): string {
   const count = entry.unread === null || entry.unread === 0 ? '' : ` ${entry.unread}`
-  const name = `${cutCells(entry.title, TITLE_CELLS)}${count}`
-  return `${isLive && entry.digit !== null ? `${entry.digit}: ` : ''}${isCurrent ? `‹${name}›` : name}`
+  return `${cutCells(entry.title, TITLE_CELLS)}${count}`
 }
 
 const GAP = 2
+/** `‹` or `›` past an edge: one cell after its gap. */
+const EDGE = GAP + 1
 
 /**
  * The tabs that fit `width`, the current one always among them: `start` and
- * `end` index the entries shown; `+N` marks stand for the ones past each edge.
+ * `end` index the entries shown; each tab takes its gap, and `‹` / `›` stand
+ * for the ones past each edge (§10.5, §10.10 "§4.7 strip").
  */
 export function stripWindow(texts: readonly string[], current: number, width: number): { start: number; end: number } {
   const fill = (start: number) => {
-    // The tabs' ‹ › draw in one cell each (ui/model NARROW_GLYPHS); titles err wide.
-    let used = start > 0 ? labelCells(`+${start}`) + GAP : 0
+    let used = start > 0 ? EDGE : 0
     let end = start
     while (end < texts.length) {
-      const next = labelCells(texts[end] ?? '') + (end > start ? GAP : 0)
-      const rest = texts.length - end - 1
-      const mark = rest > 0 ? GAP + labelCells(`+${rest}`) : 0
+      const next = GAP + labelCells(texts[end] ?? '')
+      const mark = end + 1 < texts.length ? EDGE : 0
       if (used + next + mark > width && end > start) break
       used += next
       end += 1

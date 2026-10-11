@@ -179,3 +179,82 @@ export async function findChat(ui: Finder, id: number): Promise<FoundElement | u
 export function chatIds(keys: readonly (string | undefined)[]): number[] {
   return keys.flatMap(key => (key?.startsWith('dialog:') === true ? [Number(key.split(':')[2])] : []))
 }
+
+/**
+ * A chat's row key, the cursor moved by j, then k, until the row is drawn: the
+ * dock's CHATS card keeps three rows while a chat is open (§10.5), so a chat
+ * further down the list is reached as the owner reaches it, h first when ▸ is
+ * in the chat.
+ */
+export async function reachChat(ui: Finder & { press: (query: { key: string }) => Promise<unknown> }, id: number): Promise<string> {
+  const ringed = async () => (await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true)?.key
+  // ▸ in the chat: h first, up to the list (marks or a layer take an h each, so at most three).
+  for (let step = 0; step < 3 && (await chatKey(ui, id)).startsWith('dialog:none:') && (await ringed())?.startsWith('dialog:') !== true; step++) {
+    if ((await ui.find({ key: 'key:back' })) === undefined) break
+    await ui.press({ key: 'key:back' })
+  }
+  for (const move of ['key:down', 'key:up']) {
+    for (;;) {
+      const key = await chatKey(ui, id)
+      if (!key.startsWith('dialog:none:')) return key
+      if ((await ui.find({ key: move })) === undefined) break
+      const before = await ringed()
+      await ui.press({ key: move })
+      if ((await ringed()) === before) break
+    }
+  }
+  return chatKey(ui, id)
+}
+
+// --- the v2 frame's cards (docs/design/dialogs-pane-ux.md §10.5) ---
+
+/** A drawn element as a test walks it: its tag, props and children (strings and elements). */
+export type Node = { type?: unknown; props?: Record<string, unknown>; children?: unknown[] }
+/** What the card helpers read of a mounted pane, on either surface. */
+type Finds = { find: (query: ElementQuery) => Promise<FoundElement | undefined> }
+
+const isNode = (value: unknown): value is Node => typeof value === 'object' && value !== null
+const childrenOf = (node: Node | undefined): Node[] => (node?.children ?? []).filter(isNode)
+
+export const textOf = (node: Node): string => (node.children ?? []).map(one => (typeof one === 'string' ? one : isNode(one) ? textOf(one) : '')).join('')
+
+/** A card's title parts as written over its top border (the `position: absolute` Box at its left). */
+async function titleParts(ui: Finds, key: string): Promise<Node[]> {
+  const title = childrenOf(await ui.find({ key })).find(one => one.props?.position === 'absolute' && one.props.left !== undefined)
+  return childrenOf(childrenOf(title)[0])
+}
+
+/** A card's title as drawn, without the spaces that pad it on the border. */
+export async function titleOf(ui: Finds, key: string): Promise<string | undefined> {
+  const parts = await titleParts(ui, key)
+  return parts.length === 0 ? undefined : parts.map(textOf).join('')
+}
+
+/** A card's corner label, if it draws one. */
+export async function cornerOf(ui: Finds, key: string): Promise<string | undefined> {
+  const corner = childrenOf(await ui.find({ key })).find(one => one.props?.position === 'absolute' && one.props.right !== undefined)
+  return corner === undefined ? undefined : textOf(corner).trim()
+}
+
+/** A card's border colour. */
+export async function borderOf(ui: Finds, key: string): Promise<unknown> {
+  return childrenOf(await ui.find({ key })).find(one => one.props?.borderStyle !== undefined)?.props?.borderColor
+}
+
+/** The CHATS card's folder tabs as written in its title: text, not ring stops (§4.7, §10.5). */
+export async function tabsOf(ui: Finds): Promise<string[]> {
+  return (await titleParts(ui, 'card:chats')).map(textOf).filter(text => text.trim() !== '' && text !== 'CHATS' && !text.includes('‹') && !text.includes('›'))
+}
+
+/** The CHATS title's current tab: the one drawn bold (in `accent`), CHATS itself aside. */
+export async function currentTabOf(ui: Finds): Promise<string | undefined> {
+  return (await titleParts(ui, 'card:chats')).find(one => one.props?.bold === true && textOf(one) !== 'CHATS')?.children?.join('')
+}
+
+/** The legend row with nothing to say: the sections' swatches (§10.5). */
+export const LEGEND_TEXT = '■ for you  ■ chats  ■ autopilot  ■ log'
+
+/** The dock's legend row as drawn. */
+export async function legendOf(ui: Finds): Promise<string | undefined> {
+  return (await ui.find({ key: 'legend' }))?.text
+}

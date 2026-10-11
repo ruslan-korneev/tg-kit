@@ -8,7 +8,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
 import type { TgDialog } from '../types'
-import { DIALOGS, STARTED, MESSAGES, chatIds, chatKey, findChat, folderRun, type FolderSpec } from './fixtures'
+import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, chatIds, chatKey, cornerOf, currentTabOf, findChat, folderRun, legendOf, tabsOf, titleOf, type FolderSpec } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -150,12 +150,6 @@ async function openPane($: Engine, on: On, options: { props?: RenderPropsOf['Pan
   return { clock, seen, ui }
 }
 
-/** The strip's tabs as written: text, not ring stops (a Text keeps no key, so they are read off the strip's first Box). */
-async function tabsOf(ui: Ui): Promise<string[]> {
-  const strip = (await ui.find({ key: 'strip' })) as { children?: { children?: { type?: string; children?: unknown[] }[] }[] } | undefined
-  return (strip?.children?.[0]?.children ?? []).flatMap(one => (one.type === 'Text' && typeof one.children?.[0] === 'string' ? [one.children[0]] : []))
-}
-
 /** The chat rows drawn, by id, in order. */
 async function drawnIds(ui: Ui): Promise<number[]> {
   return chatIds((await ui.findAll({ type: 'Button' })).map(one => one.key))
@@ -199,19 +193,22 @@ function incoming(chatId: number, id: number, text: string) {
 
 const peerOf = (dialog: TgDialog) => ({ id: dialog.id, arg: String(dialog.id), label: dialog.title, kind: dialog.kind })
 
-describe('the strip and the Folders list (§4.7)', () => {
-  test("Telegram's order with All chats where the owner put it, digits on the first nine, +N past the edge", async ($, on) => {
+describe('the CHATS title\'s tabs and the Folders list (§4.7, §10.5)', () => {
+  test("Telegram's order with All chats where the owner put it, digits on the first nine, › past the edge", async ($, on) => {
     const { ui } = await openPane($, on)
-    // The first open lands on Telegram's first folder.
-    // ‹ and › draw in one cell each (ui/model NARROW_GLYPHS): at 64 columns four tabs fit, and +10.
-    expect(await tabsOf(ui)).toEqual(['1: ‹Personal›', '2: Work', '3: All chats 2', '4: News', '+10'])
+    // The first open lands on Telegram's first folder. No digit is drawn: `1-9 folders` in the corner says them.
+    // At 64 columns four tabs fit beside the corner, then ›.
+    expect(await tabsOf(ui)).toEqual(['Personal', 'Work', 'All chats 2', 'News'])
+    expect(await currentTabOf(ui)).toBe('Personal')
+    expect(await titleOf(ui, 'card:chats')).toMatch(/  ›$/)
+    expect(await cornerOf(ui, 'card:chats')).toBe('1-9 folders')
     expect(await drawnIds(ui)).toEqual([3002, 1003])
-    // The ninth tab: scrolled into view, with the ones before it past the left edge.
+    // The ninth tab: scrolled into view, with the ones before it past the left edge (‹).
     await ui.press({ key: 'digit:9' })
     const tabs = await tabsOf(ui)
-    expect(tabs).toContain('9: ‹Reading›')
-    expect(tabs).not.toContain('1: Personal')
-    expect(tabs[0]).toMatch(/^\+\d+$/)
+    expect(await currentTabOf(ui)).toBe('Reading')
+    expect(tabs).not.toContain('Personal')
+    expect(await titleOf(ui, 'card:chats')).toMatch(/^CHATS  ‹/)
     // A muted chat's count is dim (§10.3, decision 5): the `dim` role, not `unread`.
     await ui.press({ key: 'digit:4' })
     const channel = await findChat(ui, 1005)
@@ -236,7 +233,7 @@ describe('the strip and the Folders list (§4.7)', () => {
     await ui.press({ key: 'key:open' })
     expect(await drawnIds(ui)).toEqual([1001])
     await ui.press({ key: 'key:foryou' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
+    expect(await titleOf(ui, 'card:foryou')).toBe('FOR YOU')
     expect(tgCalls(seen)).toBe(before)
     await ui.unmount()
   })
@@ -244,11 +241,11 @@ describe('the strip and the Folders list (§4.7)', () => {
   test('h goes up to every folder, shared marked, the Archive, then the pane views; ⏎ comes down into one', async ($, on) => {
     const { ui } = await openPane($, on)
     await ui.press({ key: 'key:back' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › folders')
+    expect(await titleOf(ui, 'card:folders')).toBe('FOLDERS')
     // A key the Folders list does not bind is caught: a notice says where it works (T9 review M1).
     await ui.press({ key: 'stray:x' })
-    expect((await ui.find({ key: 'running' }))?.text).toContain('x: mark works in a chat')
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › folders')
+    expect(await legendOf(ui)).toContain('x: mark works in a chat')
+    expect(await titleOf(ui, 'card:folders')).toBe('FOLDERS')
     const rows = (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => key.startsWith('folder:'))
     expect(rows.slice(0, 4).map(key => key.split(':')[2])).toEqual(['f1', 'f2', 'f0', 'f11'])
     expect((await ui.find({ key: rows[3] ?? '' }))?.text).toContain('4: News · shared')
@@ -257,26 +254,27 @@ describe('the strip and the Folders list (§4.7)', () => {
     expect((await ui.find({ key: rows[0] ?? '' }))?.text).toContain('▸')
     await ui.press({ key: 'key:down' })
     await ui.press({ key: 'key:open' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › chats')
+    expect(await currentTabOf(ui)).toBe('Work')
     expect((await drawnIds(ui)).length).toBeGreaterThan(5)
     // h in the Folders list, the top, goes back down to the chats; it never falls through to the prompt.
     await ui.press({ key: 'key:back' })
     expect((await ui.find({ key: 'key:back' }))?.text).toBe('chats')
     await ui.press({ key: 'key:back' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › chats')
+    expect(await ui.find({ key: 'card:chats' })).toBeDefined()
     // y from the Folders list opens For you.
     await ui.press({ key: 'key:back' })
     await ui.press({ key: 'key:foryou' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
+    expect(await titleOf(ui, 'card:foryou')).toBe('FOR YOU')
     await ui.unmount()
   })
 
-  test('inline: the Folders list in two columns; the strip shares the header row', async ($, on) => {
+  test('inline: the Folders list in two columns; the tabs ride the CHATS title, as in the dock', async ($, on) => {
     const { ui } = await openPane($, on, { props: INLINE })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('1: ‹Personal›')
+    expect(await currentTabOf(ui)).toBe('Personal')
     await ui.press({ key: 'key:back' })
     expect(await ui.find({ key: 'folders:columns' })).toBeDefined()
-    expect((await ui.find({ key: 'folders:right' }))?.text).toContain('Bots')
+    // The card holds seven rows a column at 12 inline rows: the right column goes on where the left one stops.
+    expect((await ui.find({ key: 'folders:right' }))?.text).toContain('9: Reading')
     await ui.unmount()
   })
 
@@ -300,7 +298,8 @@ describe('the strip and the Folders list (§4.7)', () => {
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
     // `…` in the header: the pass is on its way (§7.4).
-    expect(await tabsOf(ui)).toEqual(['1: Personal', '2: ‹Work 2›', '3: For you', '4: Bots'])
+    expect(await tabsOf(ui)).toEqual(['Personal', 'Work 2', 'For you', 'Bots'])
+    expect(await currentTabOf(ui)).toBe('Work 2')
     expect((await ui.find({ key: 'header' }))?.text).toContain('…')
     expect(await drawnIds(ui)).toEqual(work.map(one => one.id))
     expect((await findChat(ui, work[4]?.id ?? 0))?.text).toMatch(/^ {4}(Mon|Tue|Wed|Thu|Fri|Sat|Sun) /)
@@ -320,12 +319,12 @@ describe('the strip and the Folders list (§4.7)', () => {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
     expect(await ui.find({ key: 'loading' })).toBeDefined()
     expect((await ui.find({ key: 'header' }))?.text).toContain('…')
-    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('refreshing in')
+    expect((await legendOf(ui)) ?? '').not.toContain('refreshing in')
     // No folder list yet: no tab it would take back, and no digit for one.
     expect(await tabsOf(ui)).toEqual([])
     expect(await ui.find({ key: 'keys:digits' }).then(found => found?.text ?? '')).toBe('')
     await clock.advance(5_000)
-    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('refreshing in')
+    expect((await legendOf(ui)) ?? '').not.toContain('refreshing in')
     await ui.unmount()
   })
 
@@ -360,15 +359,15 @@ describe('passes (§8 T9)', () => {
     await clock.advance(20_000)
     await ui.press({ key: 'key:reload' })
     expect(passes(seen)).toBe(1)
-    expect((await ui.find({ key: 'running' }))?.text).toContain('refreshing in 40 s')
+    expect((await legendOf(ui))).toContain('refreshing in 40 s')
     await clock.advance(10_000)
     await ui.press({ key: 'key:reload' })
-    expect((await ui.find({ key: 'running' }))?.text).toContain('refreshing in 30 s')
+    expect((await legendOf(ui))).toContain('refreshing in 30 s')
     await clock.advance(30_000)
     await clock.settle()
     expect(passes(seen)).toBe(2)
     await clock.advance(1_000)
-    expect(await ui.find({ key: 'running' })).toBeUndefined()
+    expect(await legendOf(ui)).toBe(LEGEND_TEXT)
     await ui.unmount()
   })
 
@@ -410,16 +409,16 @@ describe('passes (§8 T9)', () => {
     await clock.settle()
     expect(passes(seen)).toBe(2)
     expect(await drawnIds(ui)).toEqual(shown)
-    expect((await ui.find({ key: 'running' }))?.text).toContain('Telegram asks to wait 90 s · retrying')
+    expect((await legendOf(ui))).toContain('Telegram asks to wait 90 s · retrying')
     await clock.advance(1_000)
-    expect((await ui.find({ key: 'running' }))?.text).toContain('Telegram asks to wait 89 s · retrying')
+    expect((await legendOf(ui))).toContain('Telegram asks to wait 89 s · retrying')
     seen.pass.answer = undefined
     await clock.advance(60_000)
     expect(passes(seen)).toBe(2)
     await clock.advance(29_000)
     await clock.settle()
     expect(passes(seen)).toBe(3)
-    expect(await ui.find({ key: 'running' })).toBeUndefined()
+    expect(await legendOf(ui)).toBe(LEGEND_TEXT)
     await ui.unmount()
   })
 
@@ -455,12 +454,12 @@ describe('passes (§8 T9)', () => {
     await clock.advance(60_000)
     await clock.settle()
     expect(await drawnIds(ui)).toEqual([3002, 1003])
-    expect((await ui.find({ key: 'running' }))?.text).toContain('tg: the network is down · g: retry')
+    expect((await legendOf(ui))).toContain('tg: the network is down · g: retry')
     seen.pass.answer = undefined
     await clock.advance(60_000)
     await clock.settle()
     expect(passes(seen)).toBe(3)
-    expect(await ui.find({ key: 'running' })).toBeUndefined()
+    expect(await legendOf(ui)).toBe(LEGEND_TEXT)
     await ui.unmount()
   })
 
@@ -559,7 +558,7 @@ describe('a list that changes while the cursor stays keeps the ring (§4.3, §8 
       // The count changes in place, in the symbol column (§10.4).
       expect((await findChat(ui, 3002))?.text).toMatch(/Contact 12 .* 1$/)
       if (inline) expect((await ui.find({ key: 'notice' }))?.text).toBe('↑ 1 moved · g: apply')
-      else expect((await ui.find({ key: 'strip' }))?.text).toContain('↑1')
+      else expect(await cornerOf(ui, 'card:chats')).toMatch(/^↑1/)
       await ui.unmount()
     })
 
@@ -593,7 +592,8 @@ describe('a list that changes while the cursor stays keeps the ring (§4.3, §8 
       const gen = await genOf(ui)
       await ui.press({ key: 'key:reload' })
       expect(await genOf(ui)).toBeGreaterThan(gen)
-      expect((await drawnIds(ui))[0]).toBe(3002)
+      // 3002 is the list's first row: drawn first, or above the window where a short card scrolled past it.
+      expect((await drawnIds(ui)).indexOf(3002)).toBeLessThanOrEqual(0)
       expect(await ringed()).toBe(`dialog:${await genOf(ui)}:3006`)
       // ⏎ into a chat applies; h back applies what came meanwhile.
       await wait(3003)
@@ -602,7 +602,7 @@ describe('a list that changes while the cursor stays keeps the ring (§4.3, §8 
       await wait(3004)
       await ui.press({ key: 'key:back' })
       expect(await genOf(ui)).toBeGreaterThan(gen2 + 1)
-      expect((await drawnIds(ui))[0]).toBe(3004)
+      expect((await drawnIds(ui)).indexOf(3004)).toBeLessThanOrEqual(0)
       expect(await ringed()).toBe(`dialog:${await genOf(ui)}:3006`)
       // A folder switch: 3002 is in Work and in Personal, and its row comes back under a new key.
       const gen3 = await genOf(ui)

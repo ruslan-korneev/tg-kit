@@ -127,18 +127,17 @@ describe('the strip', () => {
     expect(stripEntries([{ id: 0, title: 'All chats', kind: 'all', unread: 4 }]).map(one => `${one.digit}: ${one.title}`)).toEqual(['1: All chats', '2: For you', '3: Bots'])
   })
 
-  test('a tab: the digit while live, the count, the current one marked; titles cut to 12 cells, an emoji counting two', () => {
+  test('a tab: the title and the count, no digit and no marks (§10.5); titles cut to 12 cells, an emoji counting two', () => {
     const [personal, work] = stripEntries(list)
     if (personal === undefined || work === undefined) throw new Error('no entries')
-    expect(tabText(work, true, true)).toBe('2: ‹Work 3›')
-    expect(tabText(work, false, false)).toBe('Work 3')
-    expect(tabText(personal, false, true)).toBe('1: Personal')
+    expect(tabText(work)).toBe('Work 3')
+    expect(tabText(personal)).toBe('Personal')
     expect(cutCells('Reading list for later', 12)).toBe('Reading lis…')
     expect(cutCells('🎵🎵🎵🎵🎵🎵🎵', 12)).toBe('🎵🎵🎵🎵🎵…')
   })
 
-  test('the window holds the current tab, with +N for the entries past each edge', () => {
-    const texts = stripEntries(list).map(one => tabText(one, false, true))
+  test('the window holds the current tab, with ‹ and › for the entries past each edge', () => {
+    const texts = stripEntries(list).map(one => tabText(one))
     const first = stripWindow(texts, 0, 50)
     expect(first.start).toBe(0)
     expect(first.end).toBeLessThan(texts.length)
@@ -146,6 +145,9 @@ describe('the strip', () => {
     expect(late.start).toBeGreaterThan(0)
     expect(late.end).toBeGreaterThan(10)
     expect(stripWindow(texts, 0, 500)).toEqual({ start: 0, end: texts.length })
+    // Each tab takes its two-cell gap, each edge mark three: `  Personal  Work 3  ›` is 21 cells.
+    expect(stripWindow(texts, 0, 21)).toEqual({ start: 0, end: 2 })
+    expect(stripWindow(texts, 0, 20)).toEqual({ start: 0, end: 1 })
   })
 })
 

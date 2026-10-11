@@ -7,7 +7,7 @@ import type { CommandSpec, ModelCompleteInput, ModelCompleteResult, On, ProcessR
 import { describe, expect, mock, test, type Engine, type MockClock, type Mounted } from 'claude-code/testing'
 
 import type { TgMessage } from '../types'
-import { DIALOGS, STARTED, chatKey, findChat, folderRun } from './fixtures'
+import { DIALOGS, STARTED, findChat, folderRun, legendOf, reachChat, titleOf } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -438,7 +438,7 @@ describe('auto', () => {
     await ui.press({ key: 'key:start' })
     await clock.settle()
     expect(seen.questions).toHaveLength(1)
-    expect((await ui.find({ key: 'header' }))?.text).toContain('agent for Example Bot')
+    expect(await titleOf(ui, 'card:agent')).toBe('AGENT · Example Bot · @example_bot')
     expect(adds(seen)).toEqual([])
     expect(seen.children).toHaveLength(0)
     await ui.unmount()
@@ -692,7 +692,7 @@ describe('draft and listen', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => answer({ action: 'reply', text: 'Tomorrow is packed, after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
     const { ui, child } = await handOver($, clock, seen, '2')
-    await ui.press({ key: await chatKey(ui, GROUP) })
+    await ui.press({ key: await reachChat(ui, GROUP) })
     await clock.settle()
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
@@ -759,7 +759,7 @@ describe('draft and listen', () => {
     const refused = run(0, JSON.stringify({ action: 'send', target: {}, steps: [], guard: { allowed: false, reason: 'readonly = true in config.toml: every write is refused' } }))
     const seen = world(on, { model: () => answer({ action: 'reply', text: 'After 18?', confidence: 0.62, topics: ['dates'], reason: '' }), dryRun: async () => refused })
     const { ui, child } = await handOver($, clock, seen, '2')
-    await ui.press({ key: await chatKey(ui, GROUP) })
+    await ui.press({ key: await reachChat(ui, GROUP) })
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
     await clock.settle()
@@ -783,7 +783,7 @@ describe('draft and listen', () => {
     await clock.settle()
     await ui.press({ key: 'key:back' })
     await ui.press({ key: 'key:foryou' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
+    expect(await titleOf(ui, 'card:foryou')).toBe('FOR YOU')
     const row = (await ui.findAll({ type: 'Button' })).find(one => one.key?.startsWith('fy:') === true)
     expect(row?.text).toContain('Tomorrow is packed, after 18?')
     expect(row?.props.autoFocus).toBe(true)
@@ -815,11 +815,11 @@ describe('draft and listen', () => {
     expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: long }])
     // Back in For you (h reshapes it: the sent row is gone), a new draft for the chat waits behind ↑ while the cursor stays; g brings it; d drops it.
     await ui.press({ key: 'key:back' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
+    expect(await titleOf(ui, 'card:foryou')).toBe('FOR YOU')
     watchMessage(child, message(501, 'And on Friday?'))
     await clock.advance(20_000)
     await clock.settle()
-    expect((await ui.find({ key: 'running' }))?.text).toContain('↑ 1 moved · g: apply')
+    expect(await legendOf(ui)).toContain('↑ 1 moved · g: apply')
     await ui.press({ key: 'key:reload' })
     expect((await ui.find({ key: 'key:dismiss' }))?.text).toBe('drop')
     await ui.press({ key: 'key:dismiss' })
@@ -911,9 +911,9 @@ describe('kill switch', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const { ui, child } = await handOver($, clock, seen, '3')
-    // The row's symbol is its unread count, which outranks ⚡ (§10.3); the header counts the level.
+    // The row's symbol is its unread count, which outranks ⚡ (§10.3); the header counts the chat (§10.5).
     expect((await findChat(ui, 1002))?.text).toMatch(/◇ Dev Team .* 5$/)
-    expect((await ui.find({ key: 'header' }))?.text).toContain('⟳1')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('AUTOPILOT 1 CHATS')
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(child?.isKilled).toBe(true)

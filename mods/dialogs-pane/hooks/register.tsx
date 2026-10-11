@@ -76,12 +76,36 @@ import {
 import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
-import { ChatRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
+import { ChatRow, DraftCard, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
 import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, chipsColumn, chipsTail, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
-import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
-import { PALETTES, readPalette, type Colors } from './ui/palette'
+import {
+  CARD_CHROME,
+  CARD_INNER,
+  CHATS_HEAD,
+  Card,
+  DigitKeys,
+  Frame,
+  Header,
+  HiddenKeys,
+  KeyLine,
+  LEGEND_MIN,
+  LegendRow,
+  Menu,
+  NoticeRow,
+  StrayKeys,
+  chatsTitle,
+  hotkeysIn,
+  keyLineRoom,
+  marksLead,
+  titleRoom,
+  type CardBorder,
+  type HeaderCounts,
+  type TitlePart,
+} from './ui/frame'
+import { dockLayout, inlineCardRows, type DockLayout } from './ui/layout'
+import { PALETTES, readPalette, type Colors, type Role } from './ui/palette'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
@@ -104,10 +128,10 @@ import {
 import {
   GLYPH,
   NO_SELECTION,
-  TOKEN,
   clamp,
   dialogLabel,
   dialogRow,
+  labelCells,
   grownDialog,
   loaded,
   oneLine,
@@ -380,6 +404,7 @@ async function setMode($: $, next: Mode): Promise<void> {
     await $.ui.close({ id: PANE })
     await armNext($) // ── folders ── every 5 min while hidden
   } else {
+    layoutGen += 1 // the pane opening starts a layout generation (§10.5)
     await $.ui.open(PANE_OPEN)
     await openFolders($) // ── folders ──
   }
@@ -860,8 +885,10 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return openActivity($)
     case 'reload':
       if (where === 'card') return loadAllow($) // ── autopilot ── g: read allow.toml again (§7.4)
+      layoutGen += 1 // g starts a layout generation (§10.5 "Heights hold still")
       return reload($)
     case 'back':
+      layoutGen += 1 // so does h
       return back($)
     case 'menu':
       await update($, nav, value => ({ ...value, isMenuOpen: !value.isMenuOpen }))
@@ -924,6 +951,11 @@ async function back($: $): Promise<void> {
     else {
       await update($, nav, value => ({ ...value, view: 'dialogs' }))
       await applyWaiting($) // ── folders ── the ring moves back to Chats: what waits applies.
+      // The dock's CHATS grows back from its three rows (§10.5): the window starts over from the top (the drawing
+      // moves it down to the cursor), under a new generation, so the rows get new keys and the ring waits for the
+      // drawing that brings them (§8 T9). After applyWaiting, which kept the start the three rows had.
+      await update($, nav, value => ({ ...value, dialogStart: 0 }))
+      await update($, folders, value => ({ ...value, gen: value.gen + 1 }))
     }
   }
   await ringCursor($)
@@ -964,19 +996,33 @@ async function dismissBand($: $): Promise<void> {
   await refreshStatus($)
 }
 
-// --- the frame: header, strips, the view's slot, the notice row (inline), the bar or a layer in its row ---
+// --- the frame: the header, the legend row, the section cards, the notice row (inline), the key line or a layer in its row ---
 
 type Seating = { seat: Seat; width: number; rows: number; isFocused: boolean }
 
+/** Where ▸ sits in the dock's lower card: the open chat, the agent card, a layer, Activity. */
+const LOWER: readonly Where[] = ['chat', 'card', 'sheet', 'activity', 'diff', 'summary', 'recorded']
+
 /**
- * The pane for where the engine seated it (design §4.1, §7.3). The dock keeps
- * Chats on top (or the Folders list, or For you) and the open chat (or a card,
- * the picker, a diff, the ledger) below; inline shows one view at a time. Both
- * end in the action bar.
+ * The dock's rows for the layout generation they were laid in (§10.5 "Heights
+ * hold still"): a section that gains items, would appear, or empties keeps its
+ * rows until the next one, so nothing above the CHATS list moves while the
+ * cursor stays (§4.3 rule 1).
+ */
+let heldLayout: { key: string; layout: DockLayout } | null = null
+/** Bumped by `h`, `g` and the pane opening; a folder or view switch bumps the list's gen, and ⏎ opens a chat. */
+let layoutGen = 0
+
+/**
+ * The pane for where the engine seated it (design §10.5). The dock stacks
+ * section cards under the header and the legend row (FOR YOU, CHATS, START
+ * HERE, AUTOPILOT, LOG), or CHATS at three rows over the open chat's card;
+ * inline shows the view's one card. Both end in the key line.
  */
 async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement> {
   const { seat, width, rows } = seating
-  // The thread's drawing below sets it when its top row's day divider has scrolled off; the header reads it.
+  const hasKeys = seating.isFocused
+  // The thread's drawing below sets it when its top row's day divider has scrolled off; the chat card's corner reads it.
   shownTopDay = null
   const where = await underWhere($)
   const isMenu = (await read($, nav)).isMenuOpen
@@ -984,84 +1030,61 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const barContext: KeyContext = isMenu ? { ...context, where: 'menu' } : context
   const onKey = (id: RunKey) => runKey($, id)
   const chosen = await read($, selection)
-  // The marks ride the bar's row (T4b): `▪ 3 marked` leads it, and the verbs get what is left.
+  // The marks ride the key line's row (T4b): `▪ 3 marked` leads it, and the verbs get what is left.
   const lead = !isMenu && where === 'chat' ? marksLead(chosen.ids.length) : null
-  // ── folders ── the Folders list's rows carry the digits: the bar says so after ⏎ (§4.6).
+  // ── folders ── the Folders list's rows carry the digits: the key line says so after ⏎ (§4.6).
   // ── bottest ── in a chat, the cursor message's chips carry the digits: `1-2: press` (§4.6).
   const digitsText = isMenu ? null : where === 'folders' ? await digitsLabel($) : where === 'chat' ? pressText(context) : null
-  const bar = actionBar(barContext, width - (lead === null ? 0 : lead.length + BAR_GAP) - (digitsText === null ? 0 : digitsText.length + BAR_GAP))
-  const isBase = where === 'chats' || where === 'chat'
-  // Inline Chats: the strip shares the header row; the dock gives it a row of its own.
-  const isInlineChats = seat === 'inline' && where === 'chats' && !isMenu
-  // The dock's strip draws `s: search` while the keys are Chats' or the chat's (s exists there only);
-  // over a layer its Button stays, without the hotkey. The engine keeps the ring by its place among
-  // the Buttons (seen live on 2.1.296: closing the sheet put it one row above the cursor while `s`
-  // came back), so the strip draws the same Buttons in every view under Chats.
-  const search = seat === 'inline' ? 'none' : isBase ? 'key' : 'click'
-  // ── folders ── the strip shows while Chats do: not over the Folders list or For you (§5.0, §5.3).
+  const bar = actionBar(barContext, keyLineRoom(width, hasKeys) - (lead === null ? 0 : lead.length + BAR_GAP) - (digitsText === null ? 0 : digitsText.length + BAR_GAP))
+  // ── folders ── the legend row carries what waits over the Folders list or For you: no CHATS corner shows it there.
   const isChatsOnTop = await chatsOnTop($)
-  const summary = await summaryOf($)
   const isLoading = !isMenu && (await isLoadingShown($, seat, where))
-  const stripWidth = seat === 'inline' ? inlineStripRoom(width, summary, seating.isFocused) - (isLoading ? 2 : 0) : width
-  const strip = isMenu || !isChatsOnTop || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search, width: stripWidth })
-  // ── running ── the dock's strip comes and goes as things start and stop, mostly while the cursor
-  // stays: it draws no ring stop, and its row is kept whether it shows or not, so neither the stops
-  // above the cursor nor the lists' windows change with it (§4.3 rule 1). Inline the header counts.
-  // Over the Folders list or For you the folder strip is not drawn, so what waits rides this row.
-  const running = seat === 'dock' && !isMenu ? await drawRunningStrip($, els, width, !isChatsOnTop) : null
-  const runningRows = seat === 'dock' ? RUNNING_ROWS : 0
+  const head = await unreadHead($)
+  const header = Header(els, { colors, counts: await headerCounts($, head), isLoading, isError: head.kind === 'failed', width })
   // Inline, the windows always leave a row for a notice (T4b): the frame fits its content, so the
   // row costs nothing while it is empty, and one arriving takes no row from a list.
   const notice = seat === 'inline' && !isMenu ? await drawNoticeRow($, els, width) : null
-  const noticeRows = seat === 'inline' ? 1 : 0
-  // The send sheet's intents and Ask field take the bar's place (§5.1): four rows docked, two inline.
-  // The send box and the search field are layers in the bar's own row (T4b).
+  // The send sheet's intents and Ask field take the key line's place (§5.1): four rows docked, two inline.
+  // The send box and the search field are layers in the line's own row (T4b).
   const shown = await read($, overlay)
-  const sheetBar = isMenu || where !== 'sheet' ? null : await drawSheetBar($, els, seat, width, seating.isFocused)
+  const sheetBar = isMenu || where !== 'sheet' ? null : await drawSheetBar($, els, seat, width, hasKeys)
   const fieldBar = isMenu || where !== 'field' ? null : await drawFieldBar($, els)
-  // ── bottest ── the recording-stopped sheet takes the bar's place too: four rows docked, two inline (§5.2).
-  const recordedBar = isMenu || where !== 'recorded' ? null : await drawRecordedBar($, els, seat, width, seating.isFocused)
+  // ── bottest ── the recording-stopped sheet takes the line's place too: four rows docked, two inline (§5.2).
+  const recordedBar = isMenu || where !== 'recorded' ? null : await drawRecordedBar($, els, seat, width, hasKeys)
   const isAsking = shown.kind === 'sheet' && shown.step === 'ask'
   const sheetRows = recordedBar !== null ? (seat === 'dock' ? 4 : 2) : sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
-  const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + runningRows + noticeRows
-  const room = Math.max(3, rows - chrome)
-  // ── onboarding ── inline, the start block sits over the chat list and takes its rows; the dock draws it below (drawLower).
-  const isStartOver = !isMenu && seat === 'inline' && (await isStartDrawn($, seat, where))
-  const slot = isMenu
-    ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
+  // The dock keeps the legend row whether it says anything or not; inline keeps the notice row.
+  const room = Math.max(3, rows - 1 - sheetRows - 1)
+  // `m`: the menu is a card of its own over the whole slot.
+  const view = isMenu
+    ? {
+        slot: [Card(els, { key: 'card:menu', colors, role: 'accent', title: 'MENU', border: hasKeys ? 'cursor' : 'away', width, rows: room - CARD_CHROME, children: [Menu(els, { colors, sections: menuSections(context), onKey: id => runMenuKey($, id) })] })],
+        isAutopilotShown: false,
+      }
     : seat === 'dock'
-      ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - runningRows))
-      : isStartOver
-        ? [StartBlock(els, { width }), ...(await drawInline($, els, where, width, Math.max(1, room - START_ROWS)))]
-        : await drawInline($, els, where, width, room)
+      ? await drawDock($, els, where, width, room, hasKeys)
+      : { slot: await drawInline($, els, where, width, room, hasKeys), isAutopilotShown: false }
+  const { slot } = view
+  const legend = seat === 'dock' ? await drawLegend($, els, width, view.isAutopilotShown, !isChatsOnTop) : null
   const drawn = new Set(sheetBar === null && fieldBar === null && recordedBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
   if (recordedBar !== null) drawn.add('d')
-  if (strip !== null && search === 'key') drawn.add('s')
   // Views that draw a key of the table themselves: the sheet's a, i and h.
   if (sheetBar !== null && !isAsking) for (const key of ['a', 'i', 'h']) drawn.add(key)
   // A failed load draws its own `g: reload` (LoadState): the list's, or the chat's, where they show.
   const isListShown = !isMenu && (seat === 'dock' || where === 'chats' || where === 'foryou')
-  const isThreadShown = !isMenu && isBase && (seat === 'dock' || where === 'chat')
+  const isThreadShown = !isMenu && where === 'chat'
   if (await hasReloadRow($, isListShown, isThreadShown)) drawn.add('g')
   // The menu's own Buttons carry the keys of the view under it.
   if (isMenu) for (const section of menuSections(context)) for (const entry of section.entries) if (entry.def.hotkey !== null) drawn.add(entry.def.hotkey)
   // ── folders ── digits pick a folder while the cursor is in Chats, the Folders list or For you (§4.7).
   const isDigitsLive = !isMenu && (where === 'chats' || where === 'folders' || where === 'foryou')
-  const header = Header(els, {
-    location: await locationOf($, where, isMenu, isInlineChats),
-    strip: isInlineChats ? strip : null,
-    summary,
-    chips: await chipsOf($),
-    isLoading,
-    isFocused: seating.isFocused,
-  })
-  const barRow = sheetBar ?? fieldBar ?? recordedBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey })
+  const barRow = sheetBar ?? fieldBar ?? recordedBar ?? KeyLine(els, { colors, keys: bar, lead, digits: digitsText, hasKeys, onKey })
   const hidden = HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey })
   const digits = isDigitsLive ? await drawDigitKeys($, els) : null
   // Every other letter and digit is caught, so none falls through to the prompt and takes the keys (the T9 review's M1).
-  const taken = hotkeysIn([header, running, strip, slot, notice, barRow, hidden, digits])
+  const taken = hotkeysIn([header, legend, slot, notice, barRow, hidden, digits])
   const stray = StrayKeys(els, { keys: STRAY_KEYS.filter(key => !taken.has(key)), onKey: key => say($, 'info', strayText(key, barContext)) })
-  return Frame(els, { rows, header, running, strip: isInlineChats ? null : strip, slot, notice, bar: barRow, hidden, digits, stray })
+  return Frame(els, { rows, header, legend, slot, notice, bar: barRow, hidden, digits, stray })
 }
 
 /**
@@ -1086,56 +1109,23 @@ async function hasReloadRow($: $, isListShown: boolean, isThreadShown: boolean):
   return (isListShown && hasRow(await read($, dialogs))) || (isThreadShown && hasRow((await read($, thread))?.load))
 }
 
-async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: boolean): Promise<string> {
-  const peer = await keyPeer($, where)
-  const label = peer?.label ?? 'chats'
-  if (isMenu) return `tg › menu · ${where === 'chats' || where === 'chat' ? label : where}`
-  if (isInlineChats) return 'tg'
-  switch (where) {
-    case 'chats':
-      return 'tg › chats'
-    case 'folders':
-      return 'tg › folders'
-    case 'foryou':
-      return 'tg › for you'
-    case 'chat':
-      return `tg › ${label}${dayPart()}`
-    case 'card': {
-      // ── autopilot ── the card's step after its chat: delegate's warning and grant, `o`'s options.
-      const view = (await read($, autopilot)).view
-      const step = view.kind === 'card' ? view.step : 'ladder'
-      return `tg › agent for ${label}${step === 'options' ? ' · options' : step === 'ladder' ? '' : ` · ${LEVEL_GLYPH.delegate} delegate`}`
-    }
-    case 'sheet': {
-      // The intents sit under the open chat, which the header names (§5.1); the other steps say what they are.
-      const shown = await read($, overlay)
-      if (shown.kind === 'broadcast') return `tg › several agents · ${label}`
-      if (shown.kind === 'sheet' && shown.step === 'targets') return `tg › send to · ${label}`
-      if (shown.kind === 'sheet' && shown.step === 'inspect') return `tg › inspect · ${label}`
-      return `tg › ${label}${dayPart()}`
-    }
-    case 'diff':
-      return `tg › diff · ${label}`
-    case 'recorded':
-      return `tg › ${label}${dayPart()}`
-    case 'activity':
-      return 'tg › activity'
-    case 'summary':
-      return `tg › summary · ${label}`
-    case 'field':
-      return (await read($, nav)).isSearching ? 'tg › search' : `tg › ${label}${dayPart()}`
-    case 'menu':
-    case 'band':
-      return 'tg'
+/** The header's counts (§10.5): the footer's unread chats, mentions over every chat known, and what runs. */
+async function headerCounts($: $, head: UnreadHead): Promise<HeaderCounts> {
+  const counts = await summaryCounts($)
+  const pilot = await read($, autopilot)
+  const known = passHeld === null ? await knownDialogs($) : [...passHeld.rows.values()]
+  return {
+    unread: head.kind === 'count' ? head.unread : 0,
+    mentions: known.reduce((sum, dialog) => sum + dialog.mentions, 0),
+    forYou: counts.forYou,
+    agents: pilot.running.length,
+    isHolding: pilot.drafts.length > 0 || (await dgHoldCount($)) > 0,
+    follows: (await read($, pins)).length,
+    watched: counts.watched,
   }
 }
 
-/** ` · 10-08`: the top row's day, while the thread under the header has scrolled its divider off. */
-function dayPart(): string {
-  return shownTopDay === null ? '' : ` · ${shownTopDay}`
-}
-
-/** §4.5: agents by level, new messages in watched chats, what waits for the owner. One summary: the header, the footer label, `/tg status`. */
+/** §4.5: agents by level, new messages in watched chats, what waits for the owner. The footer label and `/tg status` read it. */
 async function summaryOf($: $) {
   return stateSummary(await summaryCounts($))
 }
@@ -1157,17 +1147,9 @@ async function summaryCounts($: $) {
   }
 }
 
-async function chipsOf($: $): Promise<{ text: string; color?: string }[]> {
-  const recording = (await read($, bottest)).recording
-  // ── autopilot ── the card says whether its chat runs a rung: `○ off`, `● draft · listening`.
-  const pilot = await read($, autopilot)
-  const card = pilot.view.kind === 'card' ? [cardChip(await runningRungOf($, pilot.view.dialogId), pilot.phase[String(pilot.view.dialogId)])] : []
-  return [...card, ...(recording === null ? [] : [{ text: `${GLYPH.unread} rec ${recording.steps.length}`, color: TOKEN.danger }])]
-}
-
 /**
- * The send box (`n`) or the search field (`s`), in the bar's row (T4b, as the
- * send sheet's Ask field): it adds no row, the lists under it are drawn
+ * The send box (`n`) or the search field (`s`), in the key line's row (T4b, as
+ * the send sheet's Ask field): it adds no row, the lists under it are drawn
  * without ring stops while it holds the ring (§4.3 rule 3), and ⏎ on it empty
  * closes it. Null without an Input (a surface that has none).
  */
@@ -1185,8 +1167,8 @@ async function drawFieldBar($: $, els: Els): Promise<RenderElement | null> {
 /**
  * The notice the pane shows now: what a write is doing (`… pressing`), what it
  * brought back or why it was refused, what `0` stopped. A drafted reply is a
- * row of its chat (§8 T3), not a notice. The dock draws it in the running
- * strip's row, inline in the notice row.
+ * row of its chat (§8 T3), not a notice. The dock draws it in the legend row,
+ * inline in the notice row.
  */
 async function noticeNow($: $, width: number): Promise<Notice | null> {
   const bt = await read($, bottest)
@@ -1200,40 +1182,227 @@ async function noticeNow($: $, width: number): Promise<Notice | null> {
 /** Inline's notice row: one row the windows always leave free; while no notice shows, what waits for the owner's move (§8 T9). */
 async function drawNoticeRow($: $, els: Els, width: number): Promise<RenderElement | null> {
   const notice = (await noticeNow($, width)) ?? (await movedNotice($))
-  return notice === null ? null : NoticeRow(els, { notice })
+  return notice === null ? null : NoticeRow(els, { colors, notice })
 }
 
 /**
- * Dock: Chats (or the Folders list, or For you) on top, the open chat or a
- * layer below. The list's height comes from `listRoom`, the room without the
- * sheet's rows: the engine keeps the ring by its place among the Buttons, so
- * the rows above must not change in number when a layer opens or closes.
+ * The dock's legend row (§10.5): a notice, else what runs while the AUTOPILOT
+ * card is folded, else the legend; `0: stop all` at its right while something
+ * runs and the card is not on screen, so the label is never drawn twice.
+ * `withMoved`: no CHATS card shows (the Folders list, For you), so what waits
+ * for the owner's move rides here (── folders ──).
  */
-async function drawDock($: $, els: Els, where: Where, width: number, room: number, listRoom: number): Promise<RenderElement[]> {
-  const open = await read($, thread)
-  // The Folders list has its pane-views line, For you its two section lines (── folders ──).
+async function drawLegend($: $, els: Els, width: number, isAutopilotShown: boolean, withMoved: boolean): Promise<RenderElement> {
+  const items = stripItems(await runRowsNow($)) // ── running ──
+  const isStop = items.length > 0 && !isAutopilotShown
+  const room = width - (isStop ? STOP_LABEL.length + 2 : 0)
+  const notice = (await noticeNow($, room)) ?? (withMoved ? await movedNotice($) : null)
+  return LegendRow(els, { colors, notice, running: isAutopilotShown ? null : fitStrip(items, room), isStop, width })
+}
+
+/** A card's border: the one holding ▸ is lit while the pane holds the keys; without them every border is `surface`. */
+function borderOf(hasKeys: boolean, holdsCursor: boolean): CardBorder {
+  return !hasKeys ? 'away' : holdsCursor ? 'cursor' : 'section'
+}
+
+/** Rows the top card's list has: the Folders list and its pane-views line, For you and its section lines, or the chats. */
+async function topLength($: $): Promise<number> {
   const at = await read($, nav)
   const length = at.view === 'folders' ? (await folderItems($)).length + 1 : isForYou(at) ? (await listRows($)).length + 2 : (await listRows($)).length
-  const topRows = Math.min(Math.max(1, length), Math.max(3, Math.floor(listRoom * 0.4)))
+  return Math.max(1, length)
+}
+
+/**
+ * Dock: while ▸ is in the lists, the section cards (§10.5) in the rows held for
+ * this layout generation; while it is in the chat or a layer, CHATS at three
+ * rows over the lower card, the other sections folded (their counts stay in
+ * the header). The layout follows the cursor, not the thread: h back to Chats
+ * brings the sections back, the chat stays loaded with `›` on its row, and ⏎
+ * brings its card back. Both moves start a generation.
+ */
+async function drawDock($: $, els: Els, where: Where, width: number, room: number, hasKeys: boolean): Promise<{ slot: RenderElement[]; isAutopilotShown: boolean }> {
+  const at = await read($, nav)
+  // The send box writes into the open chat, so its card stays; the search field types for the list.
+  const isLower = LOWER.includes(where) || (where === 'field' && !at.isSearching && (await read($, thread)) !== null)
+  const isStart = await isStartDrawn($, 'dock', where)
+  const pilot = await read($, autopilot)
+  const key = [layoutGen, (await read($, folders)).gen, room, width, isLower, at.view, JSON.stringify(at.list), at.query, isStart].join('|')
+  if (heldLayout?.key !== key) {
+    const fresh = dockLayout({
+      room,
+      isOpen: isLower,
+      isStart,
+      // FOR YOU's section sits over Chats only: the For you view and the Folders list draw no such card.
+      forYou: (await chatsOnTop($)) ? (await forYouSectionRows($)).length : 0,
+      autopilot: autopilotRowsNow(pilot.running.length),
+      log: (await logRowsNow($, width - CARD_INNER)).length,
+      list: await topLength($),
+    })
+    heldLayout = { key, layout: fresh }
+  }
+  const { layout } = heldLayout
+  const isTopCursor = where === 'chats' || where === 'folders' || where === 'foryou' || (where === 'field' && at.isSearching)
   // Under the send box or the search field the list is drawn without ring stops (§4.3 rule 3).
   const mode = where === 'chats' || where === 'folders' || where === 'foryou' ? 'active' : where === 'field' ? 'static' : 'idle'
-  const list = await drawTop($, els, width, topRows, mode)
-  const lower = Math.max(1, room - topRows - 1)
-  // ── onboarding ── with no chat open, the start block takes the lower part, its divider the divider's row.
-  if (await isStartDrawn($, 'dock', where)) return [...list, StartBlock(els, { width })]
-  return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, 'dock', where, width, lower, open !== null))]
+  const cards: RenderElement[] = []
+  if (layout.forYou > 0) cards.push(await drawForYouSection($, els, width, layout.forYou, borderOf(hasKeys, false)))
+  cards.push(await drawTopCard($, els, { seat: 'dock', where, width, rows: layout.chats, mode, border: borderOf(hasKeys, isTopCursor) }))
+  if (layout.start > 0) cards.push(StartCard(els, { colors, width, border: borderOf(hasKeys, false) }))
+  if (layout.autopilot > 0) cards.push(await drawAutopilotSlot($, els, width, layout.autopilot, borderOf(hasKeys, false)))
+  if (layout.log > 0) cards.push(await drawLogSlot($, els, width, layout.log, borderOf(hasKeys, false)))
+  if (isLower) cards.push(...(await drawLowerCard($, els, 'dock', where, width, layout.lower, borderOf(hasKeys, !isTopCursor))))
+  return { slot: cards, isAutopilotShown: layout.autopilot > 0 }
 }
 
-/** Inline: one view at a time; a field in the bar's row shows the column it works on, without ring stops. */
-async function drawInline($: $, els: Els, where: Where, width: number, room: number): Promise<RenderElement[]> {
-  if (where === 'chats' || where === 'folders' || where === 'foryou') return drawTop($, els, width, room, 'active', 'inline')
-  if (where === 'field' && (await read($, nav)).isSearching) return drawDialogList($, els, width, room, 'static')
-  return drawLower($, els, 'inline', where, width, room, true)
+/** Inline: the view's one card; START HERE over Chats on the first open. */
+async function drawInline($: $, els: Els, where: Where, width: number, room: number, hasKeys: boolean): Promise<RenderElement[]> {
+  const at = await read($, nav)
+  const border = borderOf(hasKeys, true)
+  if (where === 'chats' || where === 'folders' || where === 'foryou' || (where === 'field' && at.isSearching)) {
+    // ── onboarding ── START HERE sits over the chat list and takes its rows.
+    const isStart = await isStartDrawn($, 'inline', where)
+    const startRows = isStart ? START_ROWS + CARD_CHROME : 0
+    const top = await drawTopCard($, els, { seat: 'inline', where, width, rows: inlineCardRows(room - startRows), mode: where === 'field' ? 'static' : 'active', border })
+    return isStart ? [StartCard(els, { colors, width, border: borderOf(hasKeys, false) }), top] : [top]
+  }
+  return drawLowerCard($, els, 'inline', where, width, inlineCardRows(room), border)
 }
 
-/** The slot T2–T6 fill: the chat, the card, the picker (the send sheet's place), activity, a diff. */
-async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number, rows: number, isOpen: boolean): Promise<RenderElement[]> {
-  const { Text } = els
+/**
+ * The top card: CHATS with the folder tabs in its title (§10.5, §4.7), or
+ * FOLDERS (`h`), or FOR YOU (`y`) in its place. Its rows hold the list's window.
+ */
+async function drawTopCard($: $, els: Els, props: { seat: Seat; where: Where; width: number; rows: number; mode: 'active' | 'idle' | 'static'; border: CardBorder }): Promise<RenderElement> {
+  const at = await read($, nav)
+  const children = await drawTop($, els, props.width - CARD_INNER, props.rows, props.mode, props.seat, props.border === 'away')
+  const common = { colors, border: props.border, width: props.width, rows: props.rows, children }
+  if (at.view === 'folders') return Card(els, { ...common, key: 'card:folders', role: 'person', title: 'FOLDERS' })
+  if (isForYou(at)) return Card(els, { ...common, key: 'card:foryou', role: 'mention', title: 'FOR YOU' })
+  const corner = await chatsCorner($, props.seat, props.width, props.where === 'chats')
+  return Card(els, { ...common, key: 'card:chats', role: 'person', title: await chatsTitleNow($, props.width, corner), corner })
+}
+
+/** `CHATS  Personal  Work 15  Bots  ›`: the tabs that fit beside the corner, the current one among them. */
+async function chatsTitleNow($: $, width: number, corner: string | null): Promise<TitlePart[]> {
+  const at = await read($, nav)
+  const entries = await shownEntries($)
+  const current = entries.findIndex(entry => sameView(entry.view, at.list))
+  const tabs = entries.map(tabText)
+  const shown = stripWindow(tabs, Math.max(0, current), titleRoom(width, corner) - CHATS_HEAD)
+  return chatsTitle({ tabs, current, start: shown.start, end: shown.end, query: at.query })
+}
+
+/**
+ * CHATS' corner: `↑3` while chats wait for the owner's move (the dock; inline's
+ * notice row says it), and `1-9 folders` while the digits are live, which a
+ * narrow card gives up first (§10.5).
+ */
+async function chatsCorner($: $, seat: Seat, width: number, isLive: boolean): Promise<string | null> {
+  const waiting = seat === 'dock' ? await movedCount($) : 0
+  const count = isLive && width >= LEGEND_MIN ? (await shownEntries($)).filter(entry => entry.digit !== null).length : 0
+  const parts = [waiting === 0 ? null : `↑${waiting}`, count === 0 ? null : count === 1 ? '1 folder' : `1-${count} folders`].filter(part => part !== null)
+  return parts.length === 0 ? null : parts.join(' · ')
+}
+
+/** The lower card: the open chat, the agent card or a layer, titled after what it shows (§10.5 "Opening a chat"). */
+async function drawLowerCard($: $, els: Els, seat: Seat, where: Where, width: number, rows: number, border: CardBorder): Promise<RenderElement[]> {
+  // ── running ── Activity draws the AUTOPILOT and LOG cards itself, at full height (§10.5).
+  if (where === 'activity') return [await drawActivity($, els, width, rows + CARD_CHROME)]
+  // The thread first: its drawing says which day its top row is in, and the chat card's corner names it.
+  const children = await drawLower($, els, seat, where, width - CARD_INNER, rows)
+  const look = await lowerLook($, where, width)
+  return [Card(els, { key: look.key, colors, role: look.role, title: look.title, corner: look.corner, border, width, rows, children })]
+}
+
+type CardLook = { key: string; role: Role; title: TitlePart[]; corner: string | null }
+
+/** `SEND TO · Ivan Petrov`: a layer's card, in its chat's kind role; `name` is the label, or its confirm form. */
+function layerLook(key: string, word: string, peer: PeerRef | undefined, name = peer?.label): CardLook {
+  return { key, role: peer === undefined ? 'accent' : dialogGlyph(peer.kind).role, title: [{ text: peer === undefined ? word : `${word} · ${name}`, bold: true }], corner: null }
+}
+
+async function lowerLook($: $, where: Where, width: number): Promise<CardLook> {
+  const open = await read($, thread)
+  switch (where) {
+    case 'card': {
+      // ── autopilot ── the card's step after its chat: delegate's warning and grant, `o`'s options; its state in the corner.
+      const pilot = await read($, autopilot)
+      const view = pilot.view
+      const peer = view.kind === 'card' ? (await apDialog($, view.dialogId))?.peer : undefined
+      const step = view.kind === 'card' ? view.step : 'ladder'
+      // The owner grants here, so the name carries its handle (./ui/model `peerConfirmLabel`): names are spoofable.
+      const look = layerLook('card:agent', 'AGENT', peer, peer === undefined ? undefined : peerConfirmLabel(peer))
+      const tail = step === 'options' ? ' · options' : step === 'ladder' ? '' : ` · ${LEVEL_GLYPH.delegate} delegate`
+      const chip = view.kind === 'card' ? cardChip(await runningRungOf($, view.dialogId), pilot.phase[String(view.dialogId)]).text : null
+      return { ...look, title: look.title.map(part => ({ ...part, text: `${part.text}${tail}` })), corner: chip }
+    }
+    case 'sheet': {
+      // The intents sit under the open chat, whose card stays; the other steps are layers of their own (§5.1).
+      const shown = await read($, overlay)
+      if (shown.kind === 'broadcast') return layerLook('card:broadcast', 'SEVERAL AGENTS', open?.peer)
+      if (shown.kind === 'sheet' && shown.step === 'targets') return layerLook('card:targets', 'SEND TO', open?.peer)
+      if (shown.kind === 'sheet' && shown.step === 'inspect') return layerLook('card:inspect', 'INSPECT', open?.peer)
+      return chatLook($, width)
+    }
+    case 'diff':
+      return layerLook('card:diff', 'DIFF', open?.peer)
+    case 'summary':
+      return layerLook('card:summary', 'SUMMARY', open?.peer)
+    case 'chats':
+    case 'chat':
+    case 'folders':
+    case 'foryou':
+    case 'field':
+    case 'recorded':
+    case 'activity':
+    case 'menu':
+    case 'band':
+      return chatLook($, width)
+  }
+}
+
+/**
+ * The open chat's card (§10.5): `○ Ivan Petrov · @ivan_example` in its kind's
+ * role, and what is on it in the corner: the recording, a follow, the agent's
+ * level, `◎ watched`, live timing, `ro`, and the top row's day once its
+ * divider has scrolled off. A narrow card keeps the corner's first parts.
+ */
+async function chatLook($: $, width: number): Promise<CardLook> {
+  const open = await read($, thread)
+  if (open === null) return { key: 'card:chat', role: 'person', title: [{ text: 'CHAT', bold: true }], corner: null }
+  const { peer } = open
+  const kind = dialogGlyph(peer.kind)
+  // A narrow card gives up the handle before the name (§10.5's 44-column mockup).
+  const handle = peer.arg.startsWith('@') && width >= LEGEND_MIN ? peer.arg : null
+  const title: TitlePart[] = [
+    { text: `${kind.text} `, role: kind.role },
+    { text: peer.label, role: kind.role, bold: true },
+    ...(handle === null || handle === peer.label ? [] : [{ text: ` · ${handle}`, role: 'subtext' as const }]),
+  ]
+  // ── bottest ── the recording; ── routing ── the follow; ── autopilot ── the level; ── triage ── watched.
+  const recording = (await read($, bottest)).recording
+  const pin = (await read($, pins)).find(one => one.peer.id === peer.id)
+  const pilot = await read($, autopilot)
+  const level = pilot.running.includes(peer.id) ? pilot.dialogs[String(peer.id)]?.level : undefined
+  const isWatched = (await read($, triage)).watched.some(one => one.id === peer.id)
+  const isLive = (await read($, bottest)).timing.watch === 'live'
+  const parts = [
+    shownTopDay,
+    recording === null ? null : `${GLYPH.unread} rec ${recording.steps.length}`,
+    pin === undefined ? null : pin.watch.status === 'failed' ? `${GLYPH.pinned} ${GLYPH.error} ${pin.watch.reason}` : `${GLYPH.pinned} → main`,
+    level === undefined ? null : `${LEVEL_GLYPH[level]} ${level}`,
+    isWatched ? '◎ watched' : null,
+    isLive ? `${GLYPH.latency} live` : null,
+    isBotFather(peer.arg) ? 'ro' : null,
+  ].filter(part => part !== null)
+  // The corner keeps what fits half the card, from the first part on.
+  const room = Math.floor((width - CARD_INNER) / 2)
+  const corner = parts.reduce((kept, part) => (kept === '' ? part : labelCells(`${kept} · ${part}`) <= room ? `${kept} · ${part}` : kept), '')
+  return { key: 'card:chat', role: kind.role, title, corner: corner === '' ? null : corner }
+}
+
+/** The slot the lower card fills: the chat, the agent card, the picker (the send sheet's place), a diff, the summary. */
+async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number, rows: number): Promise<RenderElement[]> {
   switch (where) {
     case 'card': {
       const view = await drawCard($, els, width) // ── autopilot ──
@@ -1253,7 +1422,7 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
       return diff === null ? [] : [diff]
     }
     case 'recorded':
-      // The sheet holds the ring in the bar's place: the chat under it has no stops (§4.3 rule 3).
+      // The sheet holds the ring in the key line's place: the chat under it has no stops (§4.3 rule 3).
       return drawThread($, els, width, rows, 'static')
     case 'summary': {
       const summary = await drawSummary($, els, width) // ── triage ──
@@ -1264,7 +1433,6 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
     case 'folders':
     case 'foryou':
     case 'field': {
-      if (!isOpen) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
       // ── delegate ── the chat's task card, on top of its thread; a delegate chat keeps its rows (see drawChatTask).
       const task = await drawChatTask($, els, width, seat, rows)
       const mode = where === 'chat' ? 'active' : where === 'field' ? 'static' : 'idle'
@@ -1276,30 +1444,145 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
   }
 }
 
-/** `─ @example_bot · bot · ◎ watched ─`: the open chat, its kind, and what is on it. */
-async function dividerLabel($: $): Promise<string> {
-  // ── autopilot ── over the lower part, the card asks its one question (§5.4).
-  const view = (await read($, autopilot)).view
-  const carded = view.kind === 'card' ? await apDialog($, view.dialogId) : null
-  if (view.kind === 'card' && carded !== null) {
-    const name = peerConfirmLabel(carded.peer)
-    return view.step === 'ladder' ? `what may an agent do in ${name}?` : view.step === 'options' ? `options for ${name}` : view.step === 'warning' ? `${LEVEL_GLYPH.delegate} delegate ${name}?` : `${name} · ${LEVEL_GLYPH.delegate} delegate`
-  }
-  const open = await read($, thread)
-  if (open === null) return 'no chat open'
-  const kind = CHAT_KIND_LABEL[chatKind(open.peer.kind, isBotFather(open.peer.arg))]
-  const isWatched = (await read($, triage)).watched.some(one => one.id === open.peer.id)
-  const pin = (await read($, pins)).find(one => one.peer.id === open.peer.id) // ── routing ──
-  const follow = pin === undefined ? '' : pin.watch.status === 'failed' ? ` · ${GLYPH.pinned} ${GLYPH.error} ${pin.watch.reason}` : ` · ${GLYPH.pinned} follows → main`
-  const live = (await read($, bottest)).timing.watch === 'live' ? ` · ${GLYPH.latency} live` : ''
-  return `${open.peer.label} · ${kind}${isWatched ? ' · ◎ watched' : ''}${follow}${live}`
+// ── folders ── the FOR YOU section (§10.5): §5.3's items in the chat row, as text over CHATS.
+
+type SectionRow = Pick<Parameters<typeof ChatRow>[2], 'time' | 'glyph' | 'name' | 'isUnread' | 'preview' | 'symbol'> & { key: string }
+
+/** FOR YOU's rows as last drawn with items: an emptied section draws them dim until the next generation. */
+let lastForYou: SectionRow[] = []
+
+/**
+ * FOR YOU's items now: the agents' drafts first (`draft: …` in `held`, ✎),
+ * then the people who wait on the owner (mentions, `asks you: …`), from the
+ * pass the module holds. No tg call and no model call: For you's view (`y`) ranks.
+ */
+async function forYouSectionRows($: $): Promise<SectionRow[]> {
+  const pilot = await read($, autopilot)
+  const reply = await read($, draft)
+  const at = Math.max(pilot.now, await $.clock.now())
+  const held = (key: string, peer: PeerRef, text: string, when: number): SectionRow => ({
+    key,
+    time: rowTime(new Date(when).toISOString(), at),
+    glyph: dialogGlyph(peer.kind),
+    name: peer.label,
+    isUnread: false,
+    preview: { text: `draft: ${oneLine(text, 200)}`, role: 'held' },
+    symbol: { text: GLYPH.draft, role: 'held' },
+  })
+  const drafts = (await liveAgents($)).flatMap((item): SectionRow[] => {
+    if (item.kind === 'draft') {
+      const one = pilot.drafts.find(value => value.seq === item.seq)
+      return one === undefined ? [] : [held(`fy:ap:${one.seq}`, one.peer, one.text, one.at)]
+    }
+    if (item.kind === 'reply') return reply === null ? [] : [held('fy:reply', reply.peer, reply.text, reply.at)]
+    return []
+  })
+  if (passHeld === null) return drafts
+  const people = await rankedPeople($, passHeld)
+  const agentOf = await agentMarks($)
+  // People who wait on the owner: mentions and asks. `fyi` stays in `y`'s view, where the owner reads down a list.
+  const waiting = people.rows.filter(dialog => people.why[String(dialog.id)] !== 'fyi')
+  return [
+    ...drafts,
+    ...waiting.map((dialog): SectionRow => {
+      const row = dialogRow(dialog, { now: at, agent: agentOf(dialog.id) })
+      return { key: `fy:chat:${dialog.id}`, ...row, preview: people.why[String(dialog.id)] === 'asks you' ? { text: `asks you: ${dialog.last_text}` } : row.preview }
+    }),
+  ]
+}
+
+/**
+ * The FOR YOU card: what fits its held rows, the rest counted in the corner
+ * (`y: all · 3`). Text only: a Button above CHATS would move the stops above
+ * the cursor (§4.3 rule 1); ⏎ on an item works in `y`'s view and the band.
+ */
+async function drawForYouSection($: $, els: Els, width: number, rows: number, border: CardBorder): Promise<RenderElement> {
+  const items = await forYouSectionRows($)
+  const isEmptied = items.length === 0
+  if (!isEmptied) lastForYou = items
+  const dim = (row: SectionRow): SectionRow => ({ ...row, glyph: { ...row.glyph, role: 'dim' }, preview: { text: row.preview.text, role: 'dim' }, symbol: null })
+  const shown = (isEmptied ? lastForYou.map(dim) : items).slice(0, rows)
+  const more = items.length - shown.length
+  return Card(els, {
+    key: 'card:foryou-section',
+    colors,
+    role: 'mention',
+    title: `FOR YOU · ${items.length}`,
+    corner: more > 0 ? `y: all · ${more}` : 'y: all',
+    border,
+    width,
+    rows,
+    children: shown.map(row => ChatRow(els, colors, { ...row, rowKey: row.key, width: width - CARD_INNER, isCursor: false, isOpen: false, isDim: border === 'away', isStatic: true })),
+  })
+}
+
+// ── running ── the AUTOPILOT and LOG slots (§10.5, §10.6). T14's AutopilotSection and LogSection
+// (./ui/activity) draw them; until they land, these draw the running rows and the merged log as text.
+
+/** Content rows the AUTOPILOT card asks for: the gauge, the strip and one lane per chat on, three at most; none with no agent on. */
+function autopilotRowsNow(lanes: number): number {
+  return lanes === 0 ? 0 : 2 + Math.min(3, lanes)
+}
+
+/** LOG's rows now, newest first (./ui/running `mergedLog`): packets, bursts and stops. */
+async function logRowsNow($: $, width: number): Promise<LogRow[]> {
+  const pilot = await read($, autopilot)
+  const at = Math.max(pilot.now, await read($, now), await $.clock.now())
+  const entries = await dgLedger($, pilot.ledger, pilot.dialogs) // ── delegate ── with the guard's stop events
+  return mergedLog(await read($, ledger), entries, at, width)
+}
+
+async function drawAutopilotSlot($: $, els: Els, width: number, rows: number, border: CardBorder): Promise<RenderElement> {
+  const { Text } = els
+  const runs = await runRowsNow($)
+  const agents = runs.filter(row => row.agent !== null)
+  return Card(els, {
+    key: 'card:autopilot',
+    colors,
+    role: 'ok',
+    title: `AUTOPILOT · ${agents.length} ${agents.length === 1 ? 'chat' : 'chats'}`,
+    // The legend row leaves `0: stop all` to this corner while the card is on screen: never drawn twice.
+    corner: runs.some(isRunning) ? (width < LEGEND_MIN ? '0: stop' : STOP_LABEL) : null,
+    border,
+    width,
+    rows,
+    children: agents.map(row => (
+      <Text key={`ap:${row.peer.id}`} wrap="truncate-end">
+        {activityText(row, row.peer.label)}
+      </Text>
+    )),
+  })
+}
+
+const LOG_ROLE: Record<LogTone, Role> = { plain: 'subtext', ok: 'ok', warn: 'held', danger: 'unread' }
+
+async function drawLogSlot($: $, els: Els, width: number, rows: number, border: CardBorder): Promise<RenderElement> {
+  const { Text } = els
+  const log = await logRowsNow($, width - CARD_INNER)
+  return Card(els, {
+    key: 'card:log',
+    colors,
+    role: 'surface',
+    titleRole: 'subtext',
+    title: 'LOG',
+    corner: 'l: all',
+    border,
+    width,
+    rows,
+    children: log.slice(0, rows).map(row => (
+      <Text key={row.key} color={colors[LOG_ROLE[row.tone]]} wrap="truncate-end">
+        {row.text}
+      </Text>
+    )),
+  })
 }
 
 /**
  * `active`: the cursor's column, its row ringed. `idle`: the chat holds the
  * cursor. `static`: under the send box or the search field, ▸ shown and no ring stops.
+ * `isDim`: the keys are elsewhere, so ▸ dims with the borders (§10.5).
  */
-async function drawDialogList($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static'): Promise<RenderElement[]> {
+async function drawDialogList($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static', isDim = false): Promise<RenderElement[]> {
   const load = await read($, dialogs)
   const where = await read($, nav)
   const at = await read($, now)
@@ -1321,6 +1604,7 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, mode:
       isCursor: mode !== 'idle' && shown.start + index === cursor,
       isStatic: mode === 'static',
       isOpen: open?.peer.id === dialog.id,
+      isDim,
       width,
       onPress: async () => {
         await update($, nav, value => ({ ...value, view: 'dialogs', dialogCursor: shown.start + index }))
@@ -5153,7 +5437,7 @@ async function dgLedger($: $, ledger: readonly ApEntry[], dialogs: Record<string
 // (./ui/running), for the dock's running strip, Activity (`l`) and the kill
 // switch (`0`, `/tg stop`), which stops every follow, autopilot and Worker
 // and says what it stopped, by name. Every `$` call of it is here.
-import { Activity, RunningStrip } from './ui/activity'
+import { Activity } from './ui/activity'
 import {
   activityOrder,
   activityTarget,
@@ -5167,6 +5451,8 @@ import {
   stopNotice,
   stoppedOf,
   stripItems,
+  type LogRow,
+  type LogTone,
   type RunInput,
   type RunRow,
   type StopReport,
@@ -5175,8 +5461,6 @@ import {
 const activity = atom({ plugin: 'dialogs-pane', key: 'activity' } as const, null)
 const lastStop = atom({ plugin: 'dialogs-pane', key: 'lastStop' } as const, null)
 
-/** The dock keeps the strip's row whether it shows or not (see drawPane). */
-const RUNNING_ROWS = 1
 /** How long the dock's strip row says what `0` stopped. */
 const STOP_NOTICE_MS = 15_000
 
@@ -5221,17 +5505,6 @@ async function stopEverything($: $): Promise<StopReport> {
   }
   await refreshStatus($)
   return { stopped, failed }
-}
-
-/** The dock's strip: what runs, `0: stop all` beside it; after `0`, what stopped. Null: nothing to say. */
-async function drawRunningStrip($: $, els: Els, width: number, withMoved: boolean): Promise<RenderElement | null> {
-  const items = stripItems(await runRowsNow($))
-  // A notice takes the row's left part; `0: stop all` keeps its place while something runs (T4b).
-  // `withMoved`: no folder strip shows (the Folders list, For you), so what waits for the owner's move rides here (── folders ──).
-  const room = width - (items.length > 0 ? STOP_LABEL.length + 2 : 0)
-  const notice = (await noticeNow($, room)) ?? (withMoved ? await movedNotice($) : null)
-  if (items.length === 0 && notice === null) return null
-  return RunningStrip(els, { ...fitStrip(items, width), notice, isRunning: items.length > 0 })
 }
 
 /** What `0` stopped, fitted to `width`, while its 15 s last. */
@@ -5849,34 +6122,8 @@ async function drawDigitKeys($: $, els: Els): Promise<RenderElement> {
   })
 }
 
-/** Cells inline's header leaves the strip: the row less `tg`, the state summary and who holds the keys (§7.3). */
-function inlineStripRoom(width: number, summary: { levels: string; watched: string; forYou: string }, isFocused: boolean): number {
-  const parts = [summary.levels, summary.watched, summary.forYou].filter(part => part !== '')
-  const summaryCells = parts.reduce((sum, part) => sum + cells(part) + 3, 0)
-  return Math.max(10, width - 2 - 2 - summaryCells - 1 - (isFocused ? 6 : 16) - 2)
-}
-
-async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key' | 'click' | 'none'; width: number }): Promise<RenderElement> {
-  const where = await read($, nav)
-  const entries = await shownEntries($)
-  const current = entries.findIndex(entry => sameView(entry.view, where.list))
-  const texts = entries.map((entry, index) => tabText(entry, index === current, props.isLive))
-  const waiting = props.search === 'none' ? 0 : await movedCount($)
-  const room = props.search === 'none' ? props.width : props.width - stripRight(where.query, waiting)
-  const shown = stripWindow(texts, Math.max(0, current), room)
-  return Strip(els, {
-    tabs: texts.slice(shown.start, shown.end).map((text, index) => ({ text, isCurrent: shown.start + index === current })),
-    before: shown.start,
-    after: Math.max(0, entries.length - shown.end),
-    query: where.query,
-    waiting,
-    search: props.search,
-    onSearch: () => startSearch($),
-  })
-}
-
 /** The top of the dock, or inline's body: the Folders list, For you, or the chats. */
-async function drawTop($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static', seat: Seat = 'dock'): Promise<RenderElement[]> {
+async function drawTop($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static', seat: Seat = 'dock', isDim = false): Promise<RenderElement[]> {
   const where = await read($, nav)
   if (where.view === 'folders') {
     const items = await folderItems($)
@@ -5893,7 +6140,7 @@ async function drawTop($: $, els: Els, width: number, rows: number, mode: 'activ
     return FoldersList(els, { items, cursor, start, rows: perColumn, columns, width, mode: mode === 'static' ? 'static' : 'active', onOpen: index => openFolderAt($, index) })
   }
   if (isForYou(where)) return drawForYou($, els, width, rows, mode)
-  return drawDialogList($, els, width, rows, mode)
+  return drawDialogList($, els, width, rows, mode, isDim)
 }
 
 // --- For you (§5.3) ---
@@ -6196,7 +6443,8 @@ async function onScreen($: $): Promise<OnScreen> {
   const where = await read($, nav)
   const open = await read($, thread)
   const isDock = lastSeat === 'dock'
-  const chat = open !== null && (isDock || where.view === 'thread') ? open.peer.id : null
+  // The chat's card shows while ▸ is in it, in either seat: the dock's layout follows the cursor (§10.5).
+  const chat = open !== null && where.view === 'thread' ? open.peer.id : null
   const isForYou = where.list.kind === 'foryou' && where.query === '' && (isDock || where.view === 'dialogs')
   // The drafts whose rows are drawn: every one For you lists, and the ones the thread's window holds whole.
   const listed = isForYou ? (await draftViewsNow($)).map(one => one.key) : []
@@ -6348,13 +6596,12 @@ async function statusLines($: $): Promise<string[]> {
 // ── /footer ──
 
 // ── onboarding ──
-// dialogs-pane-ux.md §4.4 and §8 T7: the first open's start block, four lines
-// of the keys that matter, until `d`. `$.store` keeps the `d` across sessions;
-// `$.state` holds whether it shows, so drawing reads no file. The dock draws it
-// in the lower part while no chat is open, where `⏎ on a chat opens it here.`
-// stood, so the chat list keeps its rows; inline it sits over the chat list.
-// It is text: no ring stop comes or goes with it (§4.3 rule 1).
-import { START_ROWS, StartBlock } from './ui/frame'
+// dialogs-pane-ux.md §4.4, §8 T7 and §10.5: the first open's START HERE card,
+// three lines of the keys that matter, until `d`. `$.store` keeps the `d`
+// across sessions; `$.state` holds whether it shows, so drawing reads no file.
+// The dock draws it under CHATS while no chat is open; inline it sits over the
+// chat list. It is text: no ring stop comes or goes with it (§4.3 rule 1).
+import { START_ROWS, StartCard } from './ui/frame'
 
 const STORE_START = 'start.dismissed'
 const isStartShown = atom({ plugin: 'dialogs-pane', key: 'isStartShown' } as const, false)
@@ -6365,7 +6612,7 @@ async function startOnboarding($: $): Promise<void> {
   await update($, isStartShown, () => !isDismissed)
 }
 
-/** Whether the start block is drawn: the dock's lower part with no chat open, or inline over the chat list. */
+/** Whether START HERE is drawn: the dock's under CHATS with no chat open, or inline over the chat list. */
 async function isStartDrawn($: $, seat: Seat, where: Where): Promise<boolean> {
   if (!(await read($, isStartShown))) return false
   const at = await read($, nav)

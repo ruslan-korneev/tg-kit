@@ -456,8 +456,6 @@ function shown(def: KeyDef, c: KeyContext): ShownKey {
   return { id: def.id as RunKey, key: def.key, hotkey: def.hotkey, label: def.label(c) }
 }
 
-export const MAX_BAR = 7
-
 /** §4.6 "the action bar, by context": the verbs after ⏎, in the order the owner reaches for them. */
 const KIND_BAR: Record<ChatKind, readonly KeyId[]> = {
   // `1-2: press` follows ⏎ as text (the chips carry the digits); f comes before x, so x leaves first at 64 columns (§5.2).
@@ -475,8 +473,8 @@ const DRAFT_BAR: readonly KeyId[] = ['senddraft', 'edit', 'dismiss', 'agent']
 function verbs(c: KeyContext): readonly KeyId[] {
   switch (c.where) {
     case 'chats':
-      // The dock draws `s: search` on the strip; inline has no strip row to spare.
-      return c.seat === 'inline' ? ['open', 'back', 'search', 'summary', 'watch', 'agent'] : ['open', 'back', 'summary', 'watch', 'agent']
+      // `s: search` sits on the key line in both seats: the line is below the list, so it moves no stop above the cursor (§10.5).
+      return ['open', 'back', 'search', 'summary', 'watch', 'agent']
     case 'folders':
       // `1-9: folder` follows ⏎ as text: the rows carry the digits (§4.6).
       return ['open', 'foryou', 'back']
@@ -536,22 +534,20 @@ export function barCells(key: Pick<ShownKey, 'hotkey' | 'label'>): number {
 export const BAR_GAP = 2
 
 /**
- * The action bar: this context's live verbs in §4.6's order, then `u` and `0`
- * while they work, then `m`; never more than seven, and never wider than
- * `width`. Verbs leave from the end first; the rest stay in the menu and on
- * their hotkeys. In the dock the running strip says `0: stop all` (§4.6, §5.6),
- * so the bar does not: never both.
+ * The key line (§10.5): this context's live verbs in §4.6's order, then `u`
+ * while it works, then `m` last; as many as fit `width`. Verbs leave from the
+ * end first; the rest stay in the menu and on their hotkeys. `0: stop all` is
+ * never here: the AUTOPILOT card's corner or the legend row carries it (§10.10).
  */
 export function actionBar(c: KeyContext, width = Infinity): ShownKey[] {
   const live = (id: KeyId) => isLive(keyDef(id), c)
   const head = verbs(c).filter(live)
-  const safety: readonly KeyId[] = c.seat === 'dock' ? ['undo'] : ['undo', 'stop']
-  const tail: KeyId[] = [...safety.filter(live), ...(c.where === 'band' ? [] : (['menu'] as const))]
-  const fixed = new Set<KeyId>(['back', 'undo', 'stop', 'menu'])
+  const tail: KeyId[] = [...(['undo'] as const).filter(live), ...(c.where === 'band' ? [] : (['menu'] as const))]
+  const fixed = new Set<KeyId>(['back', 'undo', 'menu'])
   let picked = [...head, ...tail]
   const cells = (ids: readonly KeyId[]) => ids.reduce((sum, id, index) => sum + barCells(shown(keyDef(id), c)) + (index === 0 ? 0 : BAR_GAP), 0)
-  while (picked.length > MAX_BAR || cells(picked) > width) {
-    // The first verb is the cursor row's action and stays; so do back, undo, stop and menu.
+  while (cells(picked) > width) {
+    // The first verb is the cursor row's action and stays; so do back, undo and menu.
     const drop = picked.findLastIndex((id, index) => index > 0 && !fixed.has(id))
     if (drop === -1) break
     picked = picked.filter((_, index) => index !== drop)
@@ -585,7 +581,7 @@ export function pressText(c: KeyContext): string | null {
  * The live keys of this context that nothing draws: the frame keeps their
  * hotkeys in a Box it does not show, so `j`, `q` or `p` work without the
  * menu while the bar shows only the verbs. `drawn` are the hotkeys the view
- * draws itself (the bar's, the strip's `s`, a load error's `g`).
+ * draws itself (the key line's, a load error's `g`).
  */
 export function hiddenKeys(c: KeyContext, drawn: ReadonlySet<string>): ShownKey[] {
   return TABLE.filter(def => def.hotkey !== null && !drawn.has(def.hotkey) && isLive(def, c)).map(def => shown(def, c))
