@@ -131,7 +131,7 @@ function lex(text: string): { tokens: Token[]; isOpaque: boolean; expanded: Set<
   return { tokens, isOpaque, expanded }
 }
 
-const WRAPPERS = new Set(['sudo', 'doas', 'nohup', 'time', 'command', 'exec', 'nice', 'builtin', 'then', 'do', 'else', 'if', 'while', 'until', 'xargs', 'watch', 'timeout', 'caffeinate'])
+const WRAPPERS = new Set(['sudo', 'doas', 'nohup', 'time', 'command', 'exec', 'nice', 'builtin', 'then', 'do', 'else', 'if', 'while', 'until', 'watch', 'timeout', 'caffeinate'])
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 
 /** The basename of a command word: `/usr/bin/git` → `git`. */
@@ -141,12 +141,60 @@ export function base(word: string): string {
 
 const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/
 
-/** Takes wrappers and leading assignments off: `sudo env A=1 git push` → `git push`, `A=1` into `assigns`. */
-function unwrap(words: string[], assigns: string[]): string[] {
+/** xargs' options that take a value, GNU's and BSD's: `-I {}`, `-I{}`, `-n 5`, `--max-args=5`. */
+const XARGS_VALUE = 'IEsnLPdaJRS'
+const XARGS_LONG_VALUE = new Set(['--max-args', '--max-lines', '--max-procs', '--max-chars', '--delimiter', '--arg-file', '--process-slot-var'])
+/** GNU's `-i`, `-e`, `--replace`, `--eof`: an optional value, attached only; a spaced one may be read either way. */
+const XARGS_OPTIONAL = new Set(['--replace', '--eof'])
+
+/**
+ * The words after xargs' own options. A bare `-i`/`-e`/`--replace`/`--eof`
+ * takes no value in GNU, but a value spaced after it would be read as the
+ * command; so that reading goes into `alternatives` too.
+ */
+function pastXargs(words: string[], alternatives: string[][]): string[] {
+  let i = 0
+  while (i < words.length) {
+    const word = words[i] ?? ''
+    if (word === '--') return words.slice(i + 1)
+    if (!word.startsWith('-') || word === '-') break
+    if (word.startsWith('--')) {
+      const option = word.includes('=') ? word.slice(0, word.indexOf('=')) : word
+      if (XARGS_LONG_VALUE.has(option) && !word.includes('=')) i++
+      else if (XARGS_OPTIONAL.has(word)) alternatives.push(words.slice(i + 2))
+      i++
+      continue
+    }
+    for (let k = 1; k < word.length; k++) {
+      const letter = word[k] ?? ''
+      const isLast = k + 1 === word.length
+      if (XARGS_VALUE.includes(letter)) {
+        if (isLast) i++
+        break
+      }
+      if (letter === 'i' || letter === 'e') {
+        if (isLast) alternatives.push(words.slice(i + 2))
+        break
+      }
+    }
+    i++
+  }
+  return words.slice(i)
+}
+
+/**
+ * Takes wrappers and leading assignments off: `sudo env A=1 git push` → `git
+ * push`, `A=1` into `assigns`; other readings of the command into `alternatives`.
+ */
+function unwrap(words: string[], assigns: string[], alternatives: string[][]): string[] {
   let rest = words
   for (;;) {
     const first = rest[0]
     if (first === undefined) return rest
+    if (base(first) === 'xargs') {
+      rest = pastXargs(rest.slice(1), alternatives)
+      continue
+    }
     if (ASSIGN.test(first)) {
       assigns.push(first)
       rest = rest.slice(1)
@@ -163,7 +211,7 @@ function unwrap(words: string[], assigns: string[]): string[] {
     }
     if (WRAPPERS.has(name)) {
       rest = rest.slice(1)
-      // Their own flags (`timeout 10`, `nice -n 5`, `xargs -0`) come before the command.
+      // Their own flags (`timeout 10`, `nice -n 5`) come before the command.
       while (rest[0] !== undefined && (rest[0].startsWith('-') || /^\d+[smh]?$/.test(rest[0]))) rest = rest.slice(1)
       continue
     }
@@ -190,7 +238,13 @@ function merge(into: Reading, from: Reading): void {
 /** The commands one simple command runs: itself, or what its shell, eval, find -exec or rebase -x runs. */
 function expand(words: readonly string[], depth: number): Reading {
   const out = empty()
-  const simple = unwrap([...words], out.assigns)
+  const alternatives: string[][] = []
+  const simple = unwrap([...words], out.assigns, alternatives)
+  // Another reading of an xargs command (`xargs -i {} tg …`): read as well.
+  for (const other of alternatives) {
+    if (depth < MAX_DEPTH) merge(out, expand(other, depth + 1))
+    else out.isTooDeep = true
+  }
   if (simple.length === 0) return out
   const name = base(simple[0] ?? '')
   // `-c`, or in a cluster: `bash -lc '…'`.

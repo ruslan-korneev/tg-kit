@@ -221,6 +221,24 @@ describe('the grant', () => {
     })
   }
 
+  // The review's M1: xargs' options that take a value hid the command after them.
+  const XARGS = ['xargs -I {}', 'xargs -I{}', 'xargs -i {}', 'xargs -i{}', 'xargs -E END', 'xargs -EEND', 'xargs -e END', 'xargs --replace {}', 'xargs --replace={}', 'xargs --eof=END', 'xargs -0 -n 5 -P 2', 'xargs -d , -L 1', 'xargs --max-args 5', 'xargs -a list.txt']
+  for (const xargs of XARGS) {
+    test(`M1: echo 1004 | ${xargs} tg … and … sh -c 'tg …' are refused in both modes`, () => {
+      for (const command of [`echo 1004 | ${xargs} tg allow add {} --yes`, `echo 1004 | ${xargs} sh -c 'tg allow add 1004 --yes'`]) {
+        for (const g of both) expect([command, g.commands, checkGrant({ tool: 'Bash', input: { command } }, g, SCOPE)]).toEqual([command, g.commands, { ok: false, reason: expect.stringContaining('tg is never the Worker') }])
+      }
+    })
+  }
+
+  test('M1: what xargs runs is read: its sh -c too; plain xargs still passes', () => {
+    expect(readCommand("xargs -I {} sh -c 'echo {} >> /home/me/.zshrc'").commands).toContainEqual(['echo', '{}', '>>', '/home/me/.zshrc'])
+    expect(ok('Bash', { command: "ls | xargs -I {} sh -c 'echo {} >> /home/me/code/app/x'" }, grant({ commands: 'any' }))).toBe(false)
+    for (const command of ["find . -name '*.py' | xargs -n 5 grep -l x", 'ls | xargs -I {} cat {}']) {
+      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+    }
+  })
+
   test("decision 11: the Worker's own worktree under tg-kit's config still passes, in both modes; tg named as data is no run", () => {
     for (const command of [
       `cat ${WT}/README.md`, `echo x > ${WT}/out.txt`, `ls ~/.config/tg-kit/worktrees/app-task-1/src`, `uv run pytest > ${WT}/log.txt 2>&1`,

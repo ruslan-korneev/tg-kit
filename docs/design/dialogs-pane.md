@@ -325,7 +325,8 @@ card that you see in the pane:
     worktrees, reads included (dialogs-pane-ux.md §9 decision 11).
   - Files are only in the worktrees, never in your checkouts, in both modes. A path counts
     wherever a command names one: an operand, `--out=/p`, `-o/p`, a redirect target attached or
-    spaced. What `sh -c`, `eval`, `find -exec` and `git rebase -x` run is read too.
+    spaced. What `sh -c`, `eval`, `xargs` (past its options), `find -exec` and `git rebase -x`
+    run is read too.
 - **Duration:** until the task is done, or a deadline (`2h`, `90m`). The kill switch ends either.
 
 **Who decides when to ask you.** The agent decides by default: if it's unsure, if the task grows, or
