@@ -57,17 +57,22 @@ describe('what runs, a row per chat', () => {
 
 describe('the kill switch names what it stopped (§5.6)', () => {
   test('/tg stop: every chat, with what stopped there', () => {
-    expect(stopAnswer(stoppedOf(runRows(FLOW_6)))).toBe(
+    expect(stopAnswer({ stopped: stoppedOf(runRows(FLOW_6)), failed: [] })).toBe(
       'tg: stopped Dev Team (auto), Contact B (delegate and its Worker), @example_bot (follow).\nSettings are kept; /tg, then a (p for a follow), restarts one.',
-    )
-    expect(stopNotice(stoppedOf(runRows(FLOW_6)))).toBe(
-      '■ stopped: Dev Team (auto), Contact B (delegate and its Worker), @example_bot (follow). Settings kept; a restarts one.',
     )
   })
 
+  test('the dock’s notice lists the names that fit, then +N; the toast says the rest', () => {
+    const names = stoppedOf(runRows(FLOW_6)).map(one => one.label)
+    expect(stopNotice(names, 0, 64)).toBe('■ stopped: Dev Team, Contact B, @example_bot')
+    expect(stopNotice(names, 0, 36)).toBe('■ stopped: Dev Team, Contact B +1')
+    expect(stopNotice(names, 1, 40)).toBe('■ stopped: Dev Team +2 · ⚠ 1 failed')
+    expect(stopNotice(names, 0, 10)).toBe('■ stopped: Dev Team +2')
+  })
+
   test('nothing, a follow alone, two Workers, a follow beside a level', () => {
-    expect(stopAnswer([])).toBe('tg: nothing was running.')
-    expect(stopAnswer(stoppedOf(runRows({ agents: [], follows: FLOW_6.follows, tasks: [] })))).toBe('tg: stopped @example_bot (follow).\n/tg, then p in the chat, follows it again.')
+    expect(stopAnswer({ stopped: [], failed: [] })).toBe('tg: nothing was running.')
+    expect(stopAnswer({ stopped: stoppedOf(runRows({ agents: [], follows: FLOW_6.follows, tasks: [] })), failed: [] })).toBe('tg: stopped @example_bot (follow).\n/tg, then p in the chat, follows it again.')
     const two = runRows({
       agents: [{ peer: B, level: 'delegate', tail: 'delegate', phase: 'listening' }],
       follows: [{ peer: B, to: 'main', state: 'live' }],
@@ -76,7 +81,15 @@ describe('the kill switch names what it stopped (§5.6)', () => {
         { peer: B, isLive: true, isHeld: false, tail: 'b' },
       ],
     })
-    expect(stopAnswer(stoppedOf(two)).split('\n')[0]).toBe('tg: stopped Contact B (delegate and its 2 Workers, follow).')
+    expect(stopAnswer({ stopped: stoppedOf(two), failed: [] }).split('\n')[0]).toBe('tg: stopped Contact B (delegate and its 2 Workers, follow).')
+  })
+})
+
+describe('a part that failed is named, after what did stop', () => {
+  test('the answer keeps the stopped names and says what failed', () => {
+    expect(stopAnswer({ stopped: stoppedOf(runRows({ agents: [], follows: FLOW_6.follows, tasks: [] })), failed: ['@example_bot (follow): watch would not end'] })).toBe(
+      'tg: stopped @example_bot (follow).\n⚠ not stopped cleanly: @example_bot (follow): watch would not end.\n/tg, then p in the chat, follows it again.',
+    )
   })
 })
 

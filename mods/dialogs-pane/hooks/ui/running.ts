@@ -92,15 +92,19 @@ function stripCells(text: string): number {
  * a cut one.
  */
 export function fitStrip(items: readonly StripItem[], width: number): { shown: StripItem[]; more: number } {
-  const room = width - STOP_LABEL.length - 2
-  const used = (count: number) => {
-    const text = items.slice(0, count).map(item => item.text).join(STRIP_SEP)
-    const more = items.length - count
-    return stripCells(text) + (more === 0 ? 0 : ` +${more}`.length)
-  }
-  let count = items.length
-  while (count > 1 && used(count) > room) count -= 1
+  const count = fitCount(items.map(item => item.text), STRIP_SEP, width - STOP_LABEL.length - 2)
   return { shown: items.slice(0, count), more: items.length - count }
+}
+
+/** How many of `texts`, joined by `sep` and followed by ` +N` for the rest, fit in `room` cells; the first always shows. */
+function fitCount(texts: readonly string[], sep: string, room: number): number {
+  const used = (count: number) => {
+    const more = texts.length - count
+    return stripCells(texts.slice(0, count).join(sep)) + (more === 0 ? 0 : ` +${more}`.length)
+  }
+  let count = texts.length
+  while (count > 1 && used(count) > room) count -= 1
+  return count
 }
 
 // --- the kill switch's answer (§5.6) ---
@@ -130,17 +134,27 @@ function restart(stopped: readonly Stopped[]): string {
   return isFollow ? 'Settings are kept; /tg, then a (p for a follow), restarts one.' : 'Settings are kept; /tg, then a, restarts one.'
 }
 
-/** `/tg stop` (and `/tg autopilot off`): what stopped, by name. */
-export function stopAnswer(stopped: readonly Stopped[]): string {
-  if (stopped.length === 0) return 'tg: nothing was running.'
-  return `tg: stopped ${named(stopped)}.\n${restart(stopped)}`
+/**
+ * What the kill switch did: the chats it stopped, read before it stopped them,
+ * and each part that threw on the way (`@example_bot (follow): …`). A part that
+ * failed does not keep the others from stopping.
+ */
+export type StopReport = { stopped: Stopped[]; failed: string[] }
+
+/** `/tg stop` (and `/tg autopilot off`): what stopped, by name, and what failed to. */
+export function stopAnswer(report: StopReport): string {
+  const failed = report.failed.length === 0 ? '' : `\n⚠ not stopped cleanly: ${report.failed.join('; ')}.`
+  if (report.stopped.length === 0) return `tg: nothing was running.${failed}`
+  return `tg: stopped ${named(report.stopped)}.${failed}\n${restart(report.stopped)}`
 }
 
-/** The dock's strip row after `0`: `■ stopped: Dev Team (auto), …. Settings kept; a restarts one.` */
-export function stopNotice(stopped: readonly Stopped[]): string {
-  if (stopped.length === 0) return '■ nothing was running.'
-  const isAgent = stopped.some(one => one.isAgent)
-  return `■ stopped: ${named(stopped)}. ${isAgent ? 'Settings kept; a restarts one.' : 'p follows a chat again.'}`
+/** The dock's strip row after `0`, fitted to `width`: `■ stopped: Dev Team, @example_bot +1`; the toast says the rest. */
+export function stopNotice(names: readonly string[], failed: number, width: number): string {
+  const head = '■ stopped: '
+  const tail = failed === 0 ? '' : ` · ⚠ ${failed} failed`
+  const count = fitCount(names, ', ', width - head.length - tail.length)
+  const more = names.length - count
+  return `${head}${names.slice(0, count).join(', ')}${more === 0 ? '' : ` +${more}`}${tail}`
 }
 
 // --- Activity (§5.7) ---

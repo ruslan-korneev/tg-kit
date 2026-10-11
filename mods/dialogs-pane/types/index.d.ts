@@ -589,8 +589,8 @@ export type GuardArmed = { at: number; taskIds: number[] }
  */
 export type ActivityView = { rows: PeerRef[]; cursor: number }
 
-/** What the kill switch stopped, by name: the dock's strip row says it until `until`. */
-export type StopNotice = { text: string; until: number }
+/** What the kill switch stopped, by name, and how many parts failed: the dock's strip row says it until `until`. */
+export type StopNotice = { names: string[]; failed: number; until: number }
 
 // ── /running ──
 

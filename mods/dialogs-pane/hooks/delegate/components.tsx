@@ -115,11 +115,12 @@ const TONE: Record<CardLine['tone'], { color?: string; dim: boolean }> = {
 }
 
 /**
- * The task card (design §6 mockup) on top of its chat's thread: header, then at
- * most `lines` of steps, the current action, hard stops, the last chat message
- * and how it ended. Text only: it sits above the thread's cursor row, so it
- * carries no ring stop (dialogs-pane-ux.md §4.3 rule 1); `0` stops it, the agent
- * card stops its chat, `d` in Activity dismisses it once it ended.
+ * The task card on top of its chat's thread, drawn as dialogs-pane-ux.md §5.5
+ * has it, without a border: a header, then at most `lines` of steps, the
+ * current action, hard stops, the last chat message and how it ended. Text
+ * only: it sits above the thread's cursor row, so it carries no ring stop
+ * (§4.3 rule 1); `0` stops it, the agent card stops its chat, `d` in Activity
+ * dismisses it once it ended.
  */
 export function TaskCard(els: Els, props: { task: DgTask; view: TaskView; now: number; width: number; lines: number; noStops: string | null }): RenderElement {
   const { Box, Text } = els
@@ -128,9 +129,9 @@ export function TaskCard(els: Els, props: { task: DgTask; view: TaskView; now: n
   const lines = fitLines(cardLines(task, props.view, props.lines), props.lines)
   const isHeld = isLive && holdsOf(task, props.view).length > 0
   return (
-    <Box key={`dg:task:${task.id}`} flexDirection="column" borderStyle="round" borderColor={isHeld ? TOKEN.warn : TOKEN.accent} paddingX={1}>
+    <Box key={`dg:task:${task.id}`} flexDirection="column">
       <Box flexDirection="row" justifyContent="space-between">
-        <Text color={TOKEN.accent} bold wrap="truncate-end">{`⚡ ${task.peer.label} · ${oneLine(task.summary, Math.max(10, props.width - task.peer.label.length - 30))}`}</Text>
+        <Text color={isHeld ? TOKEN.warn : TOKEN.accent} bold wrap="truncate-end">{`⚡ ${task.peer.label} · ${oneLine(task.summary, Math.max(10, props.width - task.peer.label.length - 30))}`}</Text>
         <Box flexDirection="row" gap={2} flexShrink={0}>
           {props.noStops === null ? null : <Text color={TOKEN.danger}>{props.noStops}</Text>}
           <Text dimColor>{elapsedText(task.startedAt, props.now)}</Text>
@@ -145,8 +146,15 @@ export function TaskCard(els: Els, props: { task: DgTask; view: TaskView; now: n
   )
 }
 
-/** Rows a TaskCard of `lines` takes at most: its border, its header, its lines. */
-export const taskCardRows = (lines: number) => 3 + lines
+/** Lines a docked chat's task card gets, from the lower part's height: at most 6, and a third of it with its header. */
+export function chatCardLines(lower: number): number {
+  return Math.min(6, Math.floor(lower / 3) - 1)
+}
+
+/** Rows a chat's task takes: the card's header and its lines, or one TaskRow when fewer than 2 lines fit. */
+export function chatTaskRows(lines: number): number {
+  return lines < 2 ? 1 : 1 + lines
+}
 
 /** At most `max` lines: the oldest steps go first, then the worktrees, then the oldest of the rest. */
 export function fitLines(lines: readonly CardLine[], max: number): CardLine[] {

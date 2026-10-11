@@ -4,6 +4,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { DgGrant, DgTask } from '../../types'
+import { chatCardLines, chatTaskRows } from './components'
 import { DEFAULT_GRANT, checkGrant, checksOf, parseDgDialogs, parseDuration, parseRepos, workerTools, type Scope } from './grant'
 import { LEASE_TTL_MS, holder } from './lease'
 import { readCommand } from './shell'
@@ -259,5 +260,13 @@ describe('the Worker and the Speaker', () => {
     // A stopped task shows no current call and no hold, whatever the guard last wrote.
     expect(cardLines({ ...task, status: 'stopped', reason: 'kill switch' }, view, 4).map(line => line.text).at(-1)).toBe('■ stopped: kill switch')
     expect(cardLines({ ...task, status: 'stopped', reason: 'kill switch' }, view, 4).some(line => line.text.startsWith('⏸'))).toBe(false)
+  })
+})
+
+describe('the task card on top of its chat (dialogs-pane-ux.md §5.5, T4)', () => {
+  test('its lines come from the lower part: a third of it with the header, 6 at most; fewer than 2 make it one line', () => {
+    // A 64×30 dock leaves about 14 rows below the chats; a 180×50 one about 36.
+    expect([8, 9, 14, 16, 21, 36].map(chatCardLines)).toEqual([1, 2, 3, 4, 6, 6])
+    expect([8, 9, 14, 36].map(lower => chatTaskRows(chatCardLines(lower)))).toEqual([1, 3, 4, 7])
   })
 })

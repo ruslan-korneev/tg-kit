@@ -1031,7 +1031,7 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
       // Targets, inspect and the legs take the lower part; the intents leave the chat on screen above them.
       const over = await drawOverlay($, els, width, rows)
       if (over !== null) return [over]
-      const task = await drawChatTask($, els, width, seat) // ── delegate ──
+      const task = await drawChatTask($, els, width, seat, rows) // ── delegate ──
       return [...task.elements, ...(await drawThread($, els, width, Math.max(1, rows - task.rows), 'static'))]
     }
     case 'diff': {
@@ -1043,7 +1043,7 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
       if (!isOpen) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
       const summary = await drawSummary($, els, width)
       // ── delegate ── the chat's task card, on top of its thread; a delegate chat keeps its rows (see drawChatTask).
-      const task = await drawChatTask($, els, width, seat)
+      const task = await drawChatTask($, els, width, seat, rows)
       return [
         ...(summary.element === null ? [] : [summary.element]),
         ...task.elements,
@@ -2880,9 +2880,10 @@ async function apUnlisten($: $, dialogId: number): Promise<void> {
   rt.timer?.cancel()
   rt.abort?.abort()
   if (rt.seq !== null) await apPatch($, rt.seq, { outcome: { kind: 'skipped', reason: 'autopilot stopped' } })
-  await unsubscribeWatch($, dialogId, AP_HUB)
   await dgStopTasksOf($, dialogId, 'autopilot stopped') // ── delegate ──
   await apReleaseLease($, dialogId) // ── delegate ──
+  // Last: ending the watch child is the part that can throw.
+  await unsubscribeWatch($, dialogId, AP_HUB)
 }
 
 async function onApEnd($: $, rt: ApRuntime, reason: string): Promise<void> {
@@ -3419,14 +3420,24 @@ async function apToggleRun($: $, dialog: ApDialog): Promise<void> {
   await refreshStatus($)
 }
 
-/** The autopilot's half of the kill switch (stopEverything): every dialog stops listening, every timer and model call is cut. */
-async function apStopAll($: $): Promise<number> {
-  const running = (await read($, autopilot)).running
-  await Promise.all(running.map(id => apUnlisten($, id)))
-  await dgStopAll($, 'kill switch') // ── delegate ──
+/**
+ * The autopilot's half of the kill switch (stopEverything): the Workers first,
+ * then every dialog stops listening, every timer and model call is cut. Each
+ * part is settled on its own, so one that throws (a watch that will not end)
+ * stops nothing else from stopping; answers what failed.
+ */
+async function apStopAll($: $): Promise<string[]> {
+  const failed: string[] = []
+  failed.push(...(await dgStopAll($, 'kill switch'))) // ── delegate ──
+  const state = await read($, autopilot)
+  const ended = await Promise.allSettled(state.running.map(id => apUnlisten($, id)))
+  ended.forEach((result, index) => {
+    const id = state.running[index] ?? 0
+    if (result.status === 'rejected') failed.push(`${state.dialogs[String(id)]?.peer.label ?? id} (autopilot): ${reasonOf(result.reason)}`)
+  })
   await update($, autopilot, value => ({ ...value, running: [], phase: {} }))
   await refreshStatus($)
-  return running.length
+  return failed
 }
 
 /** `/tg autopilot [off]`; `off` is `/tg stop`'s old name and does the same. */
@@ -3538,7 +3549,7 @@ async function autopilotStatus($: $): Promise<{ line: string | null; tail: strin
 // leases in $.store keep a dialog to one session, at every level.
 import type { ApEntry, DgDialog, DgGrant, DgStop, DgTask, DgWorktree, Delegate, GuardEvent, GuardHold, GuardWork } from '../types'
 import type { Peer } from './packet/types'
-import { DelegateRows, HoldBand, TaskCard, TaskRow, taskCardRows, warningText } from './delegate/components'
+import { DelegateRows, HoldBand, TaskCard, TaskRow, chatCardLines, chatTaskRows, warningText } from './delegate/components'
 import { armedOf, eventsOf, holdsOf as guardHoldsOf, workOf } from './delegate/guard'
 import { CHECK_FILES, DEFAULT_DG_DIALOG, checksOf, nextWeb, parseDgDialogs, parseDuration, parseRepos, workerTools } from './delegate/grant'
 import { HEARTBEAT_MS, holder, leaseKey, leaseOf } from './delegate/lease'
@@ -3569,11 +3580,6 @@ const WORKER_PREFIX = 'dialogs-pane:worker-'
 /** The dialog lists No first, so a stray Enter is a no (seen live: an Enter meant for the prompt took the first option). */
 const ASK_YES = 'Yes, allow it'
 const ASK_NO = 'No'
-/**
- * Lines of a task card on top of its chat's thread in the dock (the oldest steps
- * give way first); a finished card stays until `d` in Activity.
- */
-const CARD_LINES = 6
 /** The guard heartbeats every 10 s; three missed and it counts as gone. */
 const GUARD_TTL_MS = 30_000
 const GUARD = 'dialogs-pane-guard'
@@ -4133,11 +4139,11 @@ async function dgStopTasksOf($: $, dialogId: number, reason: string): Promise<vo
   }
 }
 
-/** The kill switch's half: every Worker. */
-async function dgStopAll($: $, reason: string): Promise<void> {
-  for (const task of (await read($, delegate)).tasks) {
-    if (isLive(task)) await dgStopTask($, task.id, reason)
-  }
+/** The kill switch's half: every Worker, each settled on its own; answers the ones that failed. */
+async function dgStopAll($: $, reason: string): Promise<string[]> {
+  const live = (await read($, delegate)).tasks.filter(isLive)
+  const ended = await Promise.allSettled(live.map(task => dgStopTask($, task.id, reason)))
+  return ended.flatMap((result, index) => (result.status === 'rejected' ? [`${live[index]?.peer.label ?? '?'} (its Worker): ${reasonOf(result.reason)}`] : []))
 }
 
 // --- the guard: grant, hard stops, steps ---
@@ -4331,22 +4337,25 @@ async function drawHoldBand($: $, els: Els, width: number): Promise<RenderElemen
 }
 
 /**
- * The open chat's task, on top of its thread: the card docked, one line inline.
- * A delegate chat keeps the card's rows whether a task runs or not, so a task
- * that starts while the cursor is in the thread does not shrink the thread's
- * window, which would move rows above the cursor (§4.3 rule 1). Text only.
+ * The open chat's task, on top of its thread: docked, the card with lines from
+ * the lower part's height (`lower`, fixed for the view), or one line when the
+ * card would get fewer than two; inline, one line. A delegate chat keeps those
+ * rows whether a task runs or not, so a task that starts while the cursor is in
+ * the thread does not shrink the thread's window, which would move rows above
+ * the cursor (§4.3 rule 1). Text only; a finished card stays until `d` in Activity.
  */
-async function drawChatTask($: $, els: Els, width: number, seat: Seat): Promise<{ elements: RenderElement[]; rows: number }> {
+async function drawChatTask($: $, els: Els, width: number, seat: Seat, lower: number): Promise<{ elements: RenderElement[]; rows: number }> {
   const open = await read($, thread)
   if (open === null || (await apDialog($, open.peer.id))?.level !== 'delegate') return { elements: [], rows: 0 }
-  const rows = seat === 'dock' ? taskCardRows(CARD_LINES) : 1
+  const lines = seat === 'dock' ? chatCardLines(lower) : 0
+  const rows = chatTaskRows(lines)
   const tasks = (await read($, delegate)).tasks.filter(task => task.peer.id === open.peer.id)
   const task = tasks.findLast(isLive) ?? tasks.at(-1)
   if (task === undefined) return { elements: [], rows }
   const guard = await dgGuardView($)
   const noStops = (await dgNoStopsOf($))(task.peer.id)
   const view = viewOf(task, guard)
-  const element = seat === 'dock' ? TaskCard(els, { task, view, now: await $.clock.now(), width, lines: CARD_LINES, noStops }) : TaskRow(els, { task, view, noStops })
+  const element = rows > 1 ? TaskCard(els, { task, view, now: await $.clock.now(), width, lines, noStops }) : TaskRow(els, { task, view, noStops })
   return { elements: [element], rows }
 }
 
@@ -4399,7 +4408,7 @@ import {
   stripItems,
   type RunInput,
   type RunRow,
-  type Stopped,
+  type StopReport,
 } from './ui/running'
 
 const activity = atom({ plugin: 'dialogs-pane', key: 'activity' } as const, null)
@@ -4425,18 +4434,23 @@ async function runRowsNow($: $): Promise<RunRow[]> {
 }
 
 /**
- * The kill switch (§5.6): every follow, autopilot and Worker (TaskStop) stops;
- * the settings stay, so the card restarts one. What stopped is read first, so
- * the answer names it.
+ * The kill switch (§5.6): every Worker (TaskStop) and autopilot, then every
+ * follow; the settings stay, so the card restarts one. What stopped is read
+ * first, so the answer names it. Each part is settled on its own: one that
+ * throws is named in the answer and stops nothing else from stopping.
  */
-async function stopEverything($: $): Promise<Stopped[]> {
-  const report = stoppedOf(await runRowsNow($))
-  for (const pin of await read($, pins)) await unpin($, pin.peer.id)
-  await apStopAll($)
-  if (report.length > 0) {
+async function stopEverything($: $): Promise<StopReport> {
+  const stopped = stoppedOf(await runRowsNow($))
+  const failed = await apStopAll($)
+  const follows = await read($, pins)
+  const unpinned = await Promise.allSettled(follows.map(pin => unpin($, pin.peer.id)))
+  unpinned.forEach((result, index) => {
+    if (result.status === 'rejected') failed.push(`${follows[index]?.peer.label ?? '?'} (follow): ${reasonOf(result.reason)}`)
+  })
+  if (stopped.length > 0 || failed.length > 0) {
     const at = await $.clock.now()
     stopTimer?.cancel()
-    await update($, lastStop, () => ({ text: stopNotice(report), until: at + STOP_NOTICE_MS }))
+    await update($, lastStop, () => ({ names: stopped.map(one => one.label), failed: failed.length, until: at + STOP_NOTICE_MS }))
     stopTimer = $.clock.after(STOP_NOTICE_MS, () => {
       stopTimer = null
       update($, lastStop, () => null).catch(() => {
@@ -4445,7 +4459,7 @@ async function stopEverything($: $): Promise<Stopped[]> {
     })
   }
   await refreshStatus($)
-  return report
+  return { stopped, failed }
 }
 
 /** The dock's strip: what runs, `0: stop all` beside it; after `0`, what stopped. Null: nothing to say. */
@@ -4454,7 +4468,7 @@ async function drawRunningStrip($: $, els: Els, width: number): Promise<RenderEl
   if (items.length > 0) return RunningStrip(els, { ...fitStrip(items, width), notice: null })
   const notice = await read($, lastStop)
   if (notice === null || notice.until <= (await $.clock.now())) return null
-  return RunningStrip(els, { shown: [], more: 0, notice: notice.text })
+  return RunningStrip(els, { shown: [], more: 0, notice: stopNotice(notice.names, notice.failed, width) })
 }
 
 // --- Activity ---

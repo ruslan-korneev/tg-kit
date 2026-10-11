@@ -539,7 +539,7 @@ describe('the running strip comes and goes over the same ring stops (§4.3 rule 
     expect(await place(ui)).toEqual(base)
     await ui.press({ key: 'key:follow' })
     await $.command.run(runTg('stop'))
-    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: @example_bot (follow). p follows a chat again.')
+    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: @example_bot')
     expect(await place(ui)).toEqual(base)
     await ui.unmount()
   })
