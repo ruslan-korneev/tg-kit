@@ -217,7 +217,8 @@ tg raw METHOD [PARAMS_JSON|-]
 
 Global options work before or after the command: `--account/-a NAME`, `--json`,
 `--timeout SECONDS` (default 30, plus any `--wait`, plus `flood_sleep_threshold` so that an
-allowed flood-wait sleep is never cut short), `-v` (debug logs and tracebacks).
+allowed flood-wait sleep is never cut short), `-v` (debug logs and tracebacks). `--color
+auto|always|never` goes before the command only (`tg --color never read …`); see Colour.
 
 For multi-line text, use `-` with stdin instead of shell escaping:
 
@@ -270,6 +271,17 @@ JSON is the last edit time, and `edits` counts only the edits seen during a `--w
 
 Listings cut text at 300 characters and append `… (+N chars, tg msg PEER ID)`. `--full` and
 `tg msg` never cut. Each call prints at most 200 messages.
+
+### Colour
+
+On a terminal the text output has colour; it is presentation only. Ids, times and markers are
+dim, `[topic:N]` and `me` are mauve, bots pink, other senders a colour by id (like Telegram's name
+colours), media tags are teal, unread counts red and mentions peach, `error:` red, `fix:` green.
+Stripping the colour gives the exact plain line, and the plain line is what a pipe, a file,
+`--json` and `--jsonl` always get. Colour is on when the stream (stdout or stderr, each on its
+own) is a terminal, `NO_COLOR` is unset and `TERM` is not `dumb`. `FORCE_COLOR=1` turns it on
+anyway, and `--color never|always` or `TG_COLOR=never|always` overrides all of these.
+`COLORTERM=truecolor` gives the Catppuccin Mocha colours; otherwise it uses the 16 ANSI colours.
 
 ### JSON (`--json`)
 

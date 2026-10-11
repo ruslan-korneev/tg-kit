@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
+import os
 import re
 import signal
 import sys
@@ -29,6 +31,7 @@ from tg_kit.allowlist import Allowlist, load_allowlist
 from tg_kit.config import Config, config_dir, load_config
 from tg_kit.errors import EXIT_UNEXPECTED, TgError
 from tg_kit.session import SessionStore
+from tg_kit.style import PLAIN, ColorMode, Role, Style, choose_style, color_mode
 
 if TYPE_CHECKING:
     from tg_kit.client import Connected
@@ -132,12 +135,31 @@ TopicOpt = Annotated[
 ]
 
 
+ColorOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--color",
+        help="Colour the text output: auto (a terminal, NO_COLOR unset), always, never. "
+        "Also TG_COLOR. --json never has colour.",
+        show_default=False,
+        metavar="auto|always|never",
+    ),
+]
+
+
 @dataclass(frozen=True)
 class Globals:
     account: str | None = None
     json: bool = False
     timeout: float = DEFAULT_TIMEOUT
     verbose: bool = False
+    color: ColorMode = "auto"
+
+
+# `--color` for stderr, set by the global options. `note` is called from
+# everywhere (and before any command runs), so it reads this rather than a
+# Runtime. Empty: no `--color` given, so TG_COLOR or auto.
+_color_flag: list[ColorMode] = []
 
 
 @app.callback()
@@ -147,9 +169,16 @@ def _global_options(
     json_out: JsonOpt = False,
     timeout: TimeoutOpt = None,
     verbose: VerboseOpt = False,
+    color: ColorOpt = None,
 ) -> None:
+    mode = color_mode(color, os.environ)
+    _color_flag[:] = [mode] if color is not None else []
     ctx.obj = Globals(
-        account=account, json=json_out, timeout=timeout or DEFAULT_TIMEOUT, verbose=verbose
+        account=account,
+        json=json_out,
+        timeout=timeout or DEFAULT_TIMEOUT,
+        verbose=verbose,
+        color=mode,
     )
 
 
@@ -163,6 +192,7 @@ def globals_from(
         json=json_out or base.json,
         timeout=timeout or base.timeout,
         verbose=verbose or base.verbose,
+        color=base.color,
     )
 
 
@@ -183,6 +213,13 @@ class Runtime:
     @property
     def json(self) -> bool:
         return self.globals.json
+
+    @functools.cached_property
+    def style(self) -> Style:
+        """stdout's style: colour only on a terminal, never with --json/--jsonl."""
+        if self.json:
+            return PLAIN
+        return choose_style(self.globals.color, isatty=sys.stdout.isatty(), env=os.environ)
 
     def creds(self) -> AppCredentials:
         if self._creds is None:
@@ -208,12 +245,45 @@ class Runtime:
             yield conn
 
 
-def out(line: str = "") -> None:
-    typer.echo(line)
+def out(line: str = "", *, color: bool = False) -> None:
+    """One stdout line. `color`: the line is styled on purpose; keep its codes in a pipe too."""
+    typer.echo(line, color=color or None)
 
 
-def note(line: str) -> None:
-    typer.echo(line, err=True)
+def note(line: str, role: Role | None = None) -> None:
+    """One stderr line. `role` colours all of it; else a known prefix is coloured."""
+    st = _err_style()
+    if role is not None:
+        line = st(role, line)
+    elif st.on:
+        line = _paint_prefix(line, st)
+    typer.echo(line, err=True, color=st.on or None)
+
+
+# stderr line prefixes and their colour: the error/fix pair, notes and warnings.
+_PREFIXES: tuple[tuple[str, Role, bool], ...] = (
+    ("error:", "unread", True),
+    ("  fix:", "ok", False),
+    ("note:", "held", False),
+    ("warning:", "held", False),
+)
+
+
+def _paint_prefix(line: str, st: Style) -> str:
+    for prefix, role, bold in _PREFIXES:
+        if line.startswith(prefix):
+            return st(role, prefix, bold=bold) + line[len(prefix) :]
+    return line
+
+
+def _err_style() -> Style:
+    """stderr's style, decided by stderr's own isatty; a bad TG_COLOR → plain."""
+    env = os.environ
+    try:
+        mode = _color_flag[0] if _color_flag else color_mode(None, env)
+    except TgError:
+        return PLAIN  # the global options report it as a usage error
+    return choose_style(mode, isatty=sys.stderr.isatty(), env=env)
 
 
 def emit_json(document: object) -> None:

@@ -198,10 +198,13 @@ def whoami(
                 }
             )
         else:
+            st = rt.style
             handle = f"@{meta.username}" if meta.username else "(no username)"
             out(
-                f"{handle}  {meta.name}  id {meta.user_id}  account {conn.account}"
-                f"{'  premium' if me.premium else ''}"
+                f"{st('accent', handle)}  {st('text', meta.name, bold=True)}  "
+                f"{st('dim', 'id')} {meta.user_id}  {st('dim', 'account')} {conn.account}"
+                f"{'  premium' if me.premium else ''}",
+                color=st.on,
             )
         return 0
 

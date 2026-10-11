@@ -35,6 +35,7 @@ from tg_kit.model import GENERAL_TOPIC, MessageEvent, WatchEvent
 from tg_kit.parsing import parse_duration, parse_since
 from tg_kit.peers import Peer
 from tg_kit.render import event_json, event_lines, ready_json
+from tg_kit.style import PLAIN
 from tg_kit.watch import EVENT_KINDS, Follower, TelethonWatchSource, follow, parse_events
 
 __all__ = ["register"]
@@ -272,6 +273,7 @@ class _Printer:
     def __init__(self, rt: Runtime, *, jsonl: bool, chat_ids: dict[int, Peer]) -> None:
         self._now = rt.now
         self._jsonl = jsonl
+        self._style = PLAIN if jsonl else rt.style
         self._chat_ids = chat_ids
         # Compact lines name the chat only when several chats share the stream.
         multi = len(chat_ids) > 1
@@ -279,7 +281,8 @@ class _Printer:
 
     def ready(self) -> None:
         if not self._jsonl:
-            _write("ready: watching " + ", ".join(t.label() for t in self._chat_ids.values()))
+            labels = ", ".join(t.label() for t in self._chat_ids.values())
+            _write(self._style("ok", "ready:") + " watching " + labels)
             return
         peers: list[dict[str, object]] = [
             {"chat_id": cid, "kind": t.kind, "username": t.username, "title": t.title}
@@ -293,7 +296,7 @@ class _Printer:
             return
         chat_id = event.view.chat_id if isinstance(event, MessageEvent) else event.chat_id
         chat = self._labels.get(chat_id) if chat_id is not None else None
-        for line in event_lines(event, now=self._now, chat=chat):
+        for line in event_lines(event, now=self._now, chat=chat, style=self._style):
             _write(line)
 
 
