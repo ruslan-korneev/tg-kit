@@ -33,7 +33,8 @@ export const CLASS_LABEL: Record<SenderClass, string> = { bot: 'bots', person: '
 export function senderClass(message: Pick<TgMessage, 'out' | 'sender'>, chat: ChatKind): SenderClass {
   if (message.out || message.sender.kind === 'self') return 'other'
   if (message.sender.kind === 'bot') return 'bot'
-  if (message.sender.kind === 'user') return CHAT_KIND_WRITE.includes(chat) ? 'person' : 'other'
+  // Saved Messages can be written to, but nobody reads a reply there (§4.6: no Draft reply in Saved).
+  if (message.sender.kind === 'user') return chat !== 'saved' && CHAT_KIND_WRITE.includes(chat) ? 'person' : 'other'
   return 'other'
 }
 

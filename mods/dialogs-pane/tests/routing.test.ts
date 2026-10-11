@@ -211,7 +211,7 @@ describe('the send sheet: send to main', () => {
     await ui.press({ key: 'key:send' })
     // The sheet takes the bar's place under the chat: the thread stays, its cursor ▸ too.
     expect(await ui.find({ key: 'bar' })).toBeUndefined()
-    expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('Something went wrong')
+    expect((await ui.find({ key: 'card:677791' }))?.text).toContain('Something went wrong')
     expect((await ui.find({ key: 'sheet' }))?.text).toContain('send #677791 + 1 parent')
     expect((await ui.find({ key: 'sheet' }))?.text).toContain('→ main · idle')
     expect(await sheetIntents(ui)).toEqual(['1: fix', '2: reproduce', '3: explain', '4: test', '5: raw'])
@@ -491,6 +491,23 @@ describe('the send sheet: another agent', () => {
 })
 
 describe('the send sheet: inspect, marks', () => {
+  test('redaction off in inspect holds for every leg of ⇉ several agents', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const ui = await openAndSelect($, clock)
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'key:inspect' })
+    await ui.press({ key: 'sheet:redact' })
+    await ui.press({ key: 'key:back' })
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'route:broadcast' })
+    await ui.press({ key: 'leg:1:on' })
+    await ui.press({ key: 'broadcast:done' })
+    expect(seen.prompts[0]).toContain('redacted="false"')
+    expect(seen.spawned[0]).toContain('redacted="false"')
+    await ui.unmount()
+  })
+
   test('i shows what the agent reads: facts, the masks; ⏎ turns redaction off for this packet only', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
@@ -547,6 +564,46 @@ describe('the send sheet: inspect, marks', () => {
     await ui.press({ key: 'key:down' })
     expect((await ui.find({ key: 'msg:677791' }))?.text.startsWith(' ▪')).toBe(true)
     expect((await ui.find({ key: 'msg:677792' }))?.text.startsWith('▸ ')).toBe(true)
+    await ui.unmount()
+  })
+})
+
+describe('the send sheet keeps the ring on ▸ (the engine keeps it by place among the stops)', () => {
+  const stops = async (ui: Ui) =>
+    (await ui.findAll({ type: 'Button' })).flatMap(button => {
+      const key = String(button.props.key ?? '')
+      return key.startsWith('msg:') || key.startsWith('btn:') ? [key] : []
+    })
+
+  test('under the intents and the Ask field the chat is drawn without stops, ▸ kept; h or a send brings the cursor row back ringed', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1001, 677791)
+    expect(await stops(ui)).toContain('btn:677791:0:0')
+    await ui.press({ key: 'key:send' })
+    expect(await stops(ui)).toEqual([])
+    expect((await ui.find({ key: 'row:677791' }))?.text.startsWith('▸')).toBe(true)
+    expect((await ui.find({ key: 'card:677791' }))?.text).toContain('[ Retry ]')
+    await ui.press({ key: 'sheet:intent:raw' })
+    expect(await stops(ui)).toEqual([])
+    await ui.input({ key: 'sheet:ask', text: '' })
+    await ui.press({ key: 'key:back' })
+    expect((await ui.find({ key: 'msg:677791' }))?.props.autoFocus).toBe(true)
+    expect(await stops(ui)).toContain('btn:677791:0:0')
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'sheet:intent:fix' })
+    expect((await ui.find({ key: 'msg:677791' }))?.props.autoFocus).toBe(true)
+    await ui.unmount()
+  })
+
+  test('targets and inspect take the lower part; back on the intents the chat has no stops again', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    const ui = await openChatAt($, clock, 1001, 677791)
+    await ui.press({ key: 'key:send' })
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'key:back' })
+    expect(await stops(ui)).toEqual([])
     await ui.unmount()
   })
 })

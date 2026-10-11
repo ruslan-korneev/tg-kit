@@ -37,8 +37,8 @@ describe('intents follow the sender (§4.6)', () => {
     for (const chat of CHAT_KINDS) expect(senderClass(REPLY, chat)).toBe('bot')
   })
 
-  test('a person gets Draft reply only where the owner can write', () => {
-    const writable: Record<ChatKind, boolean> = { bot: true, person: true, group: true, saved: true, channel: false, botfather: false }
+  test('a person gets Draft reply only where the owner can write and someone reads it: not in Saved', () => {
+    const writable: Record<ChatKind, boolean> = { bot: true, person: true, group: true, saved: false, channel: false, botfather: false }
     for (const chat of CHAT_KINDS) expect(senderClass(person(), chat)).toBe(writable[chat] ? 'person' : 'other')
   })
 

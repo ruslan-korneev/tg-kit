@@ -439,6 +439,49 @@ describe('long lists scroll at the edges (the ring keeps its place among the But
   }
 })
 
+describe('a layer opening or closing keeps the ring stops above the chat (the ring keeps its place)', () => {
+  /** Ring stops (Buttons, Inputs, Selects) drawn above the dock's divider, in document order. */
+  async function stopsAbove(ui: Ui): Promise<number> {
+    let count = 0
+    let isDone = false
+    const walk = (node: unknown) => {
+      if (isDone || typeof node !== 'object' || node === null) return
+      const { type, children } = node as { type?: unknown; children?: unknown }
+      if (type === 'Text' && Array.isArray(children) && typeof children[0] === 'string' && children[0].startsWith('─ ')) {
+        isDone = true
+        return
+      }
+      if (type === 'Button' || type === 'Input' || type === 'Select') count += 1
+      if (Array.isArray(children)) for (const child of children) walk(child)
+    }
+    walk(await ui.drawn())
+    return count
+  }
+
+  // More chats than the list's window, so a list sized by what the sheet leaves would lose rows.
+  const many = (argv: readonly string[]) =>
+    argv[1] === 'dialogs' ? json([...KINDS, ...Array.from({ length: 54 }, (_, index) => ({ ...KINDS[3], id: 3000 + index, title: `Contact ${index + 10}` }))]) : happy(argv)
+
+  test('the sheet and each of its steps, and the card, open and close over the same stops', async ($, on) => {
+    const { ui } = await openPane($, on, DOCK, many)
+    // The search field is up (it sits on top), so the rows on top count as well as the strip.
+    await ui.press({ key: 'key:search' })
+    await openChat(ui, 1001)
+    const base = await stopsAbove(ui)
+    expect(await ui.find({ key: 'search' })).toBeDefined()
+    for (const steps of [['msg:677792'], ['msg:677792', 'key:agent'], ['msg:677792', 'key:inspect'], ['msg:677792', 'sheet:intent:raw'], ['key:agent']]) {
+      for (const key of steps) await ui.press({ key })
+      expect(await stopsAbove(ui)).toBe(base)
+      while ((await ui.find({ key: 'sheet' })) !== undefined || (await ui.find({ key: 'targets' })) !== undefined || (await ui.find({ key: 'inspect' })) !== undefined || (await ui.find({ key: 'ap:card' })) !== undefined) {
+        if ((await ui.find({ key: 'sheet:ask' })) !== undefined) await ui.input({ key: 'sheet:ask', text: '' })
+        else await ui.press({ key: 'key:back' })
+      }
+      expect(await stopsAbove(ui)).toBe(base)
+    }
+    await ui.unmount()
+  })
+})
+
 describe('states', () => {
   test('not logged in tells the person to run ! tg login', async ($, on) => {
     const { ui } = await openPane($, on, DOCK, () => failure(3, 'error: not logged in\n  fix: tg login'))

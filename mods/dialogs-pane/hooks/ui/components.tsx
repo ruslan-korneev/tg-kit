@@ -103,8 +103,12 @@ export function MessageCard(
   props: {
     message: TgMessage
     isCursor: boolean
-    /** The cursor row takes the ring; false while the send sheet holds it (the ▸ still shows). */
-    isRinged?: boolean
+    /**
+     * Drawn without ring stops (plain Text, chips as text) while the send sheet
+     * holds the keys: the engine keeps the ring by its place among the stops, so
+     * rows coming back under a closing sheet would leave it above ▸. The ▸ shows.
+     */
+    isStatic?: boolean
     isSelected: boolean
     isAnchor: boolean
     width: number
@@ -126,17 +130,28 @@ export function MessageCard(
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
   // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.
   const mark = props.isSelected ? GLYPH.marked : props.isAnchor ? 'v' : ' '
+  const cells = [
+    <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
+    <Text dimColor> {shortTime(message.date, props.now).padEnd(9)} </Text>,
+    <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{pad(sender, 6)}</Text>,
+    <Text color={color}>{pad(oneLine(body, textWidth), textWidth)}</Text>,
+    stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>,
+    <Text dimColor> {id}</Text>,
+  ]
+  if (props.isStatic === true) {
+    return (
+      <Box key={`card:${message.id}`} flexDirection="column">
+        <Box key={`row:${message.id}`} flexDirection="row">
+          {...cells}
+        </Box>
+        {message.buttons.length > 0 ? ButtonRow(els, { message, isDim: true }) : null}
+      </Box>
+    )
+  }
   return (
     <Box key={`card:${message.id}`} flexDirection="column">
-      <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor && props.isRinged !== false ? true : undefined} onPress={props.onPress}>
-        <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>
-        <Text dimColor> {shortTime(message.date, props.now).padEnd(9)} </Text>
-        <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{pad(sender, 6)}</Text>
-        <Text color={color}>
-          {pad(oneLine(body, textWidth), textWidth)}
-        </Text>
-        {stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>}
-        <Text dimColor> {id}</Text>
+      <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onPress}>
+        {...cells}
       </Button>
       {props.buttonRow !== undefined ? props.buttonRow : message.buttons.length > 0 ? ButtonRow(els, { message, isDim: false }) : null}
     </Box>

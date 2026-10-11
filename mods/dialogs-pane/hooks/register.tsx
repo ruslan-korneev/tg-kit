@@ -808,8 +808,8 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const search = seat === 'inline' ? 'none' : isBase ? 'key' : 'click'
   const strip = isMenu || where === 'editor' || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search })
   const none = { elements: [], rows: 0 }
-  // What runs on top stays over the sheet too: it sits above the cursor row, which keeps its ring (see search).
-  const top = isMenu || !(isBase || where === 'sheet') ? none : await drawTop($, els, seat, width)
+  // What runs on top stays over every layer: it sits above the cursor row, which keeps its ring (see search).
+  const top = isMenu || where === 'editor' ? none : await drawTop($, els, seat, width)
   const temps = isMenu || !isBase ? none : await drawTemps($, els, where, width)
   // The send sheet's intents and Ask field take the bar's place (§5.1): four rows docked, two inline.
   const shown = await read($, overlay)
@@ -821,7 +821,7 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const slot = isMenu
     ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
     : seat === 'dock'
-      ? await drawDock($, els, where, width, room)
+      ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - top.rows))
       : await drawInline($, els, where, width, room)
   const drawn = new Set(sheetBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
   if (strip !== null && search === 'key') drawn.add('s')
@@ -987,11 +987,16 @@ async function drawTemps($: $, els: Els, where: Where, width: number): Promise<{
   return { elements, rows }
 }
 
-/** Dock: Chats on top, the open chat or a layer below. */
-async function drawDock($: $, els: Els, where: Where, width: number, room: number): Promise<RenderElement[]> {
+/**
+ * Dock: Chats on top, the open chat or a layer below. The list's height comes
+ * from `listRoom`, the room without the rows that come and go (the sheet, the
+ * temporary rows): the engine keeps the ring by its place among the Buttons,
+ * so the chats above must not change in number when a layer opens or closes.
+ */
+async function drawDock($: $, els: Els, where: Where, width: number, room: number, listRoom: number): Promise<RenderElement[]> {
   const open = await read($, thread)
   const listLength = (await shownDialogs($)).length
-  const listRows = Math.min(Math.max(1, listLength), Math.max(3, Math.floor(room * 0.4)))
+  const listRows = Math.min(Math.max(1, listLength), Math.max(3, Math.floor(listRoom * 0.4)))
   const list = where === 'editor' ? [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one])) : await drawDialogList($, els, width, listRows, where === 'chats')
   if (where === 'editor') return list
   const lower = Math.max(1, room - listRows - 1)
@@ -1020,7 +1025,7 @@ async function drawLower($: $, els: Els, where: Where, width: number, rows: numb
       // Targets, inspect and the legs take the lower part; the intents leave the chat on screen above them.
       const over = await drawOverlay($, els, width, rows)
       if (over !== null) return [over]
-      return drawThread($, els, width, rows, false, true)
+      return drawThread($, els, width, rows, 'static')
     }
     case 'diff': {
       const diff = await drawBottestDiff($, els, width, rows)
@@ -1030,7 +1035,7 @@ async function drawLower($: $, els: Els, where: Where, width: number, rows: numb
     case 'chat': {
       if (!isOpen) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
       const summary = await drawSummary($, els, width)
-      return [...(summary.element === null ? [] : [summary.element]), ...(await drawThread($, els, width, Math.max(1, rows - summary.rows), where === 'chat'))]
+      return [...(summary.element === null ? [] : [summary.element]), ...(await drawThread($, els, width, Math.max(1, rows - summary.rows), where === 'chat' ? 'active' : 'idle'))]
     }
     case 'editor':
     case 'menu':
@@ -1085,8 +1090,11 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, isAct
   )
 }
 
-/** `isActive`: the cursor's column, ringed; the sheet draws the cursor (`isCursorShown`) but keeps the ring. */
-async function drawThread($: $, els: Els, width: number, rows: number, isActive: boolean, isCursorShown = isActive): Promise<RenderElement[]> {
+/**
+ * `active`: the cursor's column, its row ringed. `idle`: Chats hold the cursor.
+ * `static`: under the send sheet's intents, ▸ shown and no ring stops at all.
+ */
+async function drawThread($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static'): Promise<RenderElement[]> {
   const { Text } = els
   const open = await read($, thread)
   if (open === null) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
@@ -1108,8 +1116,8 @@ async function drawThread($: $, els: Els, width: number, rows: number, isActive:
     MessageCard(els, {
       ...bt(els, message),
       message,
-      isCursor: isCursorShown && shown.start + index === cursor,
-      isRinged: isActive,
+      isCursor: mode !== 'idle' && shown.start + index === cursor,
+      isStatic: mode === 'static',
       isSelected: chosen.ids.includes(message.id),
       isAnchor: chosen.anchor === message.id,
       width,
