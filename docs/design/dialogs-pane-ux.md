@@ -2655,8 +2655,17 @@ the same lower part as a card titled after them:
 - its targets: `SEND TO · …`;
 - the rest: `INSPECT · …`, `DIFF · …`, `SUMMARY · …`, `ACTIVITY`, `MENU`.
 
-Inline, the one card carries the same titles, and Chats is `CHATS` with its tabs. Activity is the AUTOPILOT and LOG cards at full height, with the
-running rows as Buttons, as built.
+Activity is the AUTOPILOT and LOG cards at full height, with the running rows as Buttons, as
+built. Inline, the one card carries the same titles, and Chats is `CHATS` with its tabs.
+
+The folded layout follows the cursor, not the thread. While ▸ is in the chat or in a layer over
+it (the agent card, the send sheet, diff, summary, Activity, the send box), CHATS keeps 3 rows and
+the CHAT card or the layer's card takes the lower part. `h` back to Chats brings the home layout
+back (FOR YOU, CHATS, AUTOPILOT, LOG). The thread stays loaded and its row keeps `›`, so ⏎ brings
+the card straight back. v1 kept the thread below while ▸ was in Chats, and no key closed it; with
+folding, the sections would never have come back. `h` already starts a layout generation, so no
+stop moves while the cursor stays. While ▸ is in Chats the chat is not on screen, so the band
+shows its drafts again (§4.4).
 
 **Inline** (the main screen, up to 12 rows): the header, the view's one card, and the key line.
 There is no legend row; the notice row stays as §7.3 has it. FOR YOU, AUTOPILOT and LOG never draw
