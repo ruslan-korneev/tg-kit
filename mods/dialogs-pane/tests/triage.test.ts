@@ -6,6 +6,7 @@ import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, Ren
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { DIALOGS, MESSAGES, chatIds, chatKey, findChat, folderRun } from './fixtures'
+import { FOOTER, HINT, bandKeyProblems, engineSites, siteText } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -55,6 +56,7 @@ function world(
   options: { store?: Record<string, unknown>; model?: (e: ModelCompleteInput) => ModelCompleteResult; dialogs?: unknown } = {},
 ): World {
   const seen: World = { status: [], toasts: [], store: new Map(Object.entries(options.store ?? {})), children: [], asked: [], runs: [] }
+  engineSites(on)
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
@@ -164,17 +166,21 @@ describe('watched bots in Hidden mode', () => {
     child?.line(event('message', { id: 677793, date: '2026-10-10T11:59:00Z', text: 'old news' }))
     child?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
     await clock.settle()
-    expect(seen.status.at(-1)).toBe('tg ● 8 unread')
+    // The footer counts unread chats (the bot's and Dev Team's), and the watched chat's new messages (§4.5).
+    expect(await siteText($, FOOTER)).toBe('focus & tg 2 · ◎ 3 new')
+    expect(await siteText($, HINT)).toBe('? for shortcuts')
 
     child?.line(event('message', { id: 677794, date: '2026-10-10T12:00:01Z', out: true, text: '/settings' }))
     child?.line(event('message', { id: 677795, date: '2026-10-10T12:00:03Z', text: '⚠ Something went wrong', reply_to: 677794 }))
     await clock.settle()
-    // Your /settings marks the chat read; the reply makes it 1 unread, plus Dev Team's 5.
-    expect(seen.status.at(-1)).toBe('tg ● 6 unread · ◆ example_bot replied 2.0s')
+    // Your /settings marks the chat read; the reply makes it 1 unread. No alarm: the status line stays clear.
+    expect(seen.status.at(-1)).toBeUndefined()
+    expect(await siteText($, FOOTER)).toBe('focus & tg 2 · ◎ 1 new')
+    expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 1 waiting · ctrl+x tab')
 
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect(await band.find({ type: 'Text', text: '@example_bot: "⚠ Something went wrong"' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '⏱2.0s' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '◆ @example_bot replied ⏱2.0s: "⚠ Something went wrong"' })).toBeDefined()
+    expect(await bandKeyProblems(band)).toEqual([])
     // Routing's ⏎ sends the watched reply itself, by its own id, even after the dialog moved on.
     child?.line(event('message', { id: 677796, date: '2026-10-10T12:00:09Z', out: true, text: 'thanks' }))
     await clock.settle()

@@ -12,6 +12,7 @@ import { describe, expect, mock, test, type Engine, type MockClock, type Plugin 
 
 import type { TgMessage } from '../types'
 import { DIALOGS, chatKey, findChat, folderRun } from './fixtures'
+import { bandKeyProblems } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -95,6 +96,8 @@ type World = {
   stopped: string[]
   /** What the kill switch ended, in the order the hooks saw it: TaskStop, a lease's delete, a watch's end. */
   ended: string[]
+  /** Native notifications raised (`$.ui.notify`): a hard stop reaches an owner in another window (§5.5). */
+  notified: string[]
 }
 
 const START_TASK = { action: 'start_task', text: 'on it', task: 'add a /health endpoint', confidence: 0.95, topics: [], reason: 'work request' }
@@ -132,6 +135,7 @@ function world(
     ran: [],
     stopped: [],
     ended: [],
+    notified: [],
   }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -253,6 +257,10 @@ function world(
   on('ui.toast', (_$, e) => {
     seen.toasts.push(e.text)
     return { value: undefined }
+  })
+  on('ui.notify', (_$, e) => {
+    seen.notified.push(e.text)
+    return { value: { isSent: true, channel: 'terminal_bell' } as const }
   })
   return seen
 }
@@ -456,7 +464,8 @@ describe('a task', () => {
     expect(await ui.find({ key: 'dg:task:1' })).toBeUndefined()
     await ui.press({ key: await chatKey(ui, 1002) })
     expect(await ui.find({ type: 'Text', text: '✓ worktree app-task-1 · branch tg/add-a-health-endpoint-1' })).toBeDefined()
-    expect(seen.status.at(-1)).toContain('⚡ 1 task')
+    // What runs is the footer's (⚡1), never the status line's: it holds alarms only (§4.1).
+    expect(seen.status.at(-1)).toBeUndefined()
     await ui.unmount()
   })
 
@@ -473,8 +482,16 @@ describe('a task', () => {
     expect(await ui.find({ type: 'Text', text: '… ran uv run pytest' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '⏸ HARD STOP publish: git push origin tg/x? (answer in the dialog)' })).toBeDefined()
     expect(seen.status.at(-1)).toBe('tg ⏸ HARD STOP publish: git push origin tg/x · ⚡ Dev Team · answer in the dialog')
+    // One native notification as it starts waiting, for an owner in another window; not again on the next write.
+    expect(seen.notified).toEqual(['HARD STOP publish: git push origin tg/x (Dev Team). Answer in Claude Code.'])
+    await report($, 'work', [{ taskId: 1, steps: [], current: 'still waiting' }])
+    await clock.settle()
+    expect(seen.notified).toHaveLength(1)
+    // The band mirrors it first, two rows: what waits, then whose and where to answer.
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect((await band.find({ type: 'Text', text: /⏸ HARD STOP/ }))?.text).toBe('⏸ HARD STOP publish: git push origin tg/x? (answer in the dialog)')
+    expect((await band.find({ type: 'Text', text: /⏸ HARD STOP/ }))?.text).toBe('⏸ HARD STOP publish: git push origin tg/x')
+    expect(await band.find({ type: 'Text', text: '⚡ Dev Team · answer in the dialog' })).toBeDefined()
+    expect(await bandKeyProblems(band)).toEqual([])
     await band.unmount()
     await ui.press({ key: 'key:activity' })
     expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⚡ Dev Team · skipped stop: publish git push origin tg\/y$/ })).toBeDefined()

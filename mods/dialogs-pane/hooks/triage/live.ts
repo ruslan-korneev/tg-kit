@@ -1,9 +1,9 @@
 // What a watch event changes: the open thread's messages, the dialog row, and
-// the watched-reply report Hidden mode shows. Pure; register.tsx applies it.
-import type { BandEvent, Load, TgDialog, TgPeerKind, Triage, WatchedReply } from '../../types'
+// the watched-reply report the band shows. Pure; register.tsx applies it.
+import type { BandEvent, SenderClass, TgDialog, TgPeerKind, Triage, WatchedReply } from '../../types'
 import { findTrigger } from '../packet/replay'
 import type { MessageView } from '../packet/types'
-import { GLYPH, statusText } from '../ui/model'
+import { GLYPH } from '../ui/model'
 import type { WatchEvent } from '../watch/watch'
 
 /** Messages a watch keeps to find what a reply answers. */
@@ -85,20 +85,15 @@ export function replyText(reply: WatchedReply): string {
   return `${glyph}${label} replied${reply.latencyMs === null ? '' : ` ${latencyText(reply.latencyMs)}`}`
 }
 
-/** Hidden's status line: pane-core's, with the watched reply in place of "wrote" when the band shows it. */
-export function hiddenStatus(load: Load<TgDialog[]>, event: BandEvent | null, reply: WatchedReply | null): string {
-  if (event === null || reply === null || reply.dialogId !== event.dialogId) return statusText(load, event)
-  return `${statusText(load, null)} · ${replyText(reply)}`
-}
-
 /** The band and the reply report for a live incoming message in a watched dialog. */
 export function reportReply(
   peer: { id: number; label: string; kind: TgPeerKind },
   message: MessageView,
   recent: readonly MessageView[],
+  sender: SenderClass,
 ): { band: BandEvent; reply: WatchedReply } {
   return {
-    band: { dialogId: peer.id, label: peer.label, kind: peer.kind, text: message.text },
+    band: { dialogId: peer.id, label: peer.label, kind: peer.kind, text: message.text, sender },
     reply: {
       dialogId: peer.id,
       messageId: message.id,

@@ -1,16 +1,14 @@
 // The autopilot's components (docs/design/dialogs-pane.md §6 mockups): the
-// card that hands a dialog over, and the band rows for a
-// draft, an undoable auto reply and a `listen` summary. Plain functions over
+// card that hands a dialog over (the band's items are ../ui/band's). Plain functions over
 // the surface's element table, as ../ui/components.tsx. Their letters are
 // ../ui/keys' (one meaning each, the band's included); the card's digits pick
 // a level, and its other controls are reached by the ring until T3.
 import type { RenderElement } from 'claude-code'
 
-import type { ApDialog, ApDraft, ApLevel, ApNote, ApPhase, ApTopic, ApUndoWindow } from '../../types'
+import type { ApDialog, ApLevel, ApPhase, ApTopic } from '../../types'
 import type { Els } from '../ui/components'
-import { GLYPH, TOKEN, cells, oneLine } from '../ui/model'
+import { GLYPH, TOKEN } from '../ui/model'
 import { AP_LEVELS, AP_TOPICS, LEVEL_GLYPH, TOPIC_LABEL, quietText, rateText } from './config'
-import { undoLeft } from './ledger'
 
 /** What the card says about allow.toml for the dialog. */
 export type AllowView = { kind: 'loading' } | { kind: 'ok'; isAllowed: boolean } | { kind: 'error'; text: string }
@@ -166,125 +164,6 @@ export function AutopilotCard(
       {props.notice === null ? null : (
         <Text color={TOKEN.warn} wrap="wrap">{props.notice}</Text>
       )}
-    </Box>
-  )
-}
-
-/**
- * The band's line for a draft, and whether it shows the whole draft. Decision 9
- * (design doc §9): ⏎ sends only a draft the owner has read, so a draft cut short
- * by `oneLine` or by the band's width is opened first.
- */
-export function draftLine(draft: Pick<ApDraft, 'peer' | 'incoming' | 'text'>, width: number): { body: string; isWhole: boolean } {
-  const room = Math.max(12, Math.floor((width - draft.peer.label.length - 20) / 2))
-  const shown = oneLine(draft.text, room)
-  const body = `${draft.peer.label}: "${oneLine(draft.incoming, room)}"  → draft: "${shown}"`
-  return { body, isWhole: shown === oneLine(draft.text, Infinity) && cells(`${LEVEL_GLYPH.draft} ${body}`) <= width }
-}
-
-/**
- * A draft waiting for you (design §6 mockup); `e` swaps its second line for the
- * text field. Band keys reach it once the band holds them (ctrl+x tab), as the
- * triage band says too. ⏎ sends a draft shown whole; one cut short unfolds first.
- */
-export function DraftBand(
-  els: Els,
-  props: {
-    draft: ApDraft
-    more: number
-    width: number
-    onSend: () => void
-    onUnfold: () => void
-    onEdit: () => void
-    onSave: (text: string) => void
-    onDrop: () => void
-    onOpen: () => void
-  },
-): RenderElement {
-  const { Box, Text, Button } = els
-  const Input = 'Input' in els ? els.Input : undefined
-  const { draft } = props
-  const why = [...draft.reasons, ...(draft.confidence === null ? [] : [`conf ${draft.confidence.toFixed(2)}`])].join(' · ')
-  const state = draft.state
-  const line = draftLine(draft, props.width)
-  const isUnfolded = state.kind === 'unfolded'
-  // ⏎ sends what the band shows whole; a draft cut short opens first (decision 9).
-  const canSend = line.isWhole || isUnfolded
-  return (
-    <Box key="ap:band:draft" flexDirection="column">
-      <Text wrap="truncate-end">
-        <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} `}</Text>
-        {line.body}
-      </Text>
-      {isUnfolded && !line.isWhole ? (
-        <Text wrap="wrap">{draft.text}</Text>
-      ) : null}
-      {state.kind === 'editing' && Input !== undefined ? (
-        <Input key="ap:draft:text" label="draft" value={draft.text} submitLabel="save" autoFocus onSubmit={value => props.onSave(value)} />
-      ) : (
-        <Box flexDirection="row" gap={2}>
-          <Text dimColor wrap="truncate-end">{why === '' ? ' ' : `  ${why}`}</Text>
-          {state.kind === 'sending' ? <Text dimColor>{`${GLYPH.working}sending`}</Text> : null}
-          {state.kind === 'failed' ? <Text color={TOKEN.danger} wrap="truncate-end">{`${GLYPH.error} ${state.reason}`}</Text> : null}
-          <Text dimColor>ctrl+x tab:</Text>
-          <Button key="ap:draft:send" plain autoFocus onPress={canSend ? props.onSend : props.onUnfold}>
-            {canSend ? '⏎ send' : '⏎ open'}
-          </Button>
-          <Button key="ap:draft:edit" plain hotkey="e" dimColor onPress={props.onEdit}>
-            edit
-          </Button>
-          <Button key="ap:draft:drop" plain hotkey="d" dimColor onPress={props.onDrop}>
-            drop
-          </Button>
-          <Button key="ap:draft:open" plain hotkey="o" dimColor onPress={props.onOpen}>
-            open
-          </Button>
-          {props.more === 0 ? null : <Text dimColor>{`+${props.more} more`}</Text>}
-        </Box>
-      )}
-    </Box>
-  )
-}
-
-/** An auto reply that just went out, while `u` can still delete it. */
-export function UndoBand(
-  { Box, Text, Button }: Els,
-  props: { undo: ApUndoWindow; now: number; onUndo: () => void; onDismiss: () => void },
-): RenderElement {
-  const { undo } = props
-  const conf = undo.confidence === null ? '' : ` · conf ${undo.confidence.toFixed(2)}`
-  return (
-    <Box key="ap:band:undo" flexDirection="row" gap={2}>
-      <Text wrap="truncate-end">
-        <Text color={TOKEN.accent}>{`${LEVEL_GLYPH.auto} `}</Text>
-        {`${undo.peer.label} replied "${oneLine(undo.text, 40)}"${conf}`}
-      </Text>
-      <Text dimColor>ctrl+x tab:</Text>
-      <Button key="ap:band:undo-press" plain hotkey="u" autoFocus onPress={props.onUndo}>
-        {`undo ${undoLeft(undo, props.now)}s`}
-      </Button>
-      <Button key="ap:band:undo-dismiss" plain hotkey="d" dimColor onPress={props.onDismiss}>
-        dismiss
-      </Button>
-    </Box>
-  )
-}
-
-/** A `listen` dialog's summary. */
-export function NoteBand({ Box, Text, Button }: Els, props: { note: ApNote; width: number; onDismiss: () => void; onOpen: () => void }): RenderElement {
-  return (
-    <Box key="ap:band:note" flexDirection="row" gap={2}>
-      <Text wrap="truncate-end">
-        <Text color={TOKEN.accent}>{`${LEVEL_GLYPH.listen} `}</Text>
-        {`${props.note.peer.label}: ${oneLine(props.note.text, Math.max(20, props.width - props.note.peer.label.length - 30))}`}
-      </Text>
-      <Text dimColor>ctrl+x tab:</Text>
-      <Button key="ap:note:open" plain hotkey="o" dimColor onPress={props.onOpen}>
-        open
-      </Button>
-      <Button key="ap:note:dismiss" plain hotkey="d" dimColor autoFocus onPress={props.onDismiss}>
-        dismiss
-      </Button>
     </Box>
   )
 }

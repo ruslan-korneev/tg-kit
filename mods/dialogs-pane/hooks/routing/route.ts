@@ -275,19 +275,6 @@ export function onRadar(ledger: readonly LedgerEntry[], radar: readonly RadarEnt
   })
 }
 
-/** Hidden mode's status line tail: the newest packet's fate. */
-export function ledgerStatus(ledger: readonly LedgerEntry[]): string {
-  const last = ledger.at(-1)
-  if (last === undefined) return ''
-  const mark: Record<LedgerEntry['state']['kind'], string> = {
-    sent: GLYPH.working,
-    working: GLYPH.working,
-    done: GLYPH.done,
-    failed: GLYPH.error,
-  }
-  return ` · ${mark[last.state.kind]} packet → ${recipientLabel(last.to)}`
-}
-
 // --- live pins ---
 
 const PIN_KEEP = 20

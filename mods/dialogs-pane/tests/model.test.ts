@@ -7,7 +7,6 @@ import {
   peerArg,
   rangeSelect,
   stateSummary,
-  statusText,
   toggleSelected,
 } from '../hooks/ui/model'
 import { DIALOGS, MESSAGES } from './fixtures'
@@ -91,15 +90,6 @@ describe('summary, status', () => {
     ]
     expect(stateSummary({ levels, watched: 3, forYou: 2 })).toEqual({ levels: '⌁1 ⟳2', watched: '◎ 3 new', forYou: '2 for you' })
     expect(stateSummary({ levels: [{ glyph: '⌁', count: 0 }], watched: 0, forYou: 0 })).toEqual({ levels: '', watched: '', forYou: '' })
-  })
-
-  test('status line: unread total, news, not logged in', () => {
-    const load = { status: 'ok', value: DIALOGS } as const
-    expect(statusText(load, null)).toBe('tg ● 7 unread')
-    expect(statusText(load, { dialogId: 1001, label: '@example_bot', kind: 'bot', text: 'hi' })).toBe(
-      'tg ● 7 unread · ◆ @example_bot wrote',
-    )
-    expect(statusText({ status: 'error', failure: { kind: 'auth' } }, null)).toContain('! tg login')
   })
 
   test('the band reports the dialog whose unread count grew', () => {

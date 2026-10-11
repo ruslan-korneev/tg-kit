@@ -2,7 +2,6 @@
 // selection, the state summary. No `$` here, so tests call these directly.
 // The keys are in ./keys.
 import type {
-  BandEvent,
   Load,
   Selection,
   TgDialog,
@@ -229,16 +228,4 @@ export function stateSummary(counts: {
 export function grownDialog(before: readonly TgDialog[], after: readonly TgDialog[]): TgDialog | undefined {
   const was = new Map(before.map(dialog => [dialog.id, dialog.unread]))
   return after.find(dialog => dialog.unread > (was.get(dialog.id) ?? 0))
-}
-
-/** Hidden mode's status line: unread total, and who wrote last when the band has news. */
-export function statusText(load: Load<TgDialog[]>, event: BandEvent | null): string {
-  if (load.status === 'error') {
-    return load.failure.kind === 'auth' ? 'tg · not logged in: ! tg login' : `tg ${GLYPH.error} ${load.failure.kind}`
-  }
-  const list = loaded(load)
-  if (list === undefined) return `tg ${GLYPH.working}`
-  const unread = list.reduce((sum, dialog) => sum + dialog.unread, 0)
-  const head = unread === 0 ? `tg ${GLYPH.done} no unread` : `tg ${GLYPH.unread} ${unread} unread`
-  return event === null ? head : `${head} · ${event.kind === 'bot' ? `${GLYPH.bot} ` : ''}${event.label} wrote`
 }

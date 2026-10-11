@@ -2,7 +2,7 @@
 // whose message it is decides its intents, digits pick them in this order,
 // ⏎ repeats the last one used for that kind of sender, and inspect says what
 // the agent will read. Pure: register.tsx runs every `$` call.
-import type { AgentState, Recipient, RouteIntent, SenderClass, TgMessage, TgPeerKind } from '../../types'
+import type { AgentState, BandEvent, Recipient, RouteIntent, SenderClass, TgMessage, TgPeerKind } from '../../types'
 import type { Audience, Intent } from '../packet/intents'
 import type { Redaction } from '../packet/redact'
 import { CHAT_KIND_WRITE, type ChatKind } from '../ui/keys'
@@ -116,15 +116,36 @@ export function mainLegIntent(last: LastIntents, sender: SenderClass): RouteInte
 }
 
 /**
- * The Hidden band's ⏎ (§8 T2: the band names its intent). It sees a chat, not a
- * sender: a bot chat's newest message is the bot's, a person's chat a person's,
- * anything else the rest. Ask needs words the band has no field for, so then
+ * The band's ⏎ on a watched chat's news (§8 T2, T5: the band names its
+ * intent). The sender's class picks the intents when the band knows the
+ * message (a live reply), so a bot's reply in a group gets bot intents. With
+ * only the chat known (a count that grew), a bot chat's news is the bot's, a
+ * person chat's the person's, a channel's or Saved Messages' the rest; a
+ * group's could be anyone's, so the band offers no send there (null) and ⏎
+ * opens the chat instead. Ask needs words the band has no field for, so then
  * it sends Fix to a bot and Explain otherwise: Explain changes nothing.
  */
-export function bandIntent(kind: TgPeerKind, last: LastIntents): { sender: SenderClass; intent: RouteIntent } {
-  const sender: SenderClass = kind === 'bot' ? 'bot' : kind === 'user' ? 'person' : 'other'
+export function bandIntent(event: Pick<BandEvent, 'kind' | 'sender'>, last: LastIntents): { sender: SenderClass; intent: RouteIntent } | null {
+  const sender = event.sender ?? chatSender(event.kind)
+  if (sender === null) return null
   const ringed = ringedIntent(last, sender)
   return { sender, intent: ringed !== 'raw' ? ringed : sender === 'bot' ? 'fix' : 'explain' }
+}
+
+function chatSender(kind: TgPeerKind): SenderClass | null {
+  switch (kind) {
+    case 'bot':
+      return 'bot'
+    case 'user':
+      return 'person'
+    case 'channel':
+    case 'self':
+      return 'other'
+    case 'group':
+    case 'supergroup':
+    case 'unknown':
+      return null
+  }
 }
 
 /** `send #677791 + 1 parent`, `send 3 messages`, `send #92 from Contact A`. */

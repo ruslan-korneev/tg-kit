@@ -709,11 +709,14 @@ describe('live pin', () => {
 })
 
 describe('hidden band', () => {
-  test('⏎ sends the newest message of the dialog that wrote to main', async ($, on) => {
+  // Only a watched chat's news reaches the band (§8 T5: the band is what needs the owner).
+  const WATCHED_BOT = [{ id: 1001, arg: '@example_bot', label: '@example_bot', kind: 'bot' }]
+
+  test('⏎ sends the newest message of the watched dialog that wrote to main', async ($, on) => {
     let unread = 2
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, {
-      store: { mode: 'hidden' },
+      store: { mode: 'hidden', 'triage.watched': WATCHED_BOT },
       tg: ran => (ran.argv[1] === 'dialogs' ? json(DIALOGS.map(d => (d.id === 1001 ? { ...d, unread } : d))) : tgAnswer(ran.argv)),
     })
     await $.session.start(START)
@@ -734,7 +737,7 @@ describe('hidden band', () => {
     let unread = 2
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, {
-      store: { mode: 'hidden', 'send.intents': { bot: 'explain', person: 'raw', other: 'raw' } },
+      store: { mode: 'hidden', 'send.intents': { bot: 'explain', person: 'raw', other: 'raw' }, 'triage.watched': WATCHED_BOT },
       tg: ran => (ran.argv[1] === 'dialogs' ? json(ALL_DIALOGS.map(d => (d.id === 1001 ? { ...d, unread } : d))) : tgAnswer(ran.argv)),
     })
     await $.session.start(START)
