@@ -8,7 +8,7 @@ Put this folder first on PATH, under the name `tg`:
 
 Placeholder chats and folders only (repo rule): nothing leaves the machine. It
 answers the calls the pane makes, with tg's JSON shapes (README "Output"):
-dialogs, read, msg, whoami, allow list, send (--dry-run too), press, delete,
+dialogs, read, msg, whoami, allow list and allow add, send (--dry-run too), press, delete,
 watch, folders [--counts | --chats], dialogs --folder. Its guard honours
 --yes as tg's does: a write to a chat outside ALLOW needs --yes (exit 7). A
 write that reaches BotFather exits 1 and is logged: the pane must refuse it
@@ -79,7 +79,9 @@ FOLDERS = [
     {"id": 20 + k, "title": title, "kind": "shared" if k % 4 == 3 else "folder", "chats": [1003]}
     for k, title in enumerate(["Clients", "Family", "Study", "Travel", "Reading", "Dev", "Old", "Music", "Sport", "Friends"])
 ]
-ALLOW = [1002]
+ALLOW_FILE = os.path.join(STATE, "allow.json")
+# Dev Team is allowed; `tg allow add PEER --yes` adds to $FAKE_TG_DIR/allow.json, as the card's ⏎ asks the owner to run.
+ALLOW = json.load(open(ALLOW_FILE)) if os.path.exists(ALLOW_FILE) else [1002]
 
 BUTTONS = [[{"row": 0, "col": 0, "type": "cb", "text": "Settings", "data_b64": "c2V0"},
             {"row": 0, "col": 1, "type": "cb", "text": "Help", "data_b64": "aGVscA=="}]]
@@ -203,6 +205,14 @@ def main(argv):
     if cmd == "whoami":
         out(ME)
     if cmd == "allow":
+        if len(argv) > 2 and argv[1] == "add":
+            pid = peer_id(argv[2])
+            if pid is None:
+                fail(f"no chat {argv[2]}\n  fix: tg dialogs", 4)
+            if "--yes" not in argv:
+                fail("allow add changes allow.toml; rerun with --yes", 2)
+            json.dump(sorted(set(ALLOW) | {pid}), open(ALLOW_FILE, "w"))
+            out({"added": pid})
         out([{"id": i} for i in ALLOW])
     if cmd == "dialogs":
         by_id = {r["id"]: r for r in rows()}
