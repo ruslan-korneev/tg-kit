@@ -290,7 +290,7 @@ The work is split between two agents:
 | Role | Tools | What it does |
 | --- | --- | --- |
 | **Speaker** | None: actions in its JSON answer, `reply`, `draft`, `escalate`, `read_history`, plus `start_task` and `forward` | Talks in the dialog as you: "on it", "one question: …", "done, here's the PR" |
-| **Worker** | The tools you grant (web, repos, commands); never Agent | Does the task: reads the docs from the link, adds the payment system in a worktree, runs the tests |
+| **Worker** | The tools you grant (web, repos; commands are the repo's checks); never Agent | Does the task: reads the docs from the link, adds the payment system in a worktree, runs the tests |
 
 The Speaker never touches the tools. The Worker never writes to Telegram. They talk through a task
 card that you see in the pane:
@@ -310,25 +310,27 @@ card that you see in the pane:
 - **Web:** off / read-only (fetch pages and docs) / full.
 - **Repos:** a list of paths. The Worker works in a fresh worktree of each, never on your
   checkout.
-- **Commands:** `checks` (the default) or `any` (the card's `any but tg`).
-  - `checks` allows the repo's own checks, read off `package.json`, `pyproject.toml` with
-    `uv.lock`, `Makefile`, `justfile`, `Cargo.toml` and `go.mod`. It also allows local git (no
-    stash, no config, since both are shared with your checkout) and local read-only commands.
-  - `checks` refuses a word the shell expands (a `$` outside single quotes): a path known only
-    when the shell runs cannot be cleared.
-  - `checks` lets awk and sed run only with a program that can neither write nor run (no `-f`).
-    It refuses `git -c` and the variables that make git or a check run other code (`GIT_*`,
-    `NODE_OPTIONS`, preloads).
-  - `any` lets Claude Code's normal permission rules decide.
-  - In either mode the Worker never runs tg (by any path, behind `uv run`, `uvx` or `pipx run`,
-    or as Python on `tg_kit`) and never names a path in tg-kit's config directory outside its
-    worktrees, reads included (dialogs-pane-ux.md §9 decision 11).
-  - Files are only in the worktrees, never in your checkouts, in both modes. A path counts
-    wherever a command names one: an operand, `--out=/p`, `-o/p`, a redirect target attached or
-    spaced. What `sh -c`, `eval`, `xargs` (past its options), `find -exec` and `git rebase -x`
-    run is read too.
-  - The grant reads paths without following links, so in both modes `ln` is refused when a
-    link would lie or point outside the worktrees.
+- **Commands:** always the repo's checks; the card shows a fixed row, not a choice
+  (dialogs-pane-ux.md §9 decision 12, which removed the looser `any`).
+  - The repo's own checks, read off `package.json`, `pyproject.toml` with `uv.lock`, `Makefile`,
+    `justfile`, `Cargo.toml` and `go.mod`, with their arguments; local git (no stash, no config,
+    since both are shared with your checkout) and local read-only commands. Anything else is
+    refused, a launcher, a shell or an interpreter that is not a check included: `sh -c` and
+    `eval` are refused even around a check, and their own redirects are read as any command's.
+  - A word the shell expands (a `$` outside single quotes) is refused: a path known only when the
+    shell runs cannot be cleared.
+  - awk and sed run only with a program that can neither write nor run (no `-f`). `git -c` and the
+    variables that make git or a check run other code (`GIT_*`, `NODE_OPTIONS`, preloads) are
+    refused.
+  - The Worker never runs tg (by any path, behind `uv run`, `uvx` or `pipx run`, or as Python on
+    `tg_kit`) and never names a path in tg-kit's config directory outside its worktrees, reads
+    included (decision 11).
+  - Files are only in the worktrees, never in your checkouts. A path counts wherever a command
+    names one: an operand, `--out=/p`, `-o/p`, a redirect target attached or spaced. What `sh -c`,
+    `eval`, `xargs` (past its options), `find -exec`, `git rebase -x` and a launcher run is read
+    too, from where a `cd` or a launcher's `--directory` took it.
+  - The grant reads paths without following links, so `ln`, and a `cp` that makes links (`-s`,
+    `-l`), are refused when a link would lie or point outside the worktrees.
 - **Duration:** until the task is done, or a deadline (`2h`, `90m`). The kill switch ends either.
 
 **Who decides when to ask you.** The agent decides by default: if it's unsure, if the task grows, or
@@ -343,6 +345,10 @@ deadline all count as no. The brief cannot turn them off:
 - sending your files, credentials, personal data or code outside the repo to the other person;
 - deleting anything outside the worktree;
 - agreeing to a deadline or a price on your behalf.
+
+The Worker's calls are read the way the grant reads them: what `sh -c`, `eval`, `xargs`,
+`find -exec`, `git rebase -x` and a launcher (`uv run`, `uvx`, `pipx run`) run counts, and so does
+a file fed in through `<`. A command nested deeper than that reader follows asks for every stop.
 
 **Turning hard stops off: `dangerouslySkipHardStops`.** The name is deliberately long and scary,
 like `--dangerously-skip-permissions`. Stops are named so they can be skipped one by one:

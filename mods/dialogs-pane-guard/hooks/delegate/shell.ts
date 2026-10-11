@@ -235,7 +235,7 @@ function merge(into: Reading, from: Reading): void {
   into.assigns.push(...from.assigns)
 }
 
-/** The commands one simple command runs: itself, or what its shell, eval, find -exec or rebase -x runs. */
+/** The commands one simple command runs: itself, and what its shell, eval, find -exec or rebase -x runs. */
 function expand(words: readonly string[], depth: number): Reading {
   const out = empty()
   const alternatives: string[][] = []
@@ -254,13 +254,13 @@ function expand(words: readonly string[], depth: number): Reading {
     if (depth < MAX_DEPTH) merge(out, read())
     else out.isTooDeep = true
   }
+  // The shell, eval, find and git rebase stay commands of their own (their redirects and operands
+  // are theirs: `sh -c 'npm test' > /p`); what they run is read beside them.
+  out.commands.push(simple)
   if (script !== undefined) {
-    if (depth >= MAX_DEPTH) out.commands.push(simple)
     inner(() => readCommand(script, depth + 1))
     return out
   }
-  // find and git rebase stay commands of their own; what they run is read beside them.
-  out.commands.push(simple)
   if (name === 'find') {
     for (let i = 1; i < simple.length; i++) {
       if (!FIND_EXEC.has(simple[i] ?? '')) continue
@@ -281,9 +281,80 @@ function expand(words: readonly string[], depth: number): Reading {
   return out
 }
 
-/** The commands an argv runs (a launcher's `uv run …`), read as one simple command of a Bash command is. */
-export function readArgv(words: readonly string[]): Reading {
-  return expand(words, 0)
+// --- launchers: uv run, uv tool run, uvx, pipx run ---
+
+/** The options of uv, uv run, uv tool run, uvx and pipx run that take a value. */
+const LAUNCHER_VALUE = new Set([
+  '--with', '--with-editable', '--with-requirements', '--from', '--python', '-p', '--package', '--project', '--directory', '--env-file', '--index',
+  '--default-index', '--index-url', '--extra-index-url', '--find-links', '-f', '--extra', '--group', '--only-group', '--no-group', '--config-file',
+  '--cache-dir', '-w', '--spec', '--pip-args', '--color',
+])
+
+/**
+ * Past a launcher's options to its next word; `-m X` is Python's module X.
+ * `--directory DIR` (uv's only option that moves where the command runs; uv
+ * 0.12 `--help`) goes into `dirs`.
+ */
+function pastOptions(words: readonly string[], dirs: string[]): string[] {
+  let rest = [...words]
+  for (;;) {
+    const word = rest[0]
+    if (word === undefined || !word.startsWith('-')) return rest
+    if (word === '--') return rest.slice(1)
+    if (word === '-m' || word === '--module') return ['python', '-m', rest[1] ?? '']
+    if (word.startsWith('--module=')) return ['python', '-m', word.slice(9)]
+    if (word === '--directory') dirs.push(rest[1] ?? '')
+    if (word.startsWith('--directory=')) dirs.push(word.slice(12))
+    rest = rest.slice(word.includes('=') || !LAUNCHER_VALUE.has(word) ? 1 : 2)
+  }
+}
+
+/**
+ * What a launcher runs: `uv run X`, `uv tool run X`, `uvx X`, `pipx run X`,
+ * and the directories it moves to first; null when it is no launcher.
+ */
+export function launched(simple: Simple): { words: string[]; dirs: string[] } | null {
+  const name = base(simple[0] ?? '').toLowerCase()
+  const dirs: string[] = []
+  if (name === 'uvx') return { words: pastOptions(simple.slice(1), dirs), dirs }
+  if (name !== 'uv' && name !== 'pipx') return null
+  let rest = pastOptions(simple.slice(1), dirs)
+  if (name === 'uv' && rest[0] === 'tool') rest = pastOptions(rest.slice(1), dirs)
+  return rest[0] === 'run' ? { words: pastOptions(rest.slice(1), dirs), dirs } : null
+}
+
+/**
+ * The reading with what its launchers run added (`uv run gh pr merge` → `gh
+ * pr merge` too), launchers in launchers as well; deeper than the reader
+ * goes is isTooDeep. A launcher that moves first (`--directory DIR`, or
+ * UV_WORKING_DIR set for uv) gets a `cd DIR` before what it runs, so paths
+ * are read from there. The grant's tg rule and the hard stops both read it.
+ */
+export function seeThrough(reading: Reading): Reading {
+  const out: Reading = { ...reading, commands: [...reading.commands], expanded: new Set(reading.expanded), assigns: [...reading.assigns] }
+  // UV_WORKING_DIR=DIR, as a prefix, through env or exported: uv's --directory by another name.
+  const working = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))]
+    .filter(word => word.startsWith('UV_WORKING_DIR='))
+    .map(word => word.slice(15))
+  let layer = reading.commands
+  for (let depth = 0; layer.length > 0; depth++) {
+    const next: Simple[] = []
+    for (const simple of layer) {
+      const inner = launched(simple)
+      if (inner === null) continue
+      if (depth >= MAX_DEPTH) {
+        out.isTooDeep = true
+        continue
+      }
+      const isUv = base(simple[0] ?? '').toLowerCase() !== 'pipx'
+      for (const dir of [...(isUv ? working : []), ...inner.dirs]) out.commands.push(['cd', dir])
+      const read = expand(inner.words, 0)
+      merge(out, read)
+      next.push(...read.commands)
+    }
+    layer = next
+  }
+  return out
 }
 
 /** The simple commands a Bash command runs, `sh -c '…'`, `eval '…'`, `find -exec` and `git rebase -x` read inside. */
@@ -322,6 +393,19 @@ export function operands(simple: Simple): string[] {
 
 /** A redirection word: its operator and what follows it in the same word. */
 const REDIRECT = /^(?:\d*|&)(>>|>\||>&|<<<|<<|<>|<&|>|<)(.*)$/s
+
+/** What a command reads in through a redirect: `<f`, `< f`, `<>f`, `<&f` (not `<&0`), and a here-string's word. */
+export function inputTargets(simple: Simple): string[] {
+  const out: string[] = []
+  simple.slice(1).forEach((word, i) => {
+    const redirect = REDIRECT.exec(word)
+    const op = redirect?.[1] ?? ''
+    if (redirect === null || !(op === '<' || op === '<>' || op === '<&' || op === '<<<')) return
+    const target = (redirect[2] ?? '') === '' ? (simple[i + 2] ?? '') : (redirect[2] ?? '')
+    if (target !== '' && !(op === '<&' && /^(\d+-?|-)$/.test(target))) out.push(target)
+  })
+  return out
+}
 
 /**
  * Every string a command's words can name a path with: each word itself, a

@@ -40,14 +40,13 @@ export function durationValue(grant: DgGrant): string {
 export type GrantHandlers = {
   onRepos: (text: string) => void
   onWeb: (value: string) => void
-  onCommands: (value: string) => void
   onDuration: (value: string) => void
 }
 
 /**
  * The grant step (§5.5), filled from where the owner is: the repos field
- * (the session's repo when it has one; `e` rings it), web, commands and until
- * as Selects; then the hard stops, the guard and allow.toml. The fields are
+ * (the session's repo when it has one; `e` rings it), web and until as
+ * Selects, commands as a fixed row (the repo's checks, the only mode); then the hard stops, the guard and allow.toml. The fields are
  * always drawn, so the ring stops above the bar's ⏎ never change while it is up.
  */
 export function DelegateGrant(
@@ -81,7 +80,7 @@ export function DelegateGrant(
           </Box>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             {select('dg:web', 'web', DG_WEB.map(web => ({ value: web, label: WEB_LABEL[web] })), grant.web, props.onWeb)}
-            {select('dg:commands', 'commands', (['checks', 'any'] as const).map(one => ({ value: one, label: COMMANDS_LABEL[one] })), grant.commands, props.onCommands)}
+            <Text key="dg:commands">{`commands ${COMMANDS_LABEL}`}</Text>
             {select('dg:duration', 'until', durationChoices(grant), durationValue(grant), props.onDuration)}
           </Box>
         </Box>

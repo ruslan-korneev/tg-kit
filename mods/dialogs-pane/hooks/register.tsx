@@ -4349,7 +4349,6 @@ async function drawGrant($: $, els: Els, dialog: ApDialog, allow: AllowView, isG
     notice,
     onRepos: text => dgEditGrant($, id, grant => ({ ...grant, repos: parseRepos(text) })),
     onWeb: value => dgEditGrant($, id, grant => ({ ...grant, web: DG_WEB.find(one => one === value) ?? grant.web })),
-    onCommands: value => dgEditGrant($, id, grant => ({ ...grant, commands: value === 'any' ? 'any' : 'checks' })),
     onDuration: async value => {
       const parsed = parseDuration(value)
       if (parsed.ok) await dgEditGrant($, id, grant => ({ ...grant, duration: parsed.value }))

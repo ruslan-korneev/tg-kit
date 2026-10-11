@@ -129,7 +129,7 @@ function gone(taskId: number): DgTask {
     agentId: null,
     startedAt: 0,
     deadline: null,
-    grant: { web: 'off', repos: [], commands: 'checks', duration: { kind: 'done' } },
+    grant: { web: 'off', repos: [], duration: { kind: 'done' } },
     worktrees: [],
     holds: [],
     question: null,

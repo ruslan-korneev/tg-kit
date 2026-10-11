@@ -545,14 +545,15 @@ export type DgStop = 'money' | 'publish' | 'share' | 'delete' | 'commit-on-behal
 /** off; read: fetch pages and search, nothing sent; full: anything the tools do. */
 export type DgWeb = 'off' | 'read' | 'full'
 
-/** checks: the repos' own checks and local, read-only commands; any: Claude Code's permission rules decide. */
-export type DgCommands = 'checks' | 'any'
-
 /** Until the task is done, or a deadline this many minutes after it starts; the kill switch ends either. */
 export type DgDuration = { kind: 'done' } | { kind: 'deadline'; minutes: number }
 
-/** What the Worker may use, set in the card. */
-export type DgGrant = { web: DgWeb; repos: string[]; commands: DgCommands; duration: DgDuration }
+/**
+ * What the Worker may use, set in the card. Its commands are always the
+ * repo's checks, local git and local read-only commands (decision 12): there
+ * is no field for them. A stored grant's old `commands` key is dropped on load.
+ */
+export type DgGrant = { web: DgWeb; repos: string[]; duration: DgDuration }
 
 /** dangerouslySkipHardStops for one dialog: which stops, until when (null: never). */
 export type DgSkip = { stops: DgStop[]; until: number | null }

@@ -2,16 +2,17 @@
 // commands and duration, set in the card; the tools the Worker is given; and
 // the check every one of its tool calls passes in a `tool.call` hook, so the
 // grant holds whatever the prompt says. Pure.
-import type { DgCommands, DgDialog, DgDuration, DgGrant, DgSkip, DgStop, DgWeb } from './contract'
+import type { DgDialog, DgDuration, DgGrant, DgSkip, DgStop, DgWeb } from './contract'
 import { isInside, isUnresolvable, resolvePath } from './paths'
-import { base, gitSub, operands, pathWords, readArgv, readCommand, type Reading, type Simple } from './shell'
+import { base, gitSub, operands, pathWords, readCommand, seeThrough, type Reading, type Simple } from './shell'
 import { DG_STOPS, type Place, type ToolUse } from './stops'
 
 export const DG_WEB = ['off', 'read', 'full'] as const satisfies readonly DgWeb[]
 export const WEB_LABEL = { off: 'off', read: 'read-only', full: 'full' } as const satisfies Record<DgWeb, string>
-export const COMMANDS_LABEL = { checks: "the repos' checks", any: 'any but tg (permission rules decide)' } as const satisfies Record<DgCommands, string>
+/** The card's fixed `commands` row: the Worker's only commands mode (decision 12). */
+export const COMMANDS_LABEL = "the repo's checks"
 
-export const DEFAULT_GRANT: DgGrant = { web: 'read', repos: [], commands: 'checks', duration: { kind: 'done' } }
+export const DEFAULT_GRANT: DgGrant = { web: 'read', repos: [], duration: { kind: 'done' } }
 export const DEFAULT_DG_DIALOG: DgDialog = { grant: DEFAULT_GRANT, skip: null, isWarned: false }
 
 /** The tools a Worker is spawned with; the hook refuses any other all the same. */
@@ -61,7 +62,7 @@ function grantOf(v: unknown): DgGrant {
   return {
     web: DG_WEB.find(one => one === v.web) ?? DEFAULT_GRANT.web,
     repos,
-    commands: v.commands === 'any' ? 'any' : 'checks',
+    // A stored `commands` (`checks`, or the removed `any`) is dropped: the repo's checks are the only mode.
     duration: minutes === null ? { kind: 'done' } : { kind: 'deadline', minutes },
   }
 }
@@ -262,7 +263,7 @@ function fenced(reading: Reading, roots: readonly string[], scope: Scope, cwds: 
   return null
 }
 
-// --- awk and sed under `checks`: read-only only when their program is ---
+// --- awk and sed: read-only only when their program is ---
 
 /** awk's program text; null when it comes from a file (`-f`) or an option the grant does not know. */
 function awkProgram(simple: Simple): string | null {
@@ -398,7 +399,7 @@ function sedVerdict(program: string, dialect: 'gnu' | 'bsd'): SedVerdict {
   }
 }
 
-/** Under `checks`: awk and sed are local read-only commands only with a program that can neither write nor run. */
+/** awk and sed are local read-only commands only with a program that can neither write nor run. */
 function isReadOnlyProgram(simple: Simple, name: string): boolean {
   if (name === 'awk') {
     const program = awkProgram(simple)
@@ -423,36 +424,6 @@ function programWords(simple: Simple, name: string): string[] {
 // --- tg: never the Worker's (dialogs-pane-ux.md §9 decision 11) ---
 
 const PYTHON = /^(python|pypy)(\d+(\.\d+)*)?$/
-/** The options of uv, uv run, uv tool run, uvx and pipx run that take a value. */
-const LAUNCHER_VALUE = new Set([
-  '--with', '--with-editable', '--with-requirements', '--from', '--python', '-p', '--package', '--project', '--directory', '--env-file', '--index',
-  '--default-index', '--index-url', '--extra-index-url', '--find-links', '-f', '--extra', '--group', '--only-group', '--no-group', '--config-file',
-  '--cache-dir', '-w', '--spec', '--pip-args', '--color',
-])
-
-/** Past a launcher's options to its next word; `-m X` is Python's module X. */
-function pastOptions(words: readonly string[]): string[] {
-  let rest = [...words]
-  for (;;) {
-    const word = rest[0]
-    if (word === undefined || !word.startsWith('-')) return rest
-    if (word === '--') return rest.slice(1)
-    if (word === '-m' || word === '--module') return ['python', '-m', rest[1] ?? '']
-    if (word.startsWith('--module=')) return ['python', '-m', word.slice(9)]
-    rest = rest.slice(word.includes('=') || !LAUNCHER_VALUE.has(word) ? 1 : 2)
-  }
-}
-
-/** What a launcher runs: `uv run X`, `uv tool run X`, `uvx X`, `pipx run X`; null when it is no launcher. */
-function launched(simple: Simple): string[] | null {
-  const name = base(simple[0] ?? '').toLowerCase()
-  if (name === 'uvx') return pastOptions(simple.slice(1))
-  if (name !== 'uv' && name !== 'pipx') return null
-  let rest = pastOptions(simple.slice(1))
-  if (name === 'uv' && rest[0] === 'tool') rest = pastOptions(rest.slice(1))
-  return rest[0] === 'run' ? pastOptions(rest.slice(1)) : null
-}
-
 /** Whether Python runs tg-kit's code: `-m tg_kit…`, a `-c` text or a script that names tg_kit. */
 function runsTgKit(simple: Simple): boolean {
   const names = (text: string | undefined) => (text ?? '').toLowerCase().includes('tg_kit')
@@ -476,28 +447,26 @@ function runsTgKit(simple: Simple): boolean {
   return false
 }
 
-/** Whether a simple command runs tg: by any path, behind a launcher, or as Python on tg_kit. */
-function runsTg(simple: Simple, depth = 0): boolean {
+/** Whether a simple command runs tg: by any path, or as Python on tg_kit (launchers are seen through by seeThrough). */
+function runsTg(simple: Simple): boolean {
   const name = base(simple[0] ?? '').toLowerCase()
-  if (name === 'tg') return true
-  if (PYTHON.test(name)) return runsTgKit(simple)
-  const inner = launched(simple)
-  if (inner === null) return false
-  // A launcher in a launcher in a launcher: fail closed.
-  if (depth >= 3) return true
-  const reading = readArgv(inner)
-  return reading.isTooDeep || reading.commands.some(one => runsTg(one, depth + 1))
+  return name === 'tg' || (PYTHON.test(name) && runsTgKit(simple))
 }
 
 // --- links: the grant reads paths without following them (paths.ts), so none may lead out ---
 
+/** A cp that makes links instead of copies: `-s`/`--symbolic-link`, `-l`/`--link`. */
+function isLinkingCp(simple: Simple): boolean {
+  return simple.slice(1).some(word => word === '--symbolic-link' || word === '--link' || /^-[A-Za-z]*[sl]/.test(word))
+}
+
 /**
- * The first place an `ln` puts a link or points one that is outside the
+ * The first place an `ln` (or a linking cp) puts a link or points one that is outside the
  * worktrees, or cannot be told; null when every one is inside. A symbolic
  * link's target is read from where the link lies; a hard link's from the cwd.
  */
 function linkOutside(simple: Simple, cwds: readonly string[], scope: Scope, reading: Reading): string | null {
-  const isSymbolic = simple.some(word => word === '--symbolic' || /^-[A-Za-z]*s/.test(word))
+  const isSymbolic = simple.some(word => word === '--symbolic' || word === '--symbolic-link' || /^-[A-Za-z]*s/.test(word))
   // `-t DIR`, `-stDIR`, `--target-directory[=]DIR`: the directory the links go in.
   const dirs = simple.flatMap((word, i) => {
     if (/^-[A-Za-z]*t$/.test(word) || word === '--target-directory') return [simple[i + 1] ?? '']
@@ -533,53 +502,54 @@ function linkOutside(simple: Simple, cwds: readonly string[], scope: Scope, read
   return places.find(path => !isInside(path, scope.worktrees)) ?? null
 }
 
-/** Variables that make a check run other code (git's config and helpers, preloads); refused under `checks`. */
+/** Variables that make a check run other code (git's config and helpers, preloads); refused. */
 const RUNS_ENV = /^(GIT_[A-Z0-9_]*|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|NODE_OPTIONS|BASH_ENV|PAGER|EDITOR|VISUAL)=/
 /** git options that run a command of their own: fetch's upload-pack, push's receive-pack. */
 const GIT_RUNS = /^(--upload-pack|--receive-pack|--exec)(=|$)/
 
 function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
   const reading = readCommand(command)
-  const isChecks = grant.commands === 'checks'
-  // Decision 11, before the mode: what is nested too deep may run tg, and is refused in both modes.
-  if (reading.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec, git rebase -x)')
-  const tg = reading.commands.find(simple => runsTg(simple))
-  if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run, in either commands mode; the Speaker is the only voice in the chat`)
+  // Decision 11: what is nested too deep may run tg.
+  const seen = seeThrough(reading)
+  if (seen.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec, git rebase -x, launchers)')
+  const tg = seen.commands.find(runsTg)
+  if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run; the Speaker is the only voice in the chat`)
   const start = scope.worktrees[0] ?? '/'
-  // Where each simple command stands: its worktree, and where a `cd` before it went (null: it cannot be told).
+  // Where each simple command stands: its worktree, and where a `cd` before it went.
+  // Read over `seen`, so a launcher's own `sh -c 'cd …'` counts; its first commands are the reading's, in order.
   const cwds: string[][] = []
-  let cwd: string | null = start
-  for (const simple of reading.commands) {
-    cwds.push([...new Set([start, cwd ?? start])])
+  let cwd = start
+  for (const simple of seen.commands) {
+    cwds.push([...new Set([start, cwd])])
     const name = base(simple[0] ?? '')
     if (name === 'cd' || name === 'pushd') {
       const target = operands(simple)[0]
       const expanded = target === undefined ? scope.home : expandWord(target, scope)
-      cwd = expanded === null ? null : resolvePath(expanded, cwd ?? start, scope.home)
+      // Fail closed: past a move it cannot follow, no relative path can be read.
+      if (expanded === null || expanded === '') return refuse(`${simple.join(' ').slice(0, 60)}: a directory the grant cannot resolve (a variable, or a launcher's --directory); write the path out`)
+      cwd = resolvePath(expanded, cwd, scope.home)
     }
   }
-  // tg-kit's config directory, reads too, in either mode (decision 11): allow.toml, the sessions, the config.
-  const config = fenced(reading, [scope.configDir], scope, index => cwds[index] ?? [start], true)
-  if (config !== null) return refuse(`${config}: inside tg-kit's config directory (${scope.configDir}), which is never the Worker's, in either commands mode`)
-  if (isChecks && reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
-  if (isChecks) {
-    const runs = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))].find(word => RUNS_ENV.test(word))
-    if (runs !== undefined) return refuse(`${runs.slice(0, runs.indexOf('='))}: a variable that makes a command run other code`)
-    for (const assign of reading.assigns) {
-      if (reading.expanded.has(assign)) return refuse(`${assign.slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
-      for (const word of pathWords(['', assign.slice(assign.indexOf('=') + 1)])) {
-        const checked = pathCheck(word, scope, 'set', start, true)
-        if (!checked.ok) return checked
-      }
+  // tg-kit's config directory, reads too (decision 11): allow.toml, the sessions, the config.
+  const config = fenced(seen, [scope.configDir], scope, index => cwds[index] ?? [start], true)
+  if (config !== null) return refuse(`${config}: inside tg-kit's config directory (${scope.configDir}), which is never the Worker's`)
+  if (reading.isOpaque) return refuse('a command substitution or here-doc the grant cannot read')
+  const runs = [...reading.assigns, ...reading.commands.filter(simple => base(simple[0] ?? '') === 'export').flatMap(simple => simple.slice(1))].find(word => RUNS_ENV.test(word))
+  if (runs !== undefined) return refuse(`${runs.slice(0, runs.indexOf('='))}: a variable that makes a command run other code`)
+  for (const assign of reading.assigns) {
+    if (reading.expanded.has(assign)) return refuse(`${assign.slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
+    for (const word of pathWords(['', assign.slice(assign.indexOf('=') + 1)])) {
+      const checked = pathCheck(word, scope, 'set', start, true)
+      if (!checked.ok) return checked
     }
   }
-  // Paths into the owner's checkouts are refused in every mode: the worktree is the Worker's place.
-  const checkout = fenced(reading, scope.checkouts, scope, index => cwds[index] ?? [start])
+  // Paths into the owner's checkouts are refused: the worktree is the Worker's place.
+  const checkout = fenced(seen, scope.checkouts, scope, index => cwds[index] ?? [start])
   if (checkout !== null) return refuse(`${checkout}: that is the owner's own checkout`)
   for (const [index, simple] of reading.commands.entries()) {
     const name = base(simple[0] ?? '')
-    // `$W/app.py`: where it points is known only when the shell runs, so `checks` cannot clear it.
-    if (isChecks && simple.some(word => reading.expanded.has(word) || /^~[^/]/.test(word))) {
+    // `$W/app.py`: where it points is known only when the shell runs, so the grant cannot clear it.
+    if (simple.some(word => reading.expanded.has(word) || /^~[^/]/.test(word))) {
       return refuse(`${simple.join(' ').slice(0, 60)}: a variable or expansion the grant cannot resolve; write the path out`)
     }
     if (NET.has(name)) {
@@ -589,8 +559,8 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
         return refuse(`${simple.join(' ').slice(0, 60)}: web is read-only (fetch pages, nothing sent)`)
       }
     }
-    // Links in either mode: a link inside the worktree that leads out would pass every later check.
-    if (name === 'ln' || name === 'link') {
+    // Links: a link inside the worktree that leads out would pass every later check.
+    if (name === 'ln' || name === 'link' || (name === 'cp' && isLinkingCp(simple))) {
       const outside = linkOutside(simple, cwds[index] ?? [start], scope, reading)
       if (outside !== null) return refuse(`${name} ${outside}: a link that lies or points outside your worktree, or one the grant cannot resolve; the grant does not follow links`)
     }
@@ -599,7 +569,6 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
       const checked = pathCheck(dir, scope, 'git -C')
       if (!checked.ok) return checked
     }
-    if (!isChecks) continue
     if ((name === 'cd' || name === 'pushd') && operands(simple).length === 0) return refuse(`${name} with no path: it leaves your worktree`)
     // Every place a word can name a path (an operand, `--out=/p`, `-o/p`, `>>/p`) stays in the worktree; an awk or sed program is code, read below.
     const programs = programWords(simple, name)
