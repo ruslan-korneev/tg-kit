@@ -4,6 +4,7 @@
 // Pure: register.tsx owns the timers, the tg calls and the model calls.
 import type { ApCheck, ApDialog, ApEntry, ApTopic } from '../../types'
 import type { MessageView } from '../packet/types'
+import { peerKey } from '../ui/model'
 import { TOPIC_LABEL, isQuiet, rateText } from './config'
 
 /** Telegram repeats `typing` about every 5 s and drops it after about 6 s without one (README "tg watch"). */
@@ -82,9 +83,9 @@ export function afterCheck(choice: ApCheck, regenerations: number, confidence: n
   return confidence >= threshold ? 'send' : 'draft'
 }
 
-/** Auto replies already sent in this dialog within the last hour (the limit counts these). */
-export function sentLastHour(ledger: readonly ApEntry[], dialogId: number, now: number): number {
-  return ledger.filter(entry => entry.peer.id === dialogId && entry.outcome.kind === 'sent' && entry.outcome.by === 'auto' && entry.at > now - 3_600_000).length
+/** Auto replies already sent in this dialog (or forum topic, by its peer key) within the last hour (the limit counts these). */
+export function sentLastHour(ledger: readonly ApEntry[], key: string, now: number): number {
+  return ledger.filter(entry => peerKey(entry.peer) === key && entry.outcome.kind === 'sent' && entry.outcome.by === 'auto' && entry.at > now - 3_600_000).length
 }
 
 export type Gate = { kind: 'send' } | { kind: 'draft'; reasons: string[] }

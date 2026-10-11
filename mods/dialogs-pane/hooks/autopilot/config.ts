@@ -1,7 +1,8 @@
 // The autopilot's per-dialog settings (docs/design/dialogs-pane.md §6 "Levels"
 // and "Limits"): defaults, quiet hours, and the narrowing of what $.store hands
 // back. Pure. The card's Selects offer their values (./components).
-import type { ApBrief, ApDialog, ApLevel, ApTopic, PeerRef, TgPeerKind } from '../../types'
+import type { ApBrief, ApDialog, ApLevel, ApTopic, PeerRef } from '../../types'
+import { peerKey, readPeerRef } from '../ui/model'
 
 export const AP_LEVELS = ['listen', 'draft', 'auto', 'delegate'] as const satisfies readonly ApLevel[]
 export const AP_TOPICS = ['money', 'dates', 'promises', 'opinions', 'personal'] as const satisfies readonly ApTopic[]
@@ -82,14 +83,6 @@ type Obj = Record<string, unknown>
 
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-const PEER_KINDS: readonly TgPeerKind[] = ['self', 'user', 'bot', 'group', 'channel', 'supergroup', 'unknown']
-
-function peerOfStored(v: unknown): PeerRef | null {
-  if (!isObj(v) || typeof v.id !== 'number' || typeof v.arg !== 'string' || typeof v.label !== 'string') return null
-  const kind = PEER_KINDS.find(one => one === v.kind)
-  return kind === undefined ? null : { id: v.id, arg: v.arg, label: v.label, kind }
-}
-
 function minutesOf(v: unknown): number | null {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 24 * 60 ? v : null
 }
@@ -97,7 +90,7 @@ function minutesOf(v: unknown): number | null {
 /** One stored dialog; a field that does not read keeps its default, a peer that does not drops it. */
 function dialogOfStored(v: unknown): ApDialog | null {
   if (!isObj(v)) return null
-  const peer = peerOfStored(v.peer)
+  const peer = readPeerRef(v.peer)
   if (peer === null) return null
   const base = defaultDialog(peer)
   const brief = isObj(v.brief) ? { tone: str(v.brief.tone), promises: str(v.brief.promises), facts: str(v.brief.facts) } : base.brief
@@ -120,13 +113,13 @@ function dialogOfStored(v: unknown): ApDialog | null {
   }
 }
 
-/** `autopilot.dialogs` as stored: dialog id → settings. */
+/** `autopilot.dialogs` as stored: peer key (a chat's id, or `chatId:topicId`) → settings. */
 export function parseDialogs(v: unknown): Record<string, ApDialog> {
   if (!isObj(v)) return {}
   const out: Record<string, ApDialog> = {}
   for (const value of Object.values(v)) {
     const dialog = dialogOfStored(value)
-    if (dialog !== null) out[String(dialog.peer.id)] = dialog
+    if (dialog !== null) out[peerKey(dialog.peer)] = dialog
   }
   return out
 }

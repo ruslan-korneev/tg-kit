@@ -9,6 +9,7 @@ import type {
   TgFailure,
   TgMessage,
   TgPeerKind,
+  TopicRef,
 } from '../../types'
 import type { Role } from './palette'
 
@@ -51,7 +52,7 @@ export const GLYPH = {
   error: '⚠',
 } as const
 
-/** A chat's kind glyph and its role (§10.3). tg's JSON has no forum flag yet: the caller says (T16). */
+/** A chat's kind glyph and its role (§10.3); a forum is `⌗` (§10.9). */
 export function dialogGlyph(kind: TgPeerKind, isForum = false): { text: string; role: Role } {
   if (isForum) return { text: GLYPH.forum, role: 'group' }
   switch (kind) {
@@ -81,8 +82,63 @@ export function dialogLabel(dialog: Pick<TgDialog, 'kind' | 'title'>): string {
  * @ivan_example`, `Project team · -1001234`; Saved Messages alone. Lists, the log and
  * dividers show the name only (§10.4).
  */
-export function peerConfirmLabel(peer: Pick<PeerRef, 'label' | 'arg'>): string {
-  return peer.arg === 'me' ? peer.label : `${peer.label} · ${peer.arg}`
+export function peerConfirmLabel(peer: Pick<PeerRef, 'label' | 'arg' | 'topic'>): string {
+  if (peer.arg === 'me') return peer.label
+  // A topic's label names it (`Project team › Design review`); the handle names the chat and the topic's id (§10.9).
+  return peer.topic === undefined ? `${peer.label} · ${peer.arg}` : `${peer.label} · ${peer.arg} · topic ${peer.topic.id}`
+}
+
+// --- forum topics (§10.9): a peer narrowed to one topic is a peer of its own ---
+
+/** Between a forum's name and its topic's, in labels and lanes: `Project team › Design review`. */
+export const TOPIC_SEP = ' › '
+
+/**
+ * What the pane keys a peer's state by: the chat's id, or `chatId:topicId` for
+ * a forum topic (§10.9). Agents, watches, follows, drafts and summaries of one
+ * topic are that topic's alone.
+ */
+export function peerKey(peer: Pick<PeerRef, 'id' | 'topic'>): string {
+  return peer.topic === undefined ? String(peer.id) : `${peer.id}:${peer.topic.id}`
+}
+
+/** The same chat, and the same topic or both none. */
+export function isSamePeer(a: Pick<PeerRef, 'id' | 'topic'>, b: Pick<PeerRef, 'id' | 'topic'>): boolean {
+  return peerKey(a) === peerKey(b)
+}
+
+/** The chat's peer narrowed to one of its topics; its label names both. */
+export function topicPeer(chat: PeerRef, topic: TopicRef): PeerRef {
+  const whole = chatPeer(chat)
+  return { ...whole, label: `${whole.label}${TOPIC_SEP}${topic.title}`, topic }
+}
+
+/** The whole chat a peer belongs to: a topic's peer without its topic. */
+export function chatPeer(peer: PeerRef): PeerRef {
+  const { topic, ...chat } = peer
+  if (topic === undefined) return peer
+  const suffix = `${TOPIC_SEP}${topic.title}`
+  return { ...chat, label: chat.label.endsWith(suffix) ? chat.label.slice(0, -suffix.length) : chat.label }
+}
+
+const PEER_KINDS: readonly TgPeerKind[] = ['self', 'user', 'bot', 'group', 'channel', 'supergroup', 'unknown']
+
+/**
+ * A peer read back from $.store, each field checked; null when one does not
+ * read. A topic that does not read drops the peer: a topic's agent or watch
+ * must never fall back to the whole forum, which tg would read as General.
+ */
+export function readPeerRef(v: unknown): PeerRef | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null
+  const o: Record<string, unknown> = { ...v }
+  const kind = PEER_KINDS.find(one => one === o.kind)
+  if (typeof o.id !== 'number' || !Number.isSafeInteger(o.id) || typeof o.arg !== 'string' || typeof o.label !== 'string' || kind === undefined) return null
+  const peer: PeerRef = { id: o.id, arg: o.arg, label: o.label, kind }
+  if (o.topic === undefined) return peer
+  if (typeof o.topic !== 'object' || o.topic === null) return null
+  const t: Record<string, unknown> = { ...o.topic }
+  if (typeof t.id !== 'number' || !Number.isSafeInteger(t.id) || typeof t.title !== 'string' || typeof t.isClosed !== 'boolean') return null
+  return { ...peer, topic: { id: t.id, title: t.title, isClosed: t.isClosed } }
 }
 
 /** What tg is handed for a dialog: `me`, `@username`, or the numeric id. */
@@ -168,11 +224,11 @@ export function rowSymbol(
 /** What a chat list's row draws for a dialog, spread into `ChatRow`'s props. */
 export function dialogRow(
   dialog: TgDialog,
-  context: { now: number; agent: AgentMark | null; isForum?: boolean },
+  context: { now: number; agent: AgentMark | null },
 ): { time: string; glyph: { text: string; role: Role }; name: string; isUnread: boolean; preview: { text: string }; symbol: { text: string; role: Role } | null } {
   return {
     time: rowTime(dialog.last_date, context.now),
-    glyph: dialogGlyph(dialog.kind, context.isForum),
+    glyph: dialogGlyph(dialog.kind, dialog.forum),
     name: dialogLabel(dialog),
     isUnread: dialog.unread > 0 && !dialog.muted,
     preview: { text: dialog.last_text },

@@ -349,9 +349,9 @@ describe('summary', () => {
 
 describe('needs-you ranking', () => {
   const list = [
-    { id: 2001, kind: 'channel', title: 'News', username: null, unread: 9, mentions: 0, pinned: false, muted: false, last_id: 1, last_date: '2026-10-10T11:59:00Z', last_text: 'digest' },
-    { id: 2002, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T11:58:00Z', last_text: 'hm' },
-    { id: 2003, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 3, last_date: '2026-10-10T11:57:00Z', last_text: 'free tomorrow?' },
+    { id: 2001, kind: 'channel', title: 'News', username: null, unread: 9, mentions: 0, pinned: false, muted: false, last_id: 1, last_date: '2026-10-10T11:59:00Z', forum: false, last_text: 'digest' },
+    { id: 2002, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T11:58:00Z', forum: false, last_text: 'hm' },
+    { id: 2003, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 3, last_date: '2026-10-10T11:57:00Z', forum: false, last_text: 'free tomorrow?' },
   ]
 
   test('y opens For you: who asks first, noise left out; the model is asked there only, once per top message', async ($, on) => {

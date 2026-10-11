@@ -49,6 +49,7 @@ function message(id: number, text: string, over: Partial<TgMessage> = {}): TgMes
     out: false,
     text,
     reply_to: null,
+    topic_id: null,
     forward: null,
     edited: null,
     edits: 0,

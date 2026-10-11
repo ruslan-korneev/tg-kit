@@ -179,6 +179,6 @@ describe('/tg help is the key table (§4.4)', () => {
     }
     expect(helpLines()[0]).toBe('tg keys · one meaning per letter, in every view and in the band')
     expect(text).toMatch(/r +rec +a chat · a bot chat only/)
-    expect(text).toMatch(/n +write +Chats or a chat · a bot chat, a person chat, a group or Saved Messages only/)
+    expect(text).toMatch(/n +write +Chats, a chat or Topics · a bot chat, a person chat, a group or Saved Messages only/)
   })
 })

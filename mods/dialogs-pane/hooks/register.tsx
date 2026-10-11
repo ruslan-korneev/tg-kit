@@ -8,7 +8,7 @@
 // Every function that takes `$` lives in this file: the engine follows `$`
 // only into functions declared beside the hook. ./ui and ./tg stay pure.
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelCompleteResult, Register, RenderElement, Timer } from 'claude-code'
+import type { Color, EngineInterface, ModelCompleteResult, Register, RenderElement, Timer } from 'claude-code'
 
 import type {
   Load,
@@ -17,6 +17,9 @@ import type {
   Summary,
   TgDialog,
   TgFailure,
+  Topic,
+  TopicRef,
+  TopicsView,
   WatchHealth,
 } from '../types'
 import { SummaryBlock } from './triage/components'
@@ -44,6 +47,7 @@ import {
   onMainTurnStart,
   onRadar,
   onTurnComplete,
+  packetTopic,
   parentsAtHand,
   parsePlan,
   parseSent,
@@ -106,7 +110,8 @@ import {
   type TitlePart,
 } from './ui/frame'
 import { dockLayout, inlineCardRows, type DockLayout } from './ui/layout'
-import { PALETTES, readPalette, type Colors, type Role } from './ui/palette'
+import { PALETTES, readPalette, topicColor, type Colors, type Palette, type Role } from './ui/palette'
+import { GENERAL_ID, allTopicsRow, breadcrumb, forumSymbol, topicColumn, topicRef, topicRow, topicRowKey, topicsInPlace, topicsWaiting } from './ui/topics'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
@@ -122,6 +127,7 @@ import {
   type ChatKind,
   type CardFacts,
   type KeyContext,
+  type TopicFact,
   type RunKey,
   type Seat,
   type Where,
@@ -129,9 +135,13 @@ import {
 import {
   GLYPH,
   NO_SELECTION,
+  chatPeer,
   clamp,
   dialogLabel,
   dialogRow,
+  isSamePeer,
+  peerKey,
+  topicPeer,
   labelCells,
   grownDialog,
   loaded,
@@ -208,11 +218,14 @@ const nav = atom({ plugin: 'dialogs-pane', key: 'nav' } as const, {
   dialogStart: 0,
   messageStart: 0,
   folderStart: 0,
+  topicCursor: 0,
+  topicStart: 0,
   isMenuOpen: false,
   isSearching: false,
 })
 const dialogs = atom({ plugin: 'dialogs-pane', key: 'dialogs' } as const, { status: 'idle' })
 const thread = atom({ plugin: 'dialogs-pane', key: 'thread' } as const, null)
+const forumTopics = atom({ plugin: 'dialogs-pane', key: 'topics' } as const, null)
 const selection = atom({ plugin: 'dialogs-pane', key: 'selection' } as const, NO_SELECTION)
 const band = atom({ plugin: 'dialogs-pane', key: 'band' } as const, null)
 const queue = atom({ plugin: 'dialogs-pane', key: 'queue' } as const, { at: null, dismissed: [], notified: [] })
@@ -223,9 +236,12 @@ const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
  * component takes it as an argument, beside the element table.
  */
 let colors: Colors = PALETTES.theme
+/** The palette's name, for a forum topic's colour by its `icon_color` (§10.9). */
+let palette: Palette = 'theme'
 
 export const register: Register = (on, options) => {
-  colors = PALETTES[readPalette(options.palette)]
+  palette = readPalette(options.palette)
+  colors = PALETTES[palette]
   configureAutopilot(options) // ── autopilot ──
   registerAutopilot(on) // ── autopilot ──
   configureDelegate(options) // ── delegate ──
@@ -373,9 +389,13 @@ export const register: Register = (on, options) => {
     const drafted = closed.map(entry => draftOf(entry, answer, at)).findLast(one => one !== null)
     if (drafted !== undefined && drafted !== null) {
       // A row of its chat after the newest message the thread has (§8 T3), checked by the guard as it lands.
-      const landed = { ...drafted, after: await newestIn($, drafted.peer.id, drafted.replyTo) }
+      // ── topics ── in a forum it goes into the topic of the message it answers, named with --topic (§10.9).
+      // A topic tg could not name leaves the draft unsendable rather than to tg's derivation.
+      const into = await replyPeer($, drafted.peer, drafted.replyTo)
+      const step: ReplyDraft['step'] = into === null ? { kind: 'failed', reason: `the topic of #${drafted.replyTo} is unknown: open its topic and ask again` } : drafted.step
+      const landed = { ...drafted, peer: into ?? drafted.peer, step, after: await newestIn($, drafted.peer.id, drafted.replyTo) }
       await keepThreadCursor($, () => update($, draft, () => landed))
-      await checkDraft($)
+      if (into !== null) await checkDraft($)
     }
     return done
   })
@@ -508,8 +528,14 @@ async function loadLatest($: $, options: { isQuiet?: boolean } = {}): Promise<vo
   await refreshStatus($)
 }
 
+/** ⏎ on a chat: its thread; a forum opens its Topics instead, as every way into it does (§10.9). */
 async function openThread($: $, dialog: TgDialog): Promise<void> {
-  const peer: PeerRef = { id: dialog.id, arg: peerArg(dialog), label: dialogLabel(dialog), kind: dialog.kind }
+  if (dialog.forum) return openTopics($, peerRefOf(dialog))
+  await openPeer($, peerRefOf(dialog))
+}
+
+/** The thread of a peer: a chat, one forum topic, or a forum's merged stream (its peer without a topic). */
+async function openPeer($: $, peer: PeerRef): Promise<void> {
   await update($, thread, () => ({ peer, load: { status: 'loading' } }))
   await update($, selection, () => NO_SELECTION)
   // A chat opens on its own window: the last chat's start would leave only its newest rows in view.
@@ -521,11 +547,12 @@ async function openThread($: $, dialog: TgDialog): Promise<void> {
 }
 
 async function loadThread($: $, peer: PeerRef): Promise<void> {
-  const result = await runTg($, tg.read(peer.arg, { limit: THREAD_LIMIT }))
+  const result = await runTg($, tg.read(peer.arg, { limit: THREAD_LIMIT, topic: peer.topic?.id }))
   const at = await $.clock.now()
   await update($, now, () => at)
-  // A thread opened meanwhile owns the slot; this answer is another peer's.
-  if ((await read($, thread))?.peer.id !== peer.id) return
+  // A thread opened meanwhile owns the slot; this answer is another peer's (another topic's too).
+  const open = await read($, thread)
+  if (open === null || !isSamePeer(open.peer, peer)) return
   if (!result.ok) {
     await update($, thread, () => ({ peer, load: failed(result.failure, at) }))
     if (result.failure.kind === 'flood') await retryAfterFlood($, result.failure.seconds, () => loadThread($, peer))
@@ -541,11 +568,13 @@ async function loadThread($: $, peer: PeerRef): Promise<void> {
 /** `g`: the open chat again; on a list, what waits applies at once and a pass runs or queues (§8 T9). */
 async function reload($: $): Promise<void> {
   const open = await read($, thread)
-  if ((await read($, nav)).view === 'thread' && open !== null) {
+  const view = (await read($, nav)).view
+  if (view === 'thread' && open !== null) {
     await update($, thread, () => ({ peer: open.peer, load: { status: 'loading' } }))
     await loadThread($, open.peer)
     return
   }
+  if (view === 'topics') return reloadTopics($) // ── topics ──
   await reloadList($) // ── folders ──
 }
 
@@ -566,7 +595,8 @@ async function cursorDialog($: $): Promise<TgDialog | undefined> {
 async function threadItems($: $): Promise<ThreadRow[]> {
   const open = await read($, thread)
   if (open === null) return []
-  return threadRows(await threadMessages($), (await draftViewsNow($)).filter(one => one.peer.id === open.peer.id))
+  // A topic's drafts are its own; a forum's merged stream shows every topic's (§10.9).
+  return threadRows(await threadMessages($), (await draftViewsNow($)).filter(one => one.peer.id === open.peer.id && (open.peer.topic === undefined || isSamePeer(one.peer, open.peer))))
 }
 
 /** The thread's row under the cursor: a message or a draft. */
@@ -601,7 +631,7 @@ async function toNewest($: $): Promise<void> {
  * the next drawing corrects. The thread's are terminal rows, with each of its
  * rows' heights: a draft takes its whole text (./ui/drafts).
  */
-const windowRows = { dialogs: 0, messages: 0, folders: 0 }
+const windowRows = { dialogs: 0, messages: 0, folders: 0, topics: 0 }
 let threadHeights: number[] = []
 /** The day the drawn thread's top row belongs to, once its divider scrolled off (./ui/thread `topDay`); null otherwise. Set while drawing, read by the header. */
 let shownTopDay: string | null = null
@@ -611,8 +641,12 @@ let shownTopDay: string | null = null
  * where the drawing put it (a jump may have moved the cursor without it), then
  * moved only if the cursor leaves the window.
  */
-function cursorTo(value: Nav, list: 'dialogs' | 'messages' | 'folders', cursor: number, length: number): Nav {
+function cursorTo(value: Nav, list: 'dialogs' | 'messages' | 'folders' | 'topics', cursor: number, length: number): Nav {
   const rows = windowRows[list]
+  if (list === 'topics') {
+    const drawn = edgeStart(value.topicStart, value.topicCursor, rows, length)
+    return { ...value, topicCursor: cursor, topicStart: edgeStart(drawn, cursor, rows, length) }
+  }
   if (list === 'dialogs') {
     const drawn = edgeStart(value.dialogStart, value.dialogCursor, rows, length)
     return { ...value, dialogCursor: cursor, dialogStart: edgeStart(drawn, cursor, rows, length) }
@@ -634,6 +668,11 @@ async function moveCursor($: $, by: number): Promise<string | undefined> {
     const moved = await update($, nav, value => cursorTo(value, 'folders', clamp(value.folderCursor + by, items.length), items.length))
     return items[moved.folderCursor]?.key
   }
+  if (view === 'topics') {
+    const items = await topicItems($)
+    const moved = await update($, nav, value => cursorTo(value, 'topics', clamp(value.topicCursor + by, items.length), items.length))
+    return items[moved.topicCursor]?.key
+  }
   if (view === 'dialogs') {
     const list = await listRows($)
     const moved = await update($, nav, value => cursorTo(value, 'dialogs', clamp(value.dialogCursor + by, list.length), list.length))
@@ -647,13 +686,19 @@ async function moveCursor($: $, by: number): Promise<string | undefined> {
 }
 
 async function followRing($: $, element: string): Promise<void> {
-  const [kind, raw] = element.split(':')
+  const [kind] = element.split(':')
+  // Everything after the kind: a topic agent's Activity row is `act:<chat>:<topic>`.
+  const raw = element.slice((kind ?? '').length + 1)
   // The ring only reaches drawn rows: the window holds where it was drawn, as for j and k.
   if (kind === 'dialog' || kind === 'fy') {
     const gen = (await read($, folders)).gen
     const list = await listRows($)
     const index = list.findIndex(row => rowKey(gen, row) === element)
     if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'dialogs', index, list.length), view: 'dialogs' }))
+  } else if (kind === 'topic') {
+    const items = await topicItems($)
+    const index = items.findIndex(item => item.key === element)
+    if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'topics', index, items.length), view: 'topics' }))
   } else if (kind === 'folder') {
     const items = await folderItems($)
     const index = items.findIndex(item => item.key === element)
@@ -663,7 +708,7 @@ async function followRing($: $, element: string): Promise<void> {
     const index = items.findIndex(item => threadRowKey(item) === element)
     if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'messages', index, items.length), view: 'thread' }))
   } else if (kind === 'act') {
-    await followActivity($, Number(raw)) // ── running ──
+    await followActivity($, raw) // ── running ──
   }
 }
 
@@ -688,6 +733,9 @@ async function ringCursor($: $): Promise<void> {
   } else if (where === 'folders') {
     const items = await folderItems($)
     const item = items[clamp((await read($, nav)).folderCursor, items.length)]
+    if (item !== undefined) await moveRing($, item.key)
+  } else if (where === 'topics') {
+    const item = await cursorTopicItem($)
     if (item !== undefined) await moveRing($, item.key)
   } else if (where === 'chats' || where === 'foryou') {
     const row = await cursorRow($)
@@ -731,23 +779,25 @@ async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   const where = await read($, nav)
   const open = await read($, thread)
   const summary = (await read($, triage)).summary
-  if (open !== null && summary !== null && summary.peerId === open.peer.id && where.view === 'thread') return 'summary'
+  if (open !== null && summary !== null && summary.key === peerKey(open.peer) && where.view === 'thread') return 'summary'
   if (where.isSearching || (open !== null && (await read($, bottest)).composing)) return 'field'
   if (where.view === 'thread' && open !== null) return 'chat'
   if (where.view === 'folders') return 'folders'
+  if (where.view === 'topics' && (await read($, forumTopics)) !== null) return 'topics' // ── topics ──
   return where.list.kind === 'foryou' && where.query === '' ? 'foryou' : 'chats'
 }
 
 /** The chat the keys of `where` act on: the card's, the cursor row's in Chats, else the open one. */
 async function keyPeer($: $, where: Where): Promise<PeerRef | undefined> {
   const view = (await read($, autopilot)).view
-  if (where === 'card' && view.kind === 'card') return (await apDialog($, view.dialogId))?.peer
+  if (where === 'card' && view.kind === 'card') return (await apDialog($, view.key))?.peer
   if (where === 'chats' || where === 'foryou') {
     const row = await cursorRow($)
     if (row?.kind === 'agent') return agentPeer($, row.item) // ── folders ──
     return row === undefined ? undefined : peerRefOf(row.dialog)
   }
   if (where === 'folders') return undefined
+  if (where === 'topics') return (await cursorTopicItem($))?.peer // ── topics ── a topic's, or the forum's on `≡ all topics`
   return (await read($, thread))?.peer
 }
 
@@ -775,6 +825,8 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       rows:
         where === 'chats' || where === 'foryou'
           ? (await listRows($)).length
+          : where === 'topics'
+            ? (await topicItems($)).length
           : where === 'folders'
             ? (await folderItems($)).length
             : where === 'activity'
@@ -792,13 +844,14 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       hasButtons: messages.some(message => message.buttons.length > 0),
       cursorButtons: atCursor === undefined || kind === null || !CHAT_KIND_PRESS.includes(kind) ? 0 : Math.min(MAX_DIGIT_CHIPS, atCursor.buttons.flat().length),
       isRecording: bt.recording !== null,
-      isWatched: peer !== undefined && tri.watched.some(one => one.id === peer.id),
-      isFollowed: peer !== undefined && (await read($, pins)).some(pin => pin.peer.id === peer.id),
-      summary: peer !== undefined && tri.summary?.peerId === peer.id ? tri.summary.status : 'none',
+      isWatched: peer !== undefined && tri.watched.some(one => isSamePeer(one, peer)),
+      isFollowed: peer !== undefined && (await read($, pins)).some(pin => isSamePeer(pin.peer, peer)),
+      summary: peer !== undefined && tri.summary?.key === peerKey(peer) ? tri.summary.status : 'none',
       // For you's row (── folders ──); in a chat, a draft's row (§8 T3).
       row: where === 'foryou' ? await forYouRowKind($) : where === 'chat' && (await cursorItem($))?.kind === 'draft' ? 'draft' : null,
       card: where === 'card' && view.kind === 'card' && peer !== undefined ? await cardFacts($, view, peer) : null, // ── autopilot ──
       sheet: sheetStepOf(await read($, overlay)),
+      topic: peer === undefined ? 'none' : await topicFact($, peer), // ── topics ──
     },
   }
 }
@@ -817,6 +870,7 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'open':
       if (where === 'card') return apStep($, 'options') // ── autopilot ── o: the card's options
       if (where === 'activity') return openActivityRow($, (await read($, activity))?.cursor ?? 0)
+      if (where === 'topics') return openTopicAt($, (await read($, nav)).topicCursor) // ── topics ──
       return where === 'folders' ? openFolderAt($, (await read($, nav)).folderCursor) : openAtCursor($)
     case 'senddraft': {
       if (where === 'foryou') return openAtCursor($)
@@ -862,12 +916,21 @@ async function runKey($: $, id: RunKey): Promise<void> {
       // On the summary, t retries one that failed and otherwise closes it, as h does.
       if (where === 'summary') return (await read($, triage)).summary?.status === 'error' ? toggleSummary($) : back($)
       // From a row in Chats or For you: that chat opens, with its summary over the lower part or the send box in the bar's row.
+      // From Topics: the row's topic (or the merged stream) the same way (§10.9).
+      if (where === 'topics') {
+        const item = await cursorTopicItem($)
+        if (item === undefined) return
+        await openPeer($, item.peer)
+        return id === 'summary' ? toggleSummary($) : toggleCompose($)
+      }
       const fromList = where === 'chats' || where === 'foryou'
       const dialog = fromList ? await cursorDialog($) : undefined
       if (fromList && dialog === undefined) return
       if (dialog !== undefined) {
         await applyWaiting($) // ── folders ── the cursor moves into the chat: what waits applies.
-        await openThread($, dialog)
+        // A forum's row: its merged stream, never Topics, so t summarizes every topic (n waits there: §10.9).
+        if (dialog.forum) await openPeer($, peerRefOf(dialog))
+        else await openThread($, dialog)
       }
       return id === 'summary' ? toggleSummary($) : toggleCompose($)
     }
@@ -969,9 +1032,13 @@ async function back($: $): Promise<void> {
     // ── folders ── the top: back down to the chats it came from, as they are now.
     await update($, nav, value => ({ ...value, view: 'dialogs' }))
     await applyWaiting($)
-  } else if (where === 'chat') {
+  } else if (where === 'chat' && (await read($, selection)).ids.length === 0 && (await read($, selection)).anchor === null && (await isInTopics($))) {
+    // ── topics ── a topic or the merged stream: one level up is the forum's Topics (§10.9); what moved there applies.
+    await update($, nav, value => ({ ...value, view: 'topics' }))
+    await applyTopicsWaiting($)
+  } else if (where === 'chat' || where === 'topics') {
     const chosen = await read($, selection)
-    if (chosen.ids.length > 0 || chosen.anchor !== null) await update($, selection, () => NO_SELECTION)
+    if (where === 'chat' && (chosen.ids.length > 0 || chosen.anchor !== null)) await update($, selection, () => NO_SELECTION)
     else {
       await update($, nav, value => ({ ...value, view: 'dialogs' }))
       await applyWaiting($) // ── folders ── the ring moves back to Chats: what waits applies.
@@ -1025,7 +1092,7 @@ async function dismissBand($: $): Promise<void> {
 type Seating = { seat: Seat; width: number; rows: number; isFocused: boolean }
 
 /** Where ▸ sits in the dock's lower card: the open chat, the agent card, a layer, Activity. */
-const LOWER: readonly Where[] = ['chat', 'card', 'sheet', 'activity', 'diff', 'summary', 'recorded']
+const LOWER: readonly Where[] = ['chat', 'topics', 'card', 'sheet', 'activity', 'diff', 'summary', 'recorded']
 
 /**
  * The dock's rows for the layout generation they were laid in (§10.5 "Heights
@@ -1098,6 +1165,9 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const isListShown = !isMenu && (seat === 'dock' || where === 'chats' || where === 'foryou')
   const isThreadShown = !isMenu && where === 'chat'
   if (await hasReloadRow($, isListShown, isThreadShown)) drawn.add('g')
+  // ── topics ── Topics' failed `tg topics` draws its own `g: retry` too.
+  const topicsLoad = (await read($, forumTopics))?.load
+  if (!isMenu && where === 'topics' && topicsLoad?.status === 'error' && topicsLoad.failure.kind !== 'flood') drawn.add('g')
   // The menu's own Buttons carry the keys of the view under it.
   if (isMenu) for (const section of menuSections(context)) for (const entry of section.entries) if (entry.def.hotkey !== null) drawn.add(entry.def.hotkey)
   // ── folders ── digits pick a folder while the cursor is in Chats, the Folders list or For you (§4.7).
@@ -1125,6 +1195,7 @@ async function isLoadingShown($: $, seat: Seat, where: Where): Promise<boolean> 
   const isListShown = seat === 'dock' || where === 'chats' || where === 'foryou' || where === 'folders'
   if (isListShown && list.status === 'loading') return true
   const open = await read($, thread)
+  if (where === 'topics' && (await read($, forumTopics))?.load.status === 'loading') return true // ── topics ──
   return open !== null && open.load.status === 'loading' && (seat === 'dock' || where === 'chat')
 }
 
@@ -1156,9 +1227,10 @@ async function summaryOf($: $) {
 
 async function summaryCounts($: $) {
   const pilot = await read($, autopilot)
-  const levels = pilot.running.map(id => pilot.dialogs[String(id)]?.level)
+  const levels = pilot.running.map(key => pilot.dialogs[key]?.level)
   const count = (level: string) => levels.filter(one => one === level).length
-  const watched = new Set((await read($, triage)).watched.map(peer => peer.id))
+  // A chat's count: a watched topic is not its whole forum's unread (§10.9).
+  const watched = new Set((await read($, triage)).watched.filter(peer => peer.topic === undefined).map(peer => peer.id))
   const listed = await knownDialogs($)
   const replyDraft = await read($, draft)
   return {
@@ -1351,12 +1423,12 @@ async function lowerLook($: $, where: Where, width: number): Promise<CardLook> {
       // ── autopilot ── the card's step after its chat: delegate's warning and grant, `o`'s options; its state in the corner.
       const pilot = await read($, autopilot)
       const view = pilot.view
-      const peer = view.kind === 'card' ? (await apDialog($, view.dialogId))?.peer : undefined
+      const peer = view.kind === 'card' ? (await apDialog($, view.key))?.peer : undefined
       const step = view.kind === 'card' ? view.step : 'ladder'
       // The owner grants here, so the name carries its handle (./ui/model `peerConfirmLabel`): names are spoofable.
       const look = layerLook('card:agent', 'AGENT', peer, peer === undefined ? undefined : peerConfirmLabel(peer))
       const tail = step === 'options' ? ' · options' : step === 'ladder' ? '' : ` · ${LEVEL_GLYPH.delegate} delegate`
-      const chip = view.kind === 'card' ? cardChip(await runningRungOf($, view.dialogId), pilot.phase[String(view.dialogId)]).text : null
+      const chip = view.kind === 'card' ? cardChip(await runningRungOf($, view.key), pilot.phase[view.key]).text : null
       return { ...look, title: look.title.map(part => ({ ...part, text: `${part.text}${tail}` })), corner: chip }
     }
     case 'sheet': {
@@ -1371,6 +1443,8 @@ async function lowerLook($: $, where: Where, width: number): Promise<CardLook> {
       return layerLook('card:diff', 'DIFF', open?.peer)
     case 'summary':
       return layerLook('card:summary', 'SUMMARY', open?.peer)
+    case 'topics':
+      return topicsLook($, width) // ── topics ──
     case 'chats':
     case 'chat':
     case 'folders':
@@ -1397,17 +1471,22 @@ async function chatLook($: $, width: number): Promise<CardLook> {
   const kind = dialogGlyph(peer.kind)
   // A narrow card gives up the handle before the name (§10.5's 44-column mockup).
   const handle = peer.arg.startsWith('@') && width >= LEGEND_MIN ? peer.arg : null
-  const title: TitlePart[] = [
-    { text: `${kind.text} `, role: kind.role },
-    { text: peer.label, role: kind.role, bold: true },
-    ...(handle === null || handle === peer.label ? [] : [{ text: ` · ${handle}`, role: 'subtext' as const }]),
-  ]
+  // ── topics ── a topic or a forum's merged stream: the breadcrumb is the title (§10.9).
+  const crumb = await streamCrumb($, peer, width)
+  const title: TitlePart[] =
+    crumb !== null
+      ? [{ text: crumb, role: 'group', bold: true }]
+      : [
+          { text: `${kind.text} `, role: kind.role },
+          { text: peer.label, role: kind.role, bold: true },
+          ...(handle === null || handle === peer.label ? [] : [{ text: ` · ${handle}`, role: 'subtext' as const }]),
+        ]
   // ── bottest ── the recording; ── routing ── the follow; ── autopilot ── the level; ── triage ── watched.
   const recording = (await read($, bottest)).recording
-  const pin = (await read($, pins)).find(one => one.peer.id === peer.id)
+  const pin = (await read($, pins)).find(one => isSamePeer(one.peer, peer))
   const pilot = await read($, autopilot)
-  const level = pilot.running.includes(peer.id) ? pilot.dialogs[String(peer.id)]?.level : undefined
-  const isWatched = (await read($, triage)).watched.some(one => one.id === peer.id)
+  const level = pilot.running.includes(peerKey(peer)) ? pilot.dialogs[peerKey(peer)]?.level : undefined
+  const isWatched = (await read($, triage)).watched.some(one => isSamePeer(one, peer))
   const isLive = (await read($, bottest)).timing.watch === 'live'
   const parts = [
     shownTopDay,
@@ -1421,7 +1500,7 @@ async function chatLook($: $, width: number): Promise<CardLook> {
   // The corner keeps what fits half the card, from the first part on.
   const room = Math.floor((width - CARD_INNER) / 2)
   const corner = parts.reduce((kept, part) => (kept === '' ? part : labelCells(`${kept} · ${part}`) <= room ? `${kept} · ${part}` : kept), '')
-  return { key: 'card:chat', role: kind.role, title, corner: corner === '' ? null : corner }
+  return { key: 'card:chat', role: crumb === null ? kind.role : 'group', title, corner: corner === '' ? null : corner }
 }
 
 /** The slot the lower card fills: the chat, the agent card, the picker (the send sheet's place), a diff, the summary. */
@@ -1451,6 +1530,8 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
       const summary = await drawSummary($, els, width) // ── triage ──
       return summary === null ? [] : [summary]
     }
+    case 'topics':
+      return drawTopicList($, els, width, rows) // ── topics ──
     case 'chats':
     case 'chat':
     case 'folders':
@@ -1508,7 +1589,7 @@ async function forYouSectionRows($: $): Promise<SectionRow[]> {
   return [
     ...drafts,
     ...waiting.map((dialog): SectionRow => {
-      const row = dialogRow(dialog, { now: at, agent: agentOf(dialog.id) })
+      const row = dialogRow(dialog, { now: at, agent: agentOf(String(dialog.id)) })
       return { key: `fy:chat:${dialog.id}`, ...row, preview: people.why[String(dialog.id)] === 'asks you' ? { text: `asks you: ${dialog.last_text}` } : row.preview }
     }),
   ]
@@ -1574,13 +1655,18 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, mode:
   const start = edgeStart(where.dialogStart, cursor, rows, list.length)
   const shown = { start, items: windowAt(list, start, rows) }
   const gen = (await read($, folders)).gen
+  // ── topics ── the forum whose Topics or stream is open keeps `›` on its row.
+  const forumOpen = (await read($, forumTopics))?.forum.id
+  const openId = where.view === 'topics' ? forumOpen : open?.peer.id
   return shown.items.map((dialog, index) =>
     ChatRow(els, colors, {
-      ...dialogRow(dialog, { now: at, agent: agentOf(dialog.id) }),
+      ...dialogRow(dialog, { now: at, agent: agentOf(String(dialog.id)) }),
+      // A forum whose topics were read this session sums them (§10.9); before that, the pass's own counts.
+      ...forumRowSymbol(dialog, agentOf(String(dialog.id))),
       rowKey: rowKey(gen, { kind: 'chat', dialog }),
       isCursor: mode !== 'idle' && shown.start + index === cursor,
       isStatic: mode === 'static',
-      isOpen: open?.peer.id === dialog.id,
+      isOpen: openId === dialog.id,
       isDim,
       width,
       onPress: async () => {
@@ -1615,6 +1701,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
   shownTopDay = topMessage?.kind === 'message' ? topDay(messages, topMessage.message.id, at) : null
   lastThread = { width, rows } // ── footer ──
   const bt = await bottestCards($, open.peer, messages, layout.look, width, mode)
+  const column = await mergedColumn($, open.peer) // ── topics ── the merged stream labels each message with its topic
   return layout.shown.map((item, index) => {
     const row = layout.start + index
     const isCursor = mode !== 'idle' && row === layout.cursor
@@ -1637,8 +1724,10 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
       })
     }
     const { message } = item
+    const topic = column(message)
     return MessageCard(els, colors, {
       ...bt(els, message, isCursor),
+      ...(topic === undefined ? {} : { topic }),
       message,
       isCursor,
       isStatic: mode === 'static',
@@ -1712,7 +1801,8 @@ type Listening = {
   recent: MessageView[]
 }
 
-const listening = new Map<number, Listening>()
+/** By peer key: a watched topic listens on a watch of its own (§10.9). */
+const listening = new Map<string, Listening>()
 let me: Me | null = null
 let scoring: Promise<void> | null = null
 let summaryAbort: AbortController | null = null
@@ -1748,81 +1838,86 @@ function peerRefOf(dialog: TgDialog): PeerRef {
 async function syncWatches($: $): Promise<void> {
   const state = await read($, triage)
   const open = await read($, thread)
-  const wanted = new Map(state.watched.map(peer => [peer.id, { peer, isBounded: false }]))
-  if ((await read($, mode)) === 'open' && open !== null && !wanted.has(open.peer.id)) {
-    wanted.set(open.peer.id, { peer: open.peer, isBounded: true })
+  const wanted = new Map(state.watched.map(peer => [peerKey(peer), { peer, isBounded: false }]))
+  if ((await read($, mode)) === 'open' && open !== null && !wanted.has(peerKey(open.peer))) {
+    wanted.set(peerKey(open.peer), { peer: open.peer, isBounded: true })
   }
-  for (const id of [...listening.keys()]) {
-    if (!wanted.has(id)) await stopListening($, id)
+  for (const key of [...listening.keys()]) {
+    if (!wanted.has(key)) await stopListening($, key)
   }
   const listed = await knownDialogs($)
   for (const { peer, isBounded } of wanted.values()) {
-    const current = listening.get(peer.id)
+    const current = listening.get(peerKey(peer))
     if (current !== undefined && (current.isBounded === isBounded || current.hasFailed)) continue
-    // Replay from what the pane already has, so nothing between that read and `ready` is lost.
-    const shown = open?.peer.id === peer.id ? loaded(open.load)?.at(-1)?.id : undefined
-    await listen($, peer, isBounded, shown ?? listed.find(dialog => dialog.id === peer.id)?.last_id ?? null)
+    // Replay from what the pane already has, so nothing between that read and `ready` is lost. A topic
+    // has no row of its own in the list: it replays from what its thread has, else from now.
+    const shown = open !== null && isSamePeer(open.peer, peer) ? loaded(open.load)?.at(-1)?.id : undefined
+    const row = peer.topic === undefined ? listed.find(dialog => dialog.id === peer.id)?.last_id : undefined
+    await listen($, peer, isBounded, shown ?? row ?? null)
   }
   await update($, triage, value => ({
     ...value,
-    health: Object.fromEntries(Object.entries(value.health).filter(([id]) => listening.has(Number(id)))),
+    health: Object.fromEntries(Object.entries(value.health).filter(([key]) => listening.has(key))),
   }))
 }
 
 /** Subscribes, or subscribes again (the hub replaces a subscription by name). */
 async function listen($: $, peer: PeerRef, isBounded: boolean, after: number | null): Promise<void> {
-  const entry: Listening = { peer, isBounded, hasFailed: false, recent: listening.get(peer.id)?.recent ?? [] }
-  listening.set(peer.id, entry)
-  await setHealth($, peer.id, 'connecting')
+  const key = peerKey(peer)
+  const entry: Listening = { peer, isBounded, hasFailed: false, recent: listening.get(key)?.recent ?? [] }
+  listening.set(key, entry)
+  await setHealth($, key, 'connecting')
   await subscribeWatch($, peer, {
     name: HUB_NAME,
     isBounded,
     after,
     onEvent: (event, isReplay) => onTriageEvent($, entry, event, isReplay),
-    onRestart: () => (listening.get(peer.id) === entry ? setHealth($, peer.id, 'retrying') : Promise.resolve()),
+    onRestart: () => (listening.get(key) === entry ? setHealth($, key, 'retrying') : Promise.resolve()),
     onEnd: (reason, how) => onTriageEnd($, entry, reason, how),
   })
 }
 
-async function stopListening($: $, dialogId: number): Promise<void> {
-  listening.delete(dialogId)
-  await unsubscribeWatch($, dialogId, HUB_NAME)
+async function stopListening($: $, key: string): Promise<void> {
+  listening.delete(key)
+  await unsubscribeWatch($, key, HUB_NAME)
 }
 
 async function onTriageEnd($: $, entry: Listening, reason: string, how: 'quiet' | 'failed'): Promise<void> {
-  if (listening.get(entry.peer.id) !== entry) return
+  const key = peerKey(entry.peer)
+  if (listening.get(key) !== entry) return
   if (how === 'quiet') {
     // Idled out (the open thread's bounded watch) or stopped from outside. Not
     // listened to again from here, or a watch that ends at once would loop:
     // the next syncWatches (opening a thread, a mode change, `w`) starts it.
-    listening.delete(entry.peer.id)
-    await update($, triage, value => ({ ...value, health: Object.fromEntries(Object.entries(value.health).filter(([id]) => id !== String(entry.peer.id))) }))
+    listening.delete(key)
+    await update($, triage, value => ({ ...value, health: Object.fromEntries(Object.entries(value.health).filter(([one]) => one !== key)) }))
     return
   }
   entry.hasFailed = true
-  await setHealth($, entry.peer.id, 'failed')
+  await setHealth($, key, 'failed')
   $.ui.toast(`tg watch ${entry.peer.arg}: ${reason}`) // the command it ran, so the handle
 }
 
-async function setHealth($: $, dialogId: number, health: WatchHealth): Promise<void> {
-  if (!listening.has(dialogId)) return
-  await update($, triage, value => ({ ...value, health: { ...value.health, [String(dialogId)]: health } }))
+async function setHealth($: $, key: string, health: WatchHealth): Promise<void> {
+  if (!listening.has(key)) return
+  await update($, triage, value => ({ ...value, health: { ...value.health, [key]: health } }))
 }
 
 async function onTriageEvent($: $, entry: Listening, event: WatchEvent, isReplay: boolean): Promise<void> {
-  if (listening.get(entry.peer.id) !== entry) return
+  if (listening.get(peerKey(entry.peer)) !== entry) return
   const { peer } = entry
   if (event.event === 'ready') {
-    await setHealth($, peer.id, 'live')
+    await setHealth($, peerKey(peer), 'live')
     return
   }
   if (event.event === 'typing') return
   if (event.event !== 'delete') entry.recent = [...entry.recent, event.message].slice(-RECENT)
   const open = await read($, thread)
-  if (open?.peer.id === peer.id && open.load.status === 'ok') {
+  // The open thread takes the events of its own watch: a topic's from the topic's, the merged stream's from the forum's.
+  if (open !== null && isSamePeer(open.peer, peer) && open.load.status === 'ok') {
     const atEnd = await isOnNewest($)
     await update($, thread, value =>
-      value?.peer.id === peer.id && value.load.status === 'ok'
+      value !== null && isSamePeer(value.peer, peer) && value.load.status === 'ok'
         ? { ...value, load: { status: 'ok', value: applyToMessages(value.load.value, event, message => message) } }
         : value,
     )
@@ -1841,7 +1936,7 @@ async function onTriageEvent($: $, entry: Listening, event: WatchEvent, isReplay
   if (repliesToYou(message, entry.recent)) {
     await update($, triage, value => ({ ...value, repliedToYou: { ...value.repliedToYou, [String(peer.id)]: message.id } }))
   }
-  if (!(await read($, triage)).watched.some(one => one.id === peer.id)) {
+  if (!(await read($, triage)).watched.some(one => isSamePeer(one, peer))) {
     await refreshStatus($)
     return
   }
@@ -1856,24 +1951,25 @@ async function onTriageEvent($: $, entry: Listening, event: WatchEvent, isReplay
 async function toggleWatch($: $, peer: PeerRef | undefined): Promise<void> {
   if (peer === undefined) return
   const state = await read($, triage)
-  const isWatched = state.watched.some(one => one.id === peer.id)
+  const isWatched = state.watched.some(one => isSamePeer(one, peer))
   if (!isWatched && state.watched.length >= MAX_WATCHED) {
     $.ui.toast(`tg: ${MAX_WATCHED} dialogs are watched already; press w on one to unwatch it first.`)
     return
   }
-  const watched = isWatched ? state.watched.filter(one => one.id !== peer.id) : [...state.watched, peer]
+  const watched = isWatched ? state.watched.filter(one => !isSamePeer(one, peer)) : [...state.watched, peer]
   await update($, triage, value => ({ ...value, watched }))
   await $.store.set(STORE_WATCHED, watched)
   // Marking a dialog again is how a failed watch gets a fresh start.
-  if (!isWatched && listening.get(peer.id)?.hasFailed === true) await stopListening($, peer.id)
+  if (!isWatched && listening.get(peerKey(peer))?.hasFailed === true) await stopListening($, peerKey(peer))
   await syncWatches($)
 }
 
-/** `w`'s dialog: the open thread's in the thread view, else the one at the cursor. */
+/** `w`'s dialog: the open thread's in the thread view, Topics' cursor row (a topic, or the forum on `≡`), else the chat at the cursor. */
 async function watchTarget($: $): Promise<PeerRef | undefined> {
   const where = await read($, nav)
   const open = await read($, thread)
   if (where.view === 'thread' && open !== null) return open.peer
+  if (where.view === 'topics') return (await cursorTopicItem($))?.peer // ── topics ──
   const dialog = await cursorDialog($)
   return dialog === undefined ? undefined : peerRefOf(dialog)
 }
@@ -1887,8 +1983,8 @@ async function watchedReplyId($: $, dialogId: number): Promise<number | null> {
 /** The `◎` mark of each watched dialog's row, colored by its watch's health. */
 // --- summary of the open thread ---
 
-async function setSummary($: $, peerId: number, summary: Summary | null): Promise<void> {
-  await update($, triage, value => (value.summary === null || value.summary.peerId === peerId ? { ...value, summary } : value))
+async function setSummary($: $, key: string, summary: Summary | null): Promise<void> {
+  await update($, triage, value => (value.summary === null || value.summary.key === key ? { ...value, summary } : value))
 }
 
 function modelFailure(result: Exclude<ModelCompleteResult, { isAnswered: true }>): string {
@@ -1907,19 +2003,20 @@ async function toggleSummary($: $): Promise<void> {
   const open = await read($, thread)
   if (open === null) return
   const peer = open.peer
+  const key = peerKey(peer)
   const current = (await read($, triage)).summary
   summaryAbort?.abort()
   summaryAbort = null
-  if (current?.peerId === peer.id && current.status !== 'error') return hideSummary($)
+  if (current?.key === key && current.status !== 'error') return hideSummary($)
   const abort = new AbortController()
   summaryAbort = abort
-  await update($, triage, value => ({ ...value, summary: { peerId: peer.id, status: 'loading' } }))
+  await update($, triage, value => ({ ...value, summary: { key, status: 'loading' } }))
   await update($, nav, value => ({ ...value, view: 'thread' }))
   await moveRing($, 'summary:close')
-  const fetched = await runTg($, tg.read(peer.arg, { limit: SUMMARY_LIMIT }))
+  const fetched = await runTg($, tg.read(peer.arg, { limit: SUMMARY_LIMIT, topic: peer.topic?.id }))
   if (abort.signal.aborted) return
   if (!fetched.ok) {
-    await setSummary($, peer.id, { peerId: peer.id, status: 'error', message: failureText(fetched.failure, await $.clock.now()) })
+    await setSummary($, key, { key, status: 'error', message: failureText(fetched.failure, await $.clock.now()) })
     return
   }
   const result = await $.model.complete(
@@ -1937,10 +2034,10 @@ async function toggleSummary($: $): Promise<void> {
   summaryAbort = null
   await setSummary(
     $,
-    peer.id,
+    key,
     result.isAnswered
-      ? { peerId: peer.id, status: 'ok', text: result.text, count: fetched.value.length }
-      : { peerId: peer.id, status: 'error', message: modelFailure(result) },
+      ? { key, status: 'ok', text: result.text, count: fetched.value.length }
+      : { key, status: 'error', message: modelFailure(result) },
   )
 }
 
@@ -1952,7 +2049,7 @@ async function toggleSummary($: $): Promise<void> {
 async function drawSummary($: $, els: Els, width: number): Promise<RenderElement | null> {
   const open = await read($, thread)
   const summary = (await read($, triage)).summary
-  if (open === null || summary === null || summary.peerId !== open.peer.id) return null
+  if (open === null || summary === null || summary.key !== peerKey(open.peer)) return null
   return SummaryBlock(els, { summary, width, onClose: () => back($) })
 }
 
@@ -2049,10 +2146,11 @@ type WatchHub = {
   retry: Timer | null
 }
 
-const hubs = new Map<number, WatchHub>()
+/** By peer key: a forum topic's watch (`--topic`) is a child of its own (§10.9). */
+const hubs = new Map<string, WatchHub>()
 
 async function subscribeWatch($: $, peer: PeerRef, subscriber: WatchSubscriber): Promise<void> {
-  const hub = hubs.get(peer.id)
+  const hub = hubs.get(peerKey(peer))
   if (hub === undefined) {
     spawnHub($, peer, new Map([[subscriber.name, subscriber]]), subscriber.after)
     return
@@ -2067,28 +2165,28 @@ async function subscribeWatch($: $, peer: PeerRef, subscriber: WatchSubscriber):
   if (hub.isLive) await subscriber.onEvent({ event: 'ready' }, false)
 }
 
-async function unsubscribeWatch($: $, peerId: number, name: string): Promise<void> {
-  const hub = hubs.get(peerId)
+async function unsubscribeWatch($: $, key: string, name: string): Promise<void> {
+  const hub = hubs.get(key)
   if (hub === undefined || !hub.subscribers.delete(name)) return
   // Still wanted: the child goes on (an unbounded one stays so until the last leaves).
   if (hub.subscribers.size > 0) return
-  hubs.delete(peerId)
+  hubs.delete(key)
   hub.retry?.cancel()
   await stopStream(hub.stream)
 }
 
 function spawnHub($: $, peer: PeerRef, subscribers: Map<string, WatchSubscriber>, after: number | null): void {
   const isBounded = [...subscribers.values()].every(one => one.isBounded)
-  const stream = $.process.spawn({ argv: watchArgv(peer.arg, { after, isBounded }) })
+  const stream = $.process.spawn({ argv: watchArgv(peer.arg, { after, isBounded, topic: peer.topic?.id }) })
   const hub: WatchHub = { peer, subscribers, stream, isBounded, isLive: false, lastId: after, attempt: 0, retry: null }
-  hubs.set(peer.id, hub)
+  hubs.set(peerKey(peer), hub)
   runHub($, hub)
 }
 
 function runHub($: $, hub: WatchHub): void {
   pumpHub($, hub).catch(async (error: unknown) => {
-    if (hubs.get(hub.peer.id) !== hub) return
-    hubs.delete(hub.peer.id)
+    if (hubs.get(peerKey(hub.peer)) !== hub) return
+    hubs.delete(peerKey(hub.peer))
     await endHub(hub, `tg watch did not run: ${reasonOf(error)}`, 'failed')
   })
 }
@@ -2096,9 +2194,9 @@ function runHub($: $, hub: WatchHub): void {
 /** The same hub, a new child after the last one died: it replays from the newest id seen. */
 function respawnHub($: $, hub: WatchHub): void {
   hub.retry = null
-  if (hubs.get(hub.peer.id) !== hub) return
+  if (hubs.get(peerKey(hub.peer)) !== hub) return
   hub.isLive = false
-  hub.stream = $.process.spawn({ argv: watchArgv(hub.peer.arg, { after: hub.lastId ?? oldestAfter(hub.subscribers), isBounded: hub.isBounded }) })
+  hub.stream = $.process.spawn({ argv: watchArgv(hub.peer.arg, { after: hub.lastId ?? oldestAfter(hub.subscribers), isBounded: hub.isBounded, topic: hub.peer.topic?.id }) })
   runHub($, hub)
 }
 
@@ -2127,7 +2225,7 @@ async function pumpHub($: $, hub: WatchHub): Promise<void> {
   let stderr = ''
   for await (const chunk of hub.stream) {
     // Stopped or replaced: this child's lines are no one's any more.
-    if (hubs.get(hub.peer.id) !== hub) return
+    if (hubs.get(peerKey(hub.peer)) !== hub) return
     if (chunk.stream === 'stderr') {
       stderr = (stderr + chunk.text).slice(-2000)
       continue
@@ -2137,7 +2235,7 @@ async function pumpHub($: $, hub: WatchHub): Promise<void> {
     // In order: an edit must reach every listener after the message it edits.
     for (const event of parsed.events) await dispatch(hub, event)
   }
-  if (hubs.get(hub.peer.id) !== hub) return
+  if (hubs.get(peerKey(hub.peer)) !== hub) return
   const ended = await hub.stream.result
   const reason = watchEnded(ended, stderr)
   const plan = restartPlan(ended.code, ended.signal, stderr, hub.attempt)
@@ -2147,7 +2245,7 @@ async function pumpHub($: $, hub: WatchHub): Promise<void> {
     hub.retry = $.clock.after(plan.delayMs, () => respawnHub($, hub))
     return
   }
-  hubs.delete(hub.peer.id)
+  hubs.delete(peerKey(hub.peer))
   await endHub(hub, reason, plan.how)
 }
 
@@ -2386,6 +2484,8 @@ async function sheetFacts($: $, shown: Extract<Overlay, { kind: 'sheet' }>, inte
   const selected = selectedMessages(messages, shown.ids)
   const { known, toFetch } = parentsAtHand(selected, messages)
   const peer = open === null ? null : peerOf(open.peer, await knownDialogs($))
+  // ── topics ── the packet names the chat and the topic its messages are in (§10.9).
+  const about = open === null ? null : await packetPeer($, open.peer, selected)
   // One redactor for the packet and the lines inspect shows, so their placeholders agree.
   const redactor = shown.isRedacted ? new Redactor() : null
   const packet =
@@ -2398,6 +2498,7 @@ async function sheetFacts($: $, shown: Extract<Overlay, { kind: 'sheet' }>, inte
           intent: sheetIntent(intentNow, shown.sender, '', shown.handoff !== null),
           redact: redactor ?? false,
           ...(shown.handoff === null ? {} : { handoff: handoffInput(shown.handoff) }),
+          ...(about === null ? {} : packetTopic(about)),
         })
   return { open, selected, known, toFetch, redactor, packet }
 }
@@ -2616,6 +2717,7 @@ async function sendPacket(
         intent: sheetIntent(leg.intent, sender, words, handoff !== null),
         redact,
         ...(handoff === null ? {} : handoffInput(handoff)), // ── bottest ── the recording rides along (§8 T6)
+        ...packetTopic(input.peer), // ── topics ── the chat and the topic (§10.9)
       })
       const base: Base = {
         peer: input.peer,
@@ -2651,7 +2753,8 @@ async function sendIds($: $, ids: readonly number[], legs: readonly Leg[], how: 
     $.ui.toast('tg: those messages are no longer loaded; ⏎ on one sends it.')
     return
   }
-  const sent = await sendPacket($, { peer: open.peer, selected, known: messages, legs, how })
+  // ── topics ── the merged stream's packet is a topic's when every message is in one (§10.9): its ledger row, and a drafted reply, go there.
+  const sent = await sendPacket($, { peer: await packetPeer($, open.peer, selected), selected, known: messages, legs, how })
   const why = sent.fetchFailure === null ? '' : ` Reply-chain parents missing: ${sent.fetchFailure.kind}.`
   if (sent.failed === 0) {
     await update($, selection, () => NO_SELECTION)
@@ -2681,7 +2784,7 @@ async function bandToMain($: $): Promise<void> {
   }
   const { sender, intent } = asked
   const sent = await sendPacket($, {
-    peer,
+    peer: await packetPeer($, peer, found.value),
     selected: found.value,
     known: [],
     legs: [{ to: { kind: 'main' }, intent }],
@@ -2695,8 +2798,8 @@ async function bandToMain($: $): Promise<void> {
 
 let pinFlush: Timer | null = null
 
-async function setWatch($: $, peerId: number, watch: PinWatch): Promise<void> {
-  await update($, pins, value => value.map(pin => (pin.peer.id === peerId ? { ...pin, watch } : pin)))
+async function setWatch($: $, key: string, watch: PinWatch): Promise<void> {
+  await update($, pins, value => value.map(pin => (peerKey(pin.peer) === key ? { ...pin, watch } : pin)))
 }
 
 /**
@@ -2710,12 +2813,12 @@ async function togglePin($: $): Promise<void> {
     $.ui.toast('tg: open a dialog to pin it.')
     return
   }
-  if ((await read($, pins)).some(pin => pin.peer.id === open.peer.id)) {
-    await unpin($, open.peer.id)
+  if ((await read($, pins)).some(pin => isSamePeer(pin.peer, open.peer))) {
+    await unpin($, peerKey(open.peer))
     $.ui.toast(`tg: ${open.peer.label} unpinned.`)
     return
   }
-  const running = await runningRungOf($, open.peer.id) // ── autopilot ──
+  const running = await runningRungOf($, peerKey(open.peer)) // ── autopilot ──
   if (running !== null) return say($, 'info', `p: ${open.peer.label} runs ${RUNG_GLYPH[running]} ${RUNG_NAME[running]} · a: its card switches to follow`)
   const pin = await followPeer($, open.peer)
   const chosen = await read($, route)
@@ -2732,8 +2835,10 @@ async function followPeer($: $, peer: PeerRef): Promise<Pin> {
       ? { kind: 'agent', agentId: chosen.to.agentId, label: chosen.to.label }
       : { kind: 'main' }
   const open = await read($, thread)
-  const loadedNewest = open?.peer.id === peer.id ? (await threadMessages($)).reduce((top, message) => Math.max(top, message.id), 0) : 0
-  const newest = loadedNewest !== 0 ? loadedNewest : ((await knownDialogs($)).find(one => one.id === peer.id)?.last_id ?? 0)
+  const loadedNewest = open !== null && isSamePeer(open.peer, peer) ? (await threadMessages($)).reduce((top, message) => Math.max(top, message.id), 0) : 0
+  // A topic has no row of its own in the list: without its thread loaded it follows from now.
+  const listed = peer.topic === undefined ? ((await knownDialogs($)).find(one => one.id === peer.id)?.last_id ?? 0) : 0
+  const newest = loadedNewest !== 0 ? loadedNewest : listed
   const pin: Pin = {
     peer,
     to,
@@ -2742,15 +2847,15 @@ async function followPeer($: $, peer: PeerRef): Promise<Pin> {
     unsent: [],
     watch: { status: 'starting' },
   }
-  await update($, pins, value => [...value.filter(one => one.peer.id !== peer.id), pin])
+  await update($, pins, value => [...value.filter(one => !isSamePeer(one.peer, peer)), pin])
   await startPinWatch($, pin)
   return pin
 }
 
-async function unpin($: $, peerId: number): Promise<void> {
-  await update($, pins, value => value.filter(pin => pin.peer.id !== peerId))
+async function unpin($: $, key: string): Promise<void> {
+  await update($, pins, value => value.filter(pin => peerKey(pin.peer) !== key))
   $.ui.invalidate('prompt.context')
-  await unsubscribeWatch($, peerId, 'pin')
+  await unsubscribeWatch($, key, 'pin')
 }
 
 /** The pin listens on the peer's shared watch, replaying from its lastId; it keeps the watch from idling out. */
@@ -2759,19 +2864,19 @@ async function startPinWatch($: $, pin: Pin): Promise<void> {
     name: 'pin',
     isBounded: false,
     after: pin.lastId,
-    onEvent: event => onPinEvent($, pin.peer.id, event),
-    onEnd: reason => setWatch($, pin.peer.id, { status: 'failed', reason: `${reason}; p twice restarts it` }),
+    onEvent: event => onPinEvent($, peerKey(pin.peer), event),
+    onEnd: reason => setWatch($, peerKey(pin.peer), { status: 'failed', reason: `${reason}; p twice restarts it` }),
   })
 }
 
-async function onPinEvent($: $, peerId: number, event: WatchEvent): Promise<void> {
+async function onPinEvent($: $, key: string, event: WatchEvent): Promise<void> {
   if (event.event === 'ready') {
-    await setWatch($, peerId, { status: 'live' })
+    await setWatch($, key, { status: 'live' })
     return
   }
   if (event.event !== 'message' && event.event !== 'edit') return
-  const fed = await update($, pins, value => value.map(pin => (pin.peer.id === peerId ? feedPin(pin, event.message) : pin)))
-  const pin = fed.find(one => one.peer.id === peerId)
+  const fed = await update($, pins, value => value.map(pin => (peerKey(pin.peer) === key ? feedPin(pin, event.message) : pin)))
+  const pin = fed.find(one => peerKey(one.peer) === key)
   if (pin?.to.kind === 'main') $.ui.invalidate('prompt.context')
   else if (pin?.to.kind === 'agent' && pinFlush === null) {
     pinFlush = $.clock.after(PIN_FLUSH_MS, () => {
@@ -2798,14 +2903,15 @@ async function flushAgentPins($: $): Promise<void> {
         intent: { id: 'raw', text: 'New messages in a Telegram dialog pinned to you (live, from the dialogs pane).' },
         redact,
         replay: false,
+        ...packetTopic(pin.peer),
       })
       const sent = await $.session.send({ to: { agentId: pin.to.agentId }, text: packet.text })
       if (sent.isDelivered) {
         await update($, pins, value =>
-          value.map(one => (one.peer.id === pin.peer.id ? { ...one, unsent: one.unsent.filter(id => !pin.unsent.includes(id)) } : one)),
+          value.map(one => (isSamePeer(one.peer, pin.peer) ? { ...one, unsent: one.unsent.filter(id => !pin.unsent.includes(id)) } : one)),
         )
       } else {
-        await setWatch($, pin.peer.id, { status: 'failed', reason: `${pin.to.label}: ${sent.reason}` })
+        await setWatch($, peerKey(pin.peer), { status: 'failed', reason: `${pin.to.label}: ${sent.reason}` })
       }
     }),
   )
@@ -2816,7 +2922,7 @@ async function flushAgentPins($: $): Promise<void> {
 /** The step of `of`, only while it is still the draft in the row: a turn can put another in its place meanwhile. */
 async function setDraftStep($: $, of: ReplyDraft, step: ReplyDraft['step']): Promise<void> {
   await update($, draft, value =>
-    value !== null && value.peer.id === of.peer.id && value.replyTo === of.replyTo && value.text === of.text ? { ...value, step } : value,
+    value !== null && isSamePeer(value.peer, of.peer) && value.replyTo === of.replyTo && value.text === of.text ? { ...value, step } : value,
   )
 }
 
@@ -2866,7 +2972,7 @@ async function sendDraft($: $): Promise<boolean> {
   await setDraftStep($, current, { kind: 'sent', ids })
   // The thread again, with the reply in it: the draft's row was the cursor's, and the sent message takes it.
   const open = await read($, thread)
-  if (open?.peer.id === current.peer.id) await loadThread($, open.peer)
+  if (open !== null && open.peer.id === current.peer.id) await loadThread($, open.peer)
   return true
 }
 // ── /routing ──
@@ -2930,13 +3036,13 @@ async function say($: $, tone: Notice['tone'], text: string): Promise<void> {
 // --- the thread's watch: live replies and local timing ---
 
 /** The bot thread whose shared watch bot testing listens on. */
-let watchedPeer: number | null = null
+let watchedPeer: string | null = null
 
 async function stopWatch($: $): Promise<void> {
-  const peerId = watchedPeer
-  if (peerId === null) return
+  const key = watchedPeer
+  if (key === null) return
   watchedPeer = null
-  await unsubscribeWatch($, peerId, 'bottest')
+  await unsubscribeWatch($, key, 'bottest')
   await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
 }
 
@@ -2944,7 +3050,7 @@ async function stopWatch($: $): Promise<void> {
 async function startWatch($: $, peer: PeerRef): Promise<void> {
   await stopWatch($)
   await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'starting' } }))
-  watchedPeer = peer.id
+  watchedPeer = peerKey(peer)
   await subscribeWatch($, peer, {
     name: 'bottest',
     isBounded: true,
@@ -2952,7 +3058,7 @@ async function startWatch($: $, peer: PeerRef): Promise<void> {
     onEvent: (event, isReplay) => onWatchEvent($, peer, event, isReplay),
     onEnd: async () => {
       // tg is missing or the watch ended: stamps fall back to message dates.
-      if (watchedPeer !== peer.id) return
+      if (watchedPeer !== peerKey(peer)) return
       watchedPeer = null
       await update($, bottest, value => ({ ...value, timing: { ...value.timing, watch: 'off' } }))
     },
@@ -2977,7 +3083,7 @@ async function mergeIntoThread($: $, peer: PeerRef, incoming: readonly MessageVi
   const before = await threadMessages($)
   const atEnd = await isOnNewest($)
   const open = await update($, thread, value =>
-    value === null || value.peer.id !== peer.id || value.load.status !== 'ok'
+    value === null || !isSamePeer(value.peer, peer) || value.load.status !== 'ok'
       ? value
       : { ...value, load: { status: 'ok', value: mergeMessages(value.load.value, incoming) } },
   )
@@ -3055,7 +3161,7 @@ async function recordStep($: $, peer: PeerRef, pending: Pending, at: number, res
   const state = await read($, bottest)
   const recording = state.recording
   // A recording is its bot chat's (§4.6): a press in a group meanwhile is not a step of it.
-  if (recording === null || recording.peer.id !== peer.id) return
+  if (recording === null || !isSamePeer(recording.peer, peer)) return
   const history = await threadMessages($)
   const firstReply = result.replies.find(one => !one.out)
   const stamp = firstReply === undefined ? null : stampFor(firstReply, history, state.timing)
@@ -3084,6 +3190,8 @@ async function pressChip($: $, message: MessageView, button: KeyButton): Promise
   const action = chipAction(button)
   if (action.kind !== 'press') return say($, action.kind === 'show' ? 'info' : 'warn', action.text)
   if (isBotFather(open.peer.arg)) return say($, 'warn', readOnlyText({ kind: 'botfather' }))
+  // ── topics ── a reply keyboard's press sends its text, and tg's press takes no --topic: in a forum it would land in General (§10.9).
+  if (message.keyboard === 'reply' && (await topicFact($, open.peer)) !== 'none') return say($, 'warn', `${GLYPH.error} a reply keyboard in a forum: tg press would send "${button.text}" into General, not this topic. Type it with n instead.`)
   if ((await read($, bottest)).busy !== null) return say($, 'info', 'tg is still running the last step; press again once it is done.')
   const at = await $.clock.now()
   await update($, bottest, value => ({ ...value, busy: `pressing "${button.text}"`, notice: null, timing: pressed(value.timing, at, message.id, []) }))
@@ -3104,10 +3212,15 @@ async function sendFromBox($: $, text: string): Promise<void> {
   const open = await read($, thread)
   if (open === null || text.trim() === '') return
   if (isBotFather(open.peer.arg)) return say($, 'warn', readOnlyText({ kind: 'botfather' }))
+  // ── topics ── a forum is written in one topic, named with --topic; a closed one takes nothing (§10.9). The keys
+  // already hold n back in both cases; this holds the rule at the write itself.
+  const fact = await topicFact($, open.peer)
+  if (fact === 'all') return say($, 'warn', 'n: open a topic: a forum is written in one topic')
+  if (fact === 'closed') return say($, 'warn', 'n: closed topic')
   if ((await read($, bottest)).busy !== null) return say($, 'info', 'tg is still running the last step; send again once it is done.')
   const at = await $.clock.now()
   await update($, bottest, value => ({ ...value, busy: `sending ${oneLine(text, 24)}`, notice: null, timing: sent(value.timing, at) }))
-  const result = await runWrite($, calls.send(open.peer.arg, true), text)
+  const result = await runWrite($, calls.send(open.peer.arg, true, open.peer.topic?.id), text)
   await finishWrite($, open.peer, { kind: 'send', text, wait_s: SEND_WAIT_S }, at, result)
 }
 
@@ -3149,7 +3262,7 @@ async function toggleRecord($: $): Promise<void> {
     return
   }
   const recording = state.recording
-  if (recording.peer.id !== open.peer.id) return say($, 'info', `r: the recording runs in ${recording.peer.label}; r there stops it.`)
+  if (!isSamePeer(recording.peer, open.peer)) return say($, 'info', `r: the recording runs in ${recording.peer.label}; r there stops it.`)
   if (recording.steps.length === 0) {
     await update($, bottest, value => ({ ...value, recording: null }))
     await say($, 'info', 'Recording stopped: no steps, nothing written.')
@@ -3226,7 +3339,7 @@ async function handOffRecorded($: $): Promise<void> {
   if (recorded === null || open === null) return
   const loaded = new Set((await threadMessages($)).map(one => one.id))
   const ids = recordedIds(recorded.steps).filter(id => loaded.has(id))
-  if (open.peer.id !== recorded.peer.id || ids.length === 0) return say($, 'warn', `The recording's messages are no longer loaded; ${recorded.shown} still holds the steps.`)
+  if (!isSamePeer(open.peer, recorded.peer) || ids.length === 0) return say($, 'warn', `The recording's messages are no longer loaded; ${recorded.shown} still holds the steps.`)
   await update($, bottest, value => ({ ...value, recorded: null }))
   const redact = await read($, isRedacted) // ── routing ──
   const handoff = { peer: recorded.peer, shown: recorded.path === null ? null : recorded.shown, steps: recorded.steps }
@@ -3479,7 +3592,8 @@ type ApRuntime = {
   abort: AbortController | null
 }
 
-const apRuntimes = new Map<number, ApRuntime>()
+/** By peer key: a forum topic's agent runs on its own (§10.9). */
+const apRuntimes = new Map<string, ApRuntime>()
 let apTicker: Timer | null = null
 
 /** From session.start (and a reload): the settings from $.store; dialogs still `running` in this session listen again. */
@@ -3488,29 +3602,31 @@ async function startAutopilot($: $): Promise<void> {
   const state = await update($, autopilot, (value): Autopilot => ({
     ...value,
     dialogs,
-    running: value.running.filter(id => dialogs[String(id)] !== undefined),
+    // Keys from before forum topics were numbers; a reload across that change lets them go.
+    running: value.running.filter(key => typeof key === 'string' && dialogs[key] !== undefined),
     phase: {},
     // A card for a dialog no longer stored closes; so does the ledger tab a reload across T4 may still hold.
     // A card held across a reload from before T3 has no step: it closes too.
-    view: value.view.kind === 'card' && dialogs[String(value.view.dialogId)] !== undefined && typeof value.view.step === 'string' ? value.view : { kind: 'none' },
+    view: value.view.kind === 'card' && typeof value.view.key === 'string' && dialogs[value.view.key] !== undefined && typeof value.view.step === 'string' ? value.view : { kind: 'none' },
   }))
   // ── delegate ── a reload keeps this session's leases; one another session took meanwhile stops here.
   const kept = await apKeepLeases($, state.running)
   await Promise.all(
-    kept.flatMap(id => {
-      const dialog = state.dialogs[String(id)]
+    kept.flatMap(key => {
+      const dialog = state.dialogs[key]
       return dialog === undefined ? [] : [apListen($, dialog.peer)]
     }),
   )
   if (state.undo !== null) apStartTicker($)
 }
 
-async function apSetPhase($: $, dialogId: number, phase: ApPhase): Promise<void> {
-  await update($, autopilot, value => (value.phase[String(dialogId)] === phase ? value : { ...value, phase: { ...value.phase, [String(dialogId)]: phase } }))
+async function apSetPhase($: $, key: string, phase: ApPhase): Promise<void> {
+  await update($, autopilot, value => (value.phase[key] === phase ? value : { ...value, phase: { ...value.phase, [key]: phase } }))
 }
 
-async function apDialog($: $, dialogId: number): Promise<ApDialog | null> {
-  return (await read($, autopilot)).dialogs[String(dialogId)] ?? null
+/** A dialog's settings by its peer key: a chat's id, or `chatId:topicId` for a forum topic (§10.9). */
+async function apDialog($: $, key: string): Promise<ApDialog | null> {
+  return (await read($, autopilot)).dialogs[key] ?? null
 }
 
 async function apLog($: $, entry: Omit<Autopilot['ledger'][number], 'seq'>): Promise<number> {
@@ -3551,8 +3667,8 @@ async function apIsAllowed($: $, peer: PeerRef): Promise<boolean> {
 
 async function apListen($: $, peer: PeerRef): Promise<void> {
   const rt: ApRuntime = { peer, burst: NO_BURST, timer: null, isBusy: false, turn: 0, wasLive: false, isSending: false, sentIds: new Set(), seq: null, abort: null }
-  apRuntimes.set(peer.id, rt)
-  await apSetPhase($, peer.id, 'listening')
+  apRuntimes.set(peerKey(peer), rt)
+  await apSetPhase($, peerKey(peer), 'listening')
   await subscribeWatch($, peer, {
     name: AP_HUB,
     isBounded: false,
@@ -3563,29 +3679,30 @@ async function apListen($: $, peer: PeerRef): Promise<void> {
 }
 
 /** Stops one dialog: its timer, its model call, its subscription; a burst in the works is logged as stopped. */
-async function apUnlisten($: $, dialogId: number): Promise<void> {
-  const rt = apRuntimes.get(dialogId)
+async function apUnlisten($: $, key: string): Promise<void> {
+  const rt = apRuntimes.get(key)
   if (rt === undefined) return
-  apRuntimes.delete(dialogId)
+  apRuntimes.delete(key)
   rt.turn += 1
   rt.timer?.cancel()
   rt.abort?.abort()
   if (rt.seq !== null) await apPatch($, rt.seq, { outcome: { kind: 'skipped', reason: 'autopilot stopped' } })
-  await dgStopTasksOf($, dialogId, 'autopilot stopped') // ── delegate ──
-  await apReleaseLease($, dialogId) // ── delegate ──
+  await dgStopTasksOf($, key, 'autopilot stopped') // ── delegate ──
+  await apReleaseLease($, key) // ── delegate ──
   // Last: ending the watch child is the part that can throw.
-  await unsubscribeWatch($, dialogId, AP_HUB)
+  await unsubscribeWatch($, key, AP_HUB)
 }
 
 async function onApEnd($: $, rt: ApRuntime, reason: string): Promise<void> {
-  if (apRuntimes.get(rt.peer.id) !== rt) return
-  await apUnlisten($, rt.peer.id)
-  await update($, autopilot, value => ({ ...value, running: value.running.filter(id => id !== rt.peer.id) }))
+  const key = peerKey(rt.peer)
+  if (apRuntimes.get(key) !== rt) return
+  await apUnlisten($, key)
+  await update($, autopilot, value => ({ ...value, running: value.running.filter(one => one !== key) }))
   $.ui.toast(`tg: autopilot stopped for ${rt.peer.label}: ${reason}`)
 }
 
 async function onApEvent($: $, rt: ApRuntime, event: WatchEvent, isReplay: boolean): Promise<void> {
-  if (apRuntimes.get(rt.peer.id) !== rt) return
+  if (apRuntimes.get(peerKey(rt.peer)) !== rt) return
   const at = await $.clock.now()
   switch (event.event) {
     case 'ready':
@@ -3627,15 +3744,15 @@ async function apYouAnswered($: $, rt: ApRuntime): Promise<void> {
   rt.seq = null
   rt.burst = NO_BURST
   if (seq !== null) await apPatch($, seq, { outcome: { kind: 'skipped', reason: 'you replied' } })
-  await keepThreadCursor($, () => update($, autopilot, value => ({ ...value, drafts: value.drafts.filter(one => one.peer.id !== rt.peer.id) })))
-  await apSetPhase($, rt.peer.id, 'listening')
+  await keepThreadCursor($, () => update($, autopilot, value => ({ ...value, drafts: value.drafts.filter(one => !isSamePeer(one.peer, rt.peer)) })))
+  await apSetPhase($, peerKey(rt.peer), 'listening')
   await refreshStatus($)
 }
 
 /** Sets the burst's timer, or starts it; never awaits the answer, so the hub keeps delivering events meanwhile. */
 async function apSchedule($: $, rt: ApRuntime): Promise<void> {
-  if (apRuntimes.get(rt.peer.id) !== rt || rt.isBusy) return
-  const dialog = await apDialog($, rt.peer.id)
+  if (apRuntimes.get(peerKey(rt.peer)) !== rt || rt.isBusy) return
+  const dialog = await apDialog($, peerKey(rt.peer))
   if (dialog === null) return
   const at = await $.clock.now()
   const wake = wakeAt(rt.burst, dialog.gapS * 1000, at)
@@ -3643,7 +3760,7 @@ async function apSchedule($: $, rt: ApRuntime): Promise<void> {
   rt.timer = null
   switch (wake.kind) {
     case 'idle':
-      return apSetPhase($, rt.peer.id, 'listening')
+      return apSetPhase($, peerKey(rt.peer), 'listening')
     case 'wait':
       rt.timer = $.clock.after(wake.at - at, () => {
         rt.timer = null
@@ -3651,7 +3768,7 @@ async function apSchedule($: $, rt: ApRuntime): Promise<void> {
           // A failed wake leaves the burst waiting; the next message or typing event schedules it again.
         })
       })
-      return apSetPhase($, rt.peer.id, wake.why === 'typing' ? 'typing' : 'gathering')
+      return apSetPhase($, peerKey(rt.peer), wake.why === 'typing' ? 'typing' : 'gathering')
     case 'go':
       apRunBurst($, rt).catch(() => {
         // apRunBurst logs its own failures in the ledger; nothing is left to report.
@@ -3672,7 +3789,7 @@ async function apRunBurst($: $, rt: ApRuntime): Promise<void> {
     rt.isBusy = false
     rt.abort = null
   }
-  if (apRuntimes.get(rt.peer.id) === rt) await apSchedule($, rt)
+  if (apRuntimes.get(peerKey(rt.peer)) === rt) await apSchedule($, rt)
 }
 
 /** The burst is handled: its messages leave it, and its ledger entry gets the outcome. */
@@ -3686,7 +3803,8 @@ async function apDone($: $, rt: ApRuntime, ids: readonly number[], outcome: ApOu
 
 /** read_history: the dialog's last messages, oldest first; none when tg cannot say. */
 async function apHistory($: $, rt: ApRuntime, limit: number): Promise<MessageView[]> {
-  const result = await runTg($, tg.read(rt.peer.arg, { limit }))
+  // A topic's agent reads its topic alone (§10.9).
+  const result = await runTg($, tg.read(rt.peer.arg, { limit, topic: rt.peer.topic?.id }))
   return result.ok ? result.value : []
 }
 
@@ -3710,12 +3828,13 @@ async function apAsk<T>($: $, rt: ApRuntime, dialog: ApDialog, prompt: string, p
  * the flow there, before anything is written.
  */
 async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
-  const alive = () => apRuntimes.get(rt.peer.id) === rt && rt.turn === turn
-  const dialog = await apDialog($, rt.peer.id)
+  const key = peerKey(rt.peer)
+  const alive = () => apRuntimes.get(key) === rt && rt.turn === turn
+  const dialog = await apDialog($, key)
   const burst = rt.burst.messages
   if (dialog === null || burst.length === 0) return
   const ids = burst.map(one => one.id)
-  await apSetPhase($, rt.peer.id, 'thinking')
+  await apSetPhase($, key, 'thinking')
   const incoming = burst.map(one => ({ id: one.id, text: messageText(one) }))
   if (rt.seq === null) {
     rt.seq = await apLog($, { at: await $.clock.now(), peer: rt.peer, level: dialog.level, incoming, reply: '', confidence: null, topics: [], checks: [], outcome: { kind: 'working' }, undo: null })
@@ -3723,27 +3842,28 @@ async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
     await apPatch($, rt.seq, { incoming, level: dialog.level })
   }
   const peer = peerOf(rt.peer, await knownDialogs($))
+  const topic = packetTopic(rt.peer) // ── topics ── the packet names the topic the burst came from (§10.9)
   const history = await apHistory($, rt, HISTORY_LIMIT)
   if (!alive()) return
 
   if (dialog.level === 'listen') {
     rt.abort = new AbortController()
     const result = await $.model.complete(
-      { model: speakerModel, system: LISTEN_SYSTEM, prompt: listenPrompt({ peer, burst, history }), maxTokens: 200, timeoutMs: SPEAKER_TIMEOUT_MS },
+      { model: speakerModel, system: LISTEN_SYSTEM, prompt: listenPrompt({ peer, burst, history, ...topic }), maxTokens: 200, timeoutMs: SPEAKER_TIMEOUT_MS },
       { signal: rt.abort.signal },
     )
     if (!alive()) return
     if (!result.isAnswered) return apDone($, rt, ids, { kind: 'failed', reason: modelFailure(result) })
     const text = oneLine(result.text.trim(), 200)
     const seq = rt.seq ?? 0
-    await update($, autopilot, value => ({ ...value, notes: [...value.notes.filter(one => one.peer.id !== rt.peer.id), { seq, peer: rt.peer, text }] }))
+    await update($, autopilot, value => ({ ...value, notes: [...value.notes.filter(one => !isSamePeer(one.peer, rt.peer)), { seq, peer: rt.peer, text }] }))
     return apDone($, rt, ids, { kind: 'listened' }, { reply: text })
   }
 
   // ── delegate ── a delegate dialog's Speaker also has the task actions, and sees the running task.
-  const task = dialog.level === 'delegate' ? await dgLiveTask($, rt.peer.id) : null
+  const task = dialog.level === 'delegate' ? await dgLiveTask($, key) : null
   const speak = (context: MessageView[], canReadMore: boolean): Promise<Said<DelegateSpoken>> => {
-    const prompt = replyPrompt({ peer, burst, history: context, canReadMore })
+    const prompt = replyPrompt({ peer, burst, history: context, canReadMore, ...topic })
     return dialog.level === 'delegate'
       ? apAsk($, rt, dialog, `${prompt}\n${delegateInstructions(task)}`, parseDelegate, delegateSystem(dialog))
       : apAsk($, rt, dialog, prompt, text => {
@@ -3766,7 +3886,7 @@ async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
   }
   const at = await $.clock.now()
   const verdict = gate(dialog, { ...said, action: said.action }, {
-    sentLastHour: sentLastHour((await read($, autopilot)).ledger, rt.peer.id, at),
+    sentLastHour: sentLastHour((await read($, autopilot)).ledger, key, at),
     minutes: localMinutes(at),
     isAllowed: await apIsAllowed($, rt.peer),
   })
@@ -3775,14 +3895,14 @@ async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
   if (verdict.kind === 'draft') return apToDraft($, rt, ids, said, verdict.reasons)
 
   // Check before sending: read the dialog again.
-  await apSetPhase($, rt.peer.id, 'checking')
+  await apSetPhase($, key, 'checking')
   const fresh = await apFresh($, rt, ids)
   if (!alive()) return
   if (fresh === null) return apYouAnswered($, rt)
   let next: AfterCheck = 'send'
   let confidence = said.confidence
   if (fresh.length > 0) {
-    const checked: Said<Checked> = await apAsk($, rt, dialog, checkPrompt({ peer, burst, reply: said.text, fresh }), parseChecked)
+    const checked: Said<Checked> = await apAsk($, rt, dialog, checkPrompt({ peer, burst, reply: said.text, fresh, ...topic }), parseChecked)
     if (!alive()) return
     if (!checked.ok) return apToDraft($, rt, [...ids, ...fresh.map(one => one.id)], said, [`check failed: ${checked.reason}`])
     const choice = checked.value.choice
@@ -3799,7 +3919,7 @@ async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
     case 'regenerate':
       // The new messages are in the burst; a new gap from now, then the Speaker writes it again.
       rt.burst = { ...rt.burst, regenerations: rt.burst.regenerations + 1, lastAt: await $.clock.now() }
-      return apSetPhase($, rt.peer.id, 'gathering')
+      return apSetPhase($, key, 'gathering')
     case 'draft':
       return apToDraft($, rt, all, { ...said, confidence }, [`regenerated ${MAX_REGENERATIONS}×, conf < ${dialog.threshold.toFixed(2)}`])
     case 'send':
@@ -3816,7 +3936,7 @@ async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
  */
 async function apFresh($: $, rt: ApRuntime, ids: readonly number[]): Promise<MessageView[] | null> {
   const newest = Math.max(...ids)
-  const result = await runTg($, tg.read(rt.peer.arg, { limit: 10 }))
+  const result = await runTg($, tg.read(rt.peer.arg, { limit: 10, topic: rt.peer.topic?.id }))
   // tg could not read: the watch's view stands alone (it is live, so it lags by a moment at most).
   const later = result.ok ? result.value.filter(one => one.id > newest) : []
   if (later.some(one => one.out && !rt.sentIds.has(one.id))) return null
@@ -3848,17 +3968,19 @@ function writeFailure(result: WriteResult & { ok: false }, peer: PeerRef, at: nu
 }
 
 async function apSendReply($: $, rt: ApRuntime, turn: number, ids: readonly number[], said: Spoken): Promise<void> {
-  const isRunning = (await read($, autopilot)).running.includes(rt.peer.id)
-  if (apRuntimes.get(rt.peer.id) !== rt || rt.turn !== turn || !isRunning) return
+  const key = peerKey(rt.peer)
+  const isRunning = (await read($, autopilot)).running.includes(key)
+  if (apRuntimes.get(key) !== rt || rt.turn !== turn || !isRunning) return
   // ── delegate ── share and commit-on-behalf stop the Speaker's text until you answer.
   const stopped = await dgOutgoing($, rt.peer, said.text, rt.seq)
-  if (apRuntimes.get(rt.peer.id) !== rt || rt.turn !== turn) return
+  if (apRuntimes.get(key) !== rt || rt.turn !== turn) return
   if (stopped !== null) return apToDraft($, rt, ids, said, [stopped])
-  await apSetPhase($, rt.peer.id, 'sending')
+  await apSetPhase($, key, 'sending')
   rt.isSending = true
   let result: WriteResult
   try {
-    result = await runWrite($, calls.reply(rt.peer.arg), said.text)
+    // Into the topic the burst came from, named (§10.9): the watch was that topic's alone.
+    result = await runWrite($, calls.reply(rt.peer.arg, false, rt.peer.topic?.id), said.text)
   } finally {
     rt.isSending = false
   }
@@ -3870,7 +3992,7 @@ async function apSendReply($: $, rt: ApRuntime, turn: number, ids: readonly numb
   const sent = result.sent.map(one => one.id)
   for (const id of sent) rt.sentIds.add(id)
   const seq = rt.seq ?? 0
-  await dgOnSent($, rt.peer.id, said.text, at) // ── delegate ──
+  await dgOnSent($, key, said.text, at) // ── delegate ──
   await apDone($, rt, ids, { kind: 'sent', ids: sent, by: 'auto' }, { undo: { state: 'open', until: at + UNDO_MS } })
   await update($, autopilot, value => ({
     ...value,
@@ -3953,7 +4075,7 @@ async function apCheckDraft($: $, seq: number): Promise<void> {
   await apSetDraft($, seq, one => ({ ...one, check: { kind: 'checking' } }))
   let ran: ProcessRunResult
   try {
-    ran = await $.process.run([...calls.reply(draft.peer.arg, true), '--dry-run'], { stdin: draft.text, timeoutMs: TG_TIMEOUT_MS })
+    ran = await $.process.run([...calls.reply(draft.peer.arg, true, draft.peer.topic?.id), '--dry-run'], { stdin: draft.text, timeoutMs: TG_TIMEOUT_MS })
   } catch (error) {
     return apSetDraft($, seq, one => (isSame(one) ? { ...one, check: { kind: 'failed', reason: `tg did not run: ${reasonOf(error)}` } } : one))
   }
@@ -3978,11 +4100,11 @@ async function apSendDraft($: $, seq?: number): Promise<boolean> {
     return true
   }
   await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'sending' } }))
-  const rt = apRuntimes.get(draft.peer.id)
+  const rt = apRuntimes.get(peerKey(draft.peer))
   if (rt !== undefined) rt.isSending = true
   let result: WriteResult
   try {
-    result = await runWrite($, calls.reply(draft.peer.arg, true), draft.text)
+    result = await runWrite($, calls.reply(draft.peer.arg, true, draft.peer.topic?.id), draft.text)
   } finally {
     if (rt !== undefined) rt.isSending = false
   }
@@ -4121,6 +4243,8 @@ async function openDraftRow($: $, ref: DraftRef): Promise<void> {
 /** `o` on a draft or a summary: the pane, on that dialog. */
 async function apOpen($: $, peer: PeerRef): Promise<void> {
   if ((await read($, mode)) !== 'open') await setMode($, 'open')
+  // ── topics ── a topic's own thread; a forum as a whole lands on its Topics, as ⏎ on its row does (§10.9).
+  if (peer.topic !== undefined) return openPeer($, peer)
   const listed = (await knownDialogs($)).find(one => one.id === peer.id)
   await openThread($, listed ?? dialogOfPeer(peer))
 }
@@ -4132,11 +4256,11 @@ function cardKind(peer: PeerRef): ChatKind {
   return chatKind(peer.kind, isBotFather(peer.arg))
 }
 
-/** The rung running in a chat: its follow (pin), or its autopilot level (one at most, decision 2). */
-async function runningRungOf($: $, dialogId: number): Promise<ApRung | null> {
+/** The rung running in a chat, or a forum topic, by its peer key: its follow (pin), or its autopilot level (one at most, decision 2). */
+async function runningRungOf($: $, key: string): Promise<ApRung | null> {
   const pilot = await read($, autopilot)
-  const level = pilot.running.includes(dialogId) ? (pilot.dialogs[String(dialogId)]?.level ?? null) : null
-  return runningRung((await read($, pins)).some(pin => pin.peer.id === dialogId), level)
+  const level = pilot.running.includes(key) ? (pilot.dialogs[key]?.level ?? null) : null
+  return runningRung((await read($, pins)).some(pin => peerKey(pin.peer) === key), level)
 }
 
 /** `a`: the card for the open thread's chat, or the one at the cursor; again closes it. */
@@ -4159,15 +4283,18 @@ async function apToggleCard($: $): Promise<void> {
  * read again on every open, so an allow added in the prompt since shows at once.
  */
 async function apOpenCard($: $, peer: PeerRef): Promise<void> {
-  const ladder = ladderFor(cardKind(peer))
+  // ── topics ── a forum's agent is a topic's: on the whole forum it would answer into General (§10.9).
+  if ((await topicFact($, peer)) === 'all') return say($, 'info', 'a: agent · open a topic')
+  const ladder = ladderFor(cardKind(peer), peer.topic?.isClosed === true)
   if (ladder.length === 0) return
-  const running = await runningRungOf($, peer.id)
+  const key = peerKey(peer)
+  const running = await runningRungOf($, key)
   await update($, autopilot, value => {
-    const stored = value.dialogs[String(peer.id)] ?? defaultDialog(peer)
+    const stored = value.dialogs[key] ?? defaultDialog(peer)
     return {
       ...value,
-      dialogs: value.dialogs[String(peer.id)] === undefined ? { ...value.dialogs, [String(peer.id)]: stored } : value.dialogs,
-      view: { kind: 'card', dialogId: peer.id, step: 'ladder', pick: firstPick(ladder, running, stored.level), notice: null, back: 'ladder' },
+      dialogs: value.dialogs[key] === undefined ? { ...value.dialogs, [key]: stored } : value.dialogs,
+      view: { kind: 'card', key, step: 'ladder', pick: firstPick(ladder, running, stored.level), notice: null, back: 'ladder' },
     }
   })
   // ⏎ starts or stops: the ring waits on the bar's `⏎ start …` (design §3.3).
@@ -4185,7 +4312,7 @@ async function apNotice($: $, notice: string | null): Promise<void> {
 async function apStep($: $, step: CardStep, ring?: string): Promise<void> {
   const view = await update($, autopilot, value => (value.view.kind === 'card' ? { ...value, view: { ...value.view, step, notice: null, back: step === 'options' ? (value.view.step === 'grant' ? 'grant' : 'ladder') : value.view.back } } : value))
   if (view.view.kind !== 'card') return
-  if (step === 'grant') await dgFillRepos($, view.view.dialogId) // ── delegate ──
+  if (step === 'grant') await dgFillRepos($, view.view.key) // ── delegate ──
   await moveRing($, ring ?? (step === 'ladder' ? 'key:start' : `key:start:${step}`))
 }
 
@@ -4220,14 +4347,14 @@ async function apPick($: $, rung: ApRung): Promise<void> {
   const view = (await read($, autopilot)).view
   if (view.kind !== 'card') return
   await update($, autopilot, value => (value.view.kind === 'card' ? { ...value, view: { ...value.view, pick: rung, notice: null } } : value))
-  if (rung === 'delegate') await apStep($, (await dgSettings($, view.dialogId)).isWarned ? 'grant' : 'warning') // ── delegate ──
+  if (rung === 'delegate') await apStep($, (await dgSettings($, view.key)).isWarned ? 'grant' : 'warning') // ── delegate ──
 }
 
 /** A change from the card: kept in $.state and $.store at once. */
-async function apEdit($: $, dialogId: number, change: (dialog: ApDialog) => ApDialog): Promise<void> {
+async function apEdit($: $, key: string, change: (dialog: ApDialog) => ApDialog): Promise<void> {
   const next = await update($, autopilot, value => {
-    const current = value.dialogs[String(dialogId)]
-    return current === undefined ? value : { ...value, dialogs: { ...value.dialogs, [String(dialogId)]: change(current) } }
+    const current = value.dialogs[key]
+    return current === undefined ? value : { ...value, dialogs: { ...value.dialogs, [key]: change(current) } }
   })
   await $.store.set(STORE_AUTOPILOT, next.dialogs)
 }
@@ -4237,10 +4364,10 @@ async function apCardActionNow($: $, view: Extract<ApView, { kind: 'card' }>, pe
   return cardAction({
     step: view.step,
     pick: view.pick,
-    running: await runningRungOf($, peer.id),
+    running: await runningRungOf($, peerKey(peer)),
     allow: apAllowView(peer, (await read($, bottest)).allow),
     isGuardUp: (await dgGuardArmed($)) !== null, // ── delegate ──
-    isWarned: (await dgSettings($, peer.id)).isWarned, // ── delegate ──
+    isWarned: (await dgSettings($, peerKey(peer))).isWarned, // ── delegate ──
   })
 }
 
@@ -4253,7 +4380,7 @@ async function apCardActionNow($: $, view: Extract<ApView, { kind: 'card' }>, pe
 async function apCardEnter($: $): Promise<void> {
   const view = (await read($, autopilot)).view
   if (view.kind !== 'card') return
-  const dialog = await apDialog($, view.dialogId)
+  const dialog = await apDialog($, view.key)
   if (dialog === null) return
   const { peer } = dialog
   let action = await apCardActionNow($, view, peer)
@@ -4271,7 +4398,7 @@ async function apCardEnter($: $): Promise<void> {
     case 'warn':
       return apStep($, 'warning')
     case 'grant':
-      if (view.step === 'warning') await dgEdit($, peer.id, dg => ({ ...dg, isWarned: true })) // ── delegate ── the owner read the warning
+      if (view.step === 'warning') await dgEdit($, peerKey(peer), dg => ({ ...dg, isWarned: true })) // ── delegate ── the owner read the warning
       return apStep($, 'grant')
     case 'allow': {
       if (!(await apAskAllow($, peer, view.pick))) return
@@ -4323,7 +4450,7 @@ async function apAskAllow($: $, peer: PeerRef, rung: ApRung): Promise<boolean> {
     return false
   }
   const view = (await read($, autopilot)).view
-  if (view.kind !== 'card' || view.dialogId !== peer.id) {
+  if (view.kind !== 'card' || view.key !== peerKey(peer)) {
     $.ui.toast(`tg: not added: the card had moved on from ${peer.label} when you answered.`)
     return false
   }
@@ -4369,11 +4496,11 @@ async function takeKeysBack($: $): Promise<void> {
 
 /** Stops whatever rung runs in the chat: its follow, or its autopilot (and with it its Worker, apUnlisten → dgStopTasksOf). */
 async function apStopRung($: $, dialog: ApDialog): Promise<void> {
-  const id = dialog.peer.id
-  if ((await read($, pins)).some(pin => pin.peer.id === id)) await unpin($, id) // ── routing ──
-  if (!(await read($, autopilot)).running.includes(id)) return
-  await apUnlisten($, id)
-  await update($, autopilot, value => ({ ...value, running: value.running.filter(one => one !== id), phase: { ...value.phase, [String(id)]: 'listening' } }))
+  const key = peerKey(dialog.peer)
+  if ((await read($, pins)).some(pin => peerKey(pin.peer) === key)) await unpin($, key) // ── routing ──
+  if (!(await read($, autopilot)).running.includes(key)) return
+  await apUnlisten($, key)
+  await update($, autopilot, value => ({ ...value, running: value.running.filter(one => one !== key), phase: { ...value.phase, [key]: 'listening' } }))
 }
 
 /**
@@ -4382,7 +4509,9 @@ async function apStopRung($: $, dialog: ApDialog): Promise<void> {
  * runs in another session keeps what runs here. Answers why it did not start.
  */
 async function apStartRung($: $, dialog: ApDialog, rung: ApRung): Promise<string | null> {
-  const id = dialog.peer.id
+  const id = peerKey(dialog.peer)
+  // ── topics ── a closed topic takes no write, so no rung that writes starts there (§10.9); the card lists none.
+  if (dialog.peer.topic?.isClosed === true && !ladderFor(cardKind(dialog.peer), true).includes(rung)) return `${dialog.peer.label} is a closed topic: nothing writes there`
   if (rung === 'follow') {
     await apStopRung($, dialog)
     await followPeer($, dialog.peer) // ── routing ──
@@ -4411,10 +4540,10 @@ async function apStopAll($: $): Promise<string[]> {
   const failed: string[] = []
   failed.push(...(await dgStopAll($, 'kill switch'))) // ── delegate ──
   const state = await read($, autopilot)
-  const ended = await Promise.allSettled(state.running.map(id => apUnlisten($, id)))
+  const ended = await Promise.allSettled(state.running.map(key => apUnlisten($, key)))
   ended.forEach((result, index) => {
-    const id = state.running[index] ?? 0
-    if (result.status === 'rejected') failed.push(`${state.dialogs[String(id)]?.peer.label ?? id} (autopilot): ${reasonOf(result.reason)}`)
+    const key = state.running[index] ?? '?'
+    if (result.status === 'rejected') failed.push(`${state.dialogs[key]?.peer.label ?? key} (autopilot): ${reasonOf(result.reason)}`)
   })
   await update($, autopilot, value => ({ ...value, running: [], phase: {} }))
   await refreshStatus($)
@@ -4427,9 +4556,9 @@ async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
   if (args.startsWith(SKIP_FLAG)) return dgSkipCommand($, args) // ── delegate ──
   if (args !== '') return { text: `Usage: /tg autopilot [off | ${SKIP_FLAG}[=publish,delete]]` }
   const state = await read($, autopilot)
-  const lines = state.running.flatMap(id => {
-    const dialog = state.dialogs[String(id)]
-    return dialog === undefined ? [] : [`${LEVEL_GLYPH[dialog.level]} ${dialog.peer.label}: ${dialog.level}, ${rateText(dialog.perHour)}, ${state.phase[String(id)] ?? 'listening'}`]
+  const lines = state.running.flatMap(key => {
+    const dialog = state.dialogs[key]
+    return dialog === undefined ? [] : [`${LEVEL_GLYPH[dialog.level]} ${dialog.peer.label}: ${dialog.level}, ${rateText(dialog.perHour)}, ${state.phase[key] ?? 'listening'}`]
   })
   lines.push(...(await dgTaskLines($))) // ── delegate ──
   return { text: lines.length === 0 ? 'tg autopilot: off. Open a chat in the pane and press a.' : ['tg autopilot:', ...lines].join('\n') }
@@ -4440,9 +4569,10 @@ async function drawCard($: $, els: Els, width: number): Promise<RenderElement | 
   const state = await read($, autopilot)
   const view = state.view
   if (view.kind === 'none') return null
-  const dialog = state.dialogs[String(view.dialogId)]
+  const dialog = state.dialogs[view.key]
   if (dialog === undefined) return null
-  const id = dialog.peer.id
+  const id = view.key
+  const isClosed = dialog.peer.topic?.isClosed === true // ── topics ── reads only (§10.9)
   const edit = (change: (one: ApDialog) => ApDialog) => apEdit($, id, change)
   const allow = apAllowView(dialog.peer, (await read($, bottest)).allow)
   const isGuardUp = (await dgGuardArmed($)) !== null // ── delegate ──
@@ -4450,12 +4580,13 @@ async function drawCard($: $, els: Els, width: number): Promise<RenderElement | 
     case 'ladder': {
       const pin = await read($, pins)
       const chosen = await read($, route) // ── routing ── where a follow sends the chat
-      const followed = pin.find(one => one.peer.id === id)
+      const followed = pin.find(one => peerKey(one.peer) === id)
       const to = followed?.to ?? (chosen.kind === 'one' && chosen.to.kind === 'agent' ? { kind: 'agent' as const, label: chosen.to.label } : { kind: 'main' as const })
       return CardLadder(els, {
         dialog,
         kind: cardKind(dialog.peer),
-        ladder: ladderFor(cardKind(dialog.peer)),
+        isClosed,
+        ladder: ladderFor(cardKind(dialog.peer), isClosed),
         pick: view.pick,
         running: await runningRungOf($, id),
         allow,
@@ -4494,27 +4625,28 @@ async function drawCard($: $, els: Els, width: number): Promise<RenderElement | 
  * The row's agent symbol (§10.3): any level on, a follow → main included (decision 2); held while a
  * draft or a hard stop waits for the owner; ⚠ while a delegate runs with its hard stops skipped.
  */
-async function agentMarks($: $): Promise<(dialogId: number) => AgentMark | null> {
+async function agentMarks($: $): Promise<(key: string) => AgentMark | null> {
   const state = await read($, autopilot)
   const noStopsOf = await dgNoStopsOf($) // ── delegate ──
-  const followed = new Set((await read($, pins)).map(pin => pin.peer.id))
+  // By peer key: a chat's row reads its own agents, a topic's row its topic's (§10.9).
+  const followed = new Set((await read($, pins)).map(pin => peerKey(pin.peer)))
   const guard = await dgGuardView($) // ── delegate ──
   const holding = new Set([
-    ...state.drafts.map(one => one.peer.id),
-    ...(await read($, delegate)).tasks.filter(task => isLive(task) && holdsOfView(task, guard).length > 0).map(task => task.peer.id), // ── delegate ──
+    ...state.drafts.map(one => peerKey(one.peer)),
+    ...(await read($, delegate)).tasks.filter(task => isLive(task) && holdsOfView(task, guard).length > 0).map(task => peerKey(task.peer)), // ── delegate ──
   ])
-  return dialogId => {
-    const dialog = state.dialogs[String(dialogId)]
-    const isRunning = dialog !== undefined && state.running.includes(dialogId)
-    if (isRunning && dialog.level === 'delegate' && noStopsOf(dialogId) !== null) return 'no-stops' // ── delegate ──
-    if (!isRunning && !followed.has(dialogId)) return null
-    return holding.has(dialogId) ? 'holding' : 'on'
+  return key => {
+    const dialog = state.dialogs[key]
+    const isRunning = dialog !== undefined && state.running.includes(key)
+    if (isRunning && dialog.level === 'delegate' && noStopsOf(key) !== null) return 'no-stops' // ── delegate ──
+    if (!isRunning && !followed.has(key)) return null
+    return holding.has(key) ? 'holding' : 'on'
   }
 }
 
 /** `auto 3/50` (sent this hour / the limit) for auto, the level's name for the others. */
 function apLevelTail(state: Autopilot, dialog: ApDialog, at: number): string {
-  return dialog.level === 'auto' ? `auto ${sentLastHour(state.ledger, dialog.peer.id, at)}/${dialog.perHour ?? '∞'}` : dialog.level
+  return dialog.level === 'auto' ? `auto ${sentLastHour(state.ledger, peerKey(dialog.peer), at)}/${dialog.perHour ?? '∞'}` : dialog.level
 }
 
 // ── /autopilot ──
@@ -4676,7 +4808,7 @@ function dgOnTurn($: $, agentId: string | undefined, reason: string, answer: str
 
 /** Closing the session lets go of its dialogs at once (else they free up after LEASE_TTL_MS); triage's session.end hook calls this. */
 async function apReleaseAll($: $): Promise<void> {
-  await Promise.all((await read($, autopilot)).running.map(id => apReleaseLease($, id)))
+  await Promise.all((await read($, autopilot)).running.map(key => apReleaseLease($, key)))
 }
 
 async function dgSeeMode($: $, mode: string | undefined): Promise<void> {
@@ -4712,26 +4844,26 @@ async function apSessionId($: $): Promise<string> {
   return dgSession
 }
 
-/** Takes the dialog's lease, or says which session holds it. */
-async function apTakeLease($: $, dialogId: number): Promise<{ ok: true } | { ok: false; reason: string }> {
+/** Takes the dialog's (or forum topic's) lease, by its peer key, or says which session holds it. */
+async function apTakeLease($: $, key: string): Promise<{ ok: true } | { ok: false; reason: string }> {
   const session = await apSessionId($)
   const at = await $.clock.now()
-  const held = holder(leaseOf(await $.store.get(leaseKey(dialogId))), session, at)
+  const held = holder(leaseOf(await $.store.get(leaseKey(key))), session, at)
   if (held.kind === 'other') return { ok: false, reason: `running in another session (${held.session.slice(0, 8)}, alive ${Math.round(held.ageMs / 1000)} s ago)` }
-  await $.store.set(leaseKey(dialogId), { session, beat: at })
+  await $.store.set(leaseKey(key), { session, beat: at })
   // Two sessions taking it at the same moment: the last write stands, and the other one sees that here.
-  const after = leaseOf(await $.store.get(leaseKey(dialogId)))
+  const after = leaseOf(await $.store.get(leaseKey(key)))
   return after?.session === session ? { ok: true } : { ok: false, reason: 'running in another session' }
 }
 
-async function apReleaseLease($: $, dialogId: number): Promise<void> {
+async function apReleaseLease($: $, key: string): Promise<void> {
   const session = await apSessionId($)
-  if (leaseOf(await $.store.get(leaseKey(dialogId)))?.session === session) await $.store.delete(leaseKey(dialogId))
+  if (leaseOf(await $.store.get(leaseKey(key)))?.session === session) await $.store.delete(leaseKey(key))
 }
 
 /** The dialogs a reloaded session may keep running: the ones whose lease is still its own (or free). */
-async function apKeepLeases($: $, running: readonly number[]): Promise<number[]> {
-  const kept: number[] = []
+async function apKeepLeases($: $, running: readonly string[]): Promise<string[]> {
+  const kept: string[] = []
   for (const id of running) {
     const lease = await apTakeLease($, id)
     if (lease.ok) kept.push(id)
@@ -4808,7 +4940,7 @@ function guardEntries(events: readonly GuardEvent[], dialogs: Record<string, ApD
     seq: 1_000_000 + event.seq,
     at: event.at,
     peer: event.peer,
-    level: dialogs[String(event.peer.id)]?.level ?? 'delegate',
+    level: dialogs[peerKey(event.peer)]?.level ?? 'delegate',
     incoming: [],
     reply: event.summary,
     confidence: null,
@@ -4826,31 +4958,31 @@ async function dgGuardText($: $): Promise<string | null> {
 
 // --- settings and the card's rows ---
 
-async function dgSettings($: $, dialogId: number): Promise<DgDialog> {
-  return (await read($, delegate)).dialogs[String(dialogId)] ?? DEFAULT_DG_DIALOG
+async function dgSettings($: $, key: string): Promise<DgDialog> {
+  return (await read($, delegate)).dialogs[key] ?? DEFAULT_DG_DIALOG
 }
 
-async function dgEdit($: $, dialogId: number, change: (dg: DgDialog) => DgDialog): Promise<void> {
-  const next = await dgUpdate($, value => ({ ...value, dialogs: { ...value.dialogs, [String(dialogId)]: change(value.dialogs[String(dialogId)] ?? DEFAULT_DG_DIALOG) } }))
+async function dgEdit($: $, key: string, change: (dg: DgDialog) => DgDialog): Promise<void> {
+  const next = await dgUpdate($, value => ({ ...value, dialogs: { ...value.dialogs, [key]: change(value.dialogs[key] ?? DEFAULT_DG_DIALOG) } }))
   await $.store.set(STORE_DELEGATE, next.dialogs)
 }
 
-async function dgEditGrant($: $, dialogId: number, change: (grant: DgGrant) => DgGrant): Promise<void> {
-  await dgEdit($, dialogId, dg => ({ ...dg, grant: change(dg.grant) }))
+async function dgEditGrant($: $, key: string, change: (grant: DgGrant) => DgGrant): Promise<void> {
+  await dgEdit($, key, dg => ({ ...dg, grant: change(dg.grant) }))
 }
 
 /** Every stop skipped for a dialog now, from the option, the session and the dialog. */
-async function dgSkipped($: $, dialogId: number): Promise<DgStop[]> {
+async function dgSkipped($: $, key: string): Promise<DgStop[]> {
   const state = await read($, delegate)
-  return skippedStops({ always: alwaysSkip, session: state.sessionSkip, dialog: state.dialogs[String(dialogId)]?.skip ?? null, now: await $.clock.now() })
+  return skippedStops({ always: alwaysSkip, session: state.sessionSkip, dialog: state.dialogs[key]?.skip ?? null, now: await $.clock.now() })
 }
 
-/** The red mark per dialog: null while every stop holds. */
-async function dgNoStopsOf($: $): Promise<(dialogId: number) => string | null> {
+/** The red mark per dialog, by peer key: null while every stop holds. */
+async function dgNoStopsOf($: $): Promise<(key: string) => string | null> {
   const state = await read($, delegate)
   const at = await $.clock.now()
-  return dialogId =>
-    noStopsLabel(skippedStops({ always: alwaysSkip, session: state.sessionSkip, dialog: state.dialogs[String(dialogId)]?.skip ?? null, now: at }), state.permissionMode)
+  return key =>
+    noStopsLabel(skippedStops({ always: alwaysSkip, session: state.sessionSkip, dialog: state.dialogs[key]?.skip ?? null, now: at }), state.permissionMode)
 }
 
 /** The session's repo (`git rev-parse --show-toplevel` in its directory), once looked up; null: not in a repo. */
@@ -4860,21 +4992,21 @@ let dgSessionRepo: { path: string | null } | null = null
  * The grant step's repos, filled from where the owner is (§5.5): the session's
  * repo when its directory is in one and the chat grants none yet.
  */
-async function dgFillRepos($: $, dialogId: number): Promise<void> {
-  if ((await dgSettings($, dialogId)).grant.repos.length > 0) return
+async function dgFillRepos($: $, key: string): Promise<void> {
+  if ((await dgSettings($, key)).grant.repos.length > 0) return
   if (dgSessionRepo === null) {
     const cwd = await $.session.cwd()
     const top = await dgGit($, ['git', '-C', cwd, 'rev-parse', '--show-toplevel'])
     dgSessionRepo = { path: top.ok && top.stdout.trim() !== '' ? top.stdout.trim() : null }
   }
   const path = dgSessionRepo.path
-  if (path !== null) await dgEditGrant($, dialogId, grant => ({ ...grant, repos: [path] }))
+  if (path !== null) await dgEditGrant($, key, grant => ({ ...grant, repos: [path] }))
 }
 
 async function drawGrant($: $, els: Els, dialog: ApDialog, allow: AllowView, isGuardUp: boolean, notice: string | null): Promise<RenderElement> {
-  const id = dialog.peer.id
+  const id = peerKey(dialog.peer)
   const state = await read($, delegate)
-  const dg = state.dialogs[String(id)] ?? DEFAULT_DG_DIALOG
+  const dg = state.dialogs[id] ?? DEFAULT_DG_DIALOG
   const at = await $.clock.now()
   const skipped = dg.skip === null || (dg.skip.until !== null && dg.skip.until <= at) ? null : `skipped: ${dg.skip.stops.join(', ')} (${untilText(dg.skip.until)}) · o: limits & safety`
   return DelegateGrant(els, {
@@ -4900,12 +5032,12 @@ async function drawGrant($: $, els: Els, dialog: ApDialog, allow: AllowView, isG
 
 /** `o`'s danger zone: dangerouslySkipHardStops for this chat, confirmed only by its name typed exactly. */
 async function drawDangerZone($: $, els: Els, dialog: ApDialog): Promise<RenderElement> {
-  const id = dialog.peer.id
+  const id = peerKey(dialog.peer)
   const state = await read($, delegate)
   return DangerZone(els, {
-    dg: state.dialogs[String(id)] ?? DEFAULT_DG_DIALOG,
+    dg: state.dialogs[id] ?? DEFAULT_DG_DIALOG,
     label: dialog.peer.label,
-    pending: state.pending?.dialogId === id ? state.pending : null,
+    pending: state.pending?.key === id ? state.pending : null,
     now: await $.clock.now(),
     onSkip: async text => {
       const parsed = parseDialogSkip(text, await $.clock.now())
@@ -4914,11 +5046,11 @@ async function drawDangerZone($: $, els: Els, dialog: ApDialog): Promise<RenderE
       // Turning stops back on needs no confirmation; turning them off does.
       if (parsed.skip === null) return dgEdit($, id, dg => ({ ...dg, skip: null }))
       const skip = parsed.skip
-      await dgUpdate($, value => ({ ...value, pending: { dialogId: id, skip } }))
+      await dgUpdate($, value => ({ ...value, pending: { key: id, skip } }))
     },
     onConfirm: async text => {
       const pending = (await read($, delegate)).pending
-      if (pending === null || pending.dialogId !== id) return
+      if (pending === null || pending.key !== id) return
       if (text.trim() !== dialog.peer.label) return apNotice($, `Not confirmed: type the chat's name exactly, "${dialog.peer.label}".`)
       await dgUpdate($, value => ({ ...value, pending: null }))
       await dgEdit($, id, dg => ({ ...dg, skip: pending.skip }))
@@ -4946,8 +5078,8 @@ async function dgSkipCommand($: $, args: string): Promise<{ text: string }> {
 
 // --- tasks ---
 
-async function dgLiveTask($: $, dialogId: number): Promise<DgTask | null> {
-  return (await read($, delegate)).tasks.find(task => task.peer.id === dialogId && isLive(task)) ?? null
+async function dgLiveTask($: $, key: string): Promise<DgTask | null> {
+  return (await read($, delegate)).tasks.find(task => peerKey(task.peer) === key && isLive(task)) ?? null
 }
 
 async function dgPatchTask($: $, taskId: number, change: (task: DgTask) => DgTask): Promise<DgTask | null> {
@@ -4973,8 +5105,8 @@ const STOPPED_PLACEHOLDER: DgTask = {
 
 /** The Speaker's task action: start a Worker, or pass the chat's answer to the running one. */
 async function dgOnTaskAction($: $, peer: PeerRef, action: TaskAction, chat: { peer: Peer; burst: readonly MessageView[]; history: readonly MessageView[] }): Promise<void> {
-  const packet = buildPacket({ messages: chat.burst, context: chat.history.filter(one => !chat.burst.some(b => b.id === one.id)), peer: chat.peer, intent: { id: 'raw', text: '' }, redact: false, replay: false }).text
-  const live = await dgLiveTask($, peer.id)
+  const packet = buildPacket({ messages: chat.burst, context: chat.history.filter(one => !chat.burst.some(b => b.id === one.id)), peer: chat.peer, intent: { id: 'raw', text: '' }, redact: false, replay: false, ...packetTopic(peer) }).text
+  const live = await dgLiveTask($, peerKey(peer))
   if (action.kind === 'forward' || live !== null) {
     if (live === null) return
     const text = action.kind === 'forward' ? action.text : action.summary
@@ -4999,7 +5131,7 @@ async function dgForward($: $, task: DgTask, text: string, packet: string): Prom
 
 /** Starts a task: worktrees of the granted repos, a Worker type with the granted tools, the spawn, the deadline. */
 async function dgStartTask($: $, peer: PeerRef, summary: string, packet: string): Promise<void> {
-  const settings = await dgSettings($, peer.id)
+  const settings = await dgSettings($, peerKey(peer))
   const grant = settings.grant
   const at = await $.clock.now()
   const state = await dgUpdate($, value => {
@@ -5154,9 +5286,9 @@ async function dgStopTask($: $, taskId: number, reason: string): Promise<void> {
   await refreshStatus($)
 }
 
-async function dgStopTasksOf($: $, dialogId: number, reason: string): Promise<void> {
+async function dgStopTasksOf($: $, key: string, reason: string): Promise<void> {
   for (const task of (await read($, delegate)).tasks) {
-    if (task.peer.id === dialogId && isLive(task)) await dgStopTask($, task.id, reason)
+    if (peerKey(task.peer) === key && isLive(task)) await dgStopTask($, task.id, reason)
   }
 }
 
@@ -5172,7 +5304,7 @@ async function dgStopAll($: $, reason: string): Promise<string[]> {
 /** A ledger row for a hard stop: asked (yes / no and why) or skipped. */
 async function dgLogStop($: $, task: DgTask, hits: readonly StopHit[], answer: 'yes' | 'no' | 'skipped', why: string): Promise<void> {
   if (hits.length === 0) return
-  const dialog = await apDialog($, task.peer.id)
+  const dialog = await apDialog($, peerKey(task.peer))
   await apLog($, {
     at: await $.clock.now(),
     peer: task.peer,
@@ -5219,10 +5351,11 @@ async function dgAskStop($: $, task: DgTask, hits: readonly StopHit[], who: stri
  * it becomes a draft.
  */
 async function dgOutgoing($: $, peer: PeerRef, text: string, seq: number | null): Promise<string | null> {
-  const dialog = await apDialog($, peer.id)
+  const key = peerKey(peer)
+  const dialog = await apDialog($, key)
   if (dialog?.level !== 'delegate') return null
-  const split = partition(textHits(text), await dgSkipped($, peer.id))
-  const task = (await dgLiveTask($, peer.id)) ?? { ...STOPPED_PLACEHOLDER, peer, summary: `reply in ${peer.label}` }
+  const split = partition(textHits(text), await dgSkipped($, key))
+  const task = (await dgLiveTask($, key)) ?? { ...STOPPED_PLACEHOLDER, peer, summary: `reply in ${peer.label}` }
   await dgLogStop($, task, split.skipped, 'skipped', 'dangerouslySkipHardStops')
   if (split.ask.length === 0) return null
   const answer = await dgAskStop($, task, split.ask, `reply in ${peerConfirmLabel(peer)}`)
@@ -5234,8 +5367,8 @@ async function dgOutgoing($: $, peer: PeerRef, text: string, seq: number | null)
 }
 
 /** A message the Speaker sent for a dialog with a running task: the card's `chat:` line. */
-async function dgOnSent($: $, dialogId: number, text: string, at: number): Promise<void> {
-  const task = await dgLiveTask($, dialogId)
+async function dgOnSent($: $, key: string, text: string, at: number): Promise<void> {
+  const task = await dgLiveTask($, key)
   if (task !== null) await dgPatchTask($, task.id, one => ({ ...one, chat: { text, at } }))
 }
 
@@ -5265,12 +5398,12 @@ async function dgOnWorkerTurn($: $, agentId: string, reason: string, answer: str
 
 /** The Speaker phrases the Worker's question or result for the chat; it goes out as an auto reply would, or waits as a draft. */
 async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
-  const dialog = await apDialog($, task.peer.id)
+  const dialog = await apDialog($, peerKey(task.peer))
   if (dialog === null) return
-  const history = await runTg($, tg.read(task.peer.arg, { limit: HISTORY_LIMIT }))
+  const history = await runTg($, tg.read(task.peer.arg, { limit: HISTORY_LIMIT, topic: task.peer.topic?.id }))
   const messages = history.ok ? history.value : []
   const peer = peerOf(task.peer, await knownDialogs($))
-  const packet = buildPacket({ messages: messages.slice(-1), context: messages.slice(0, -1), peer, intent: { id: 'raw', text: '' }, redact: false, replay: false }).text
+  const packet = buildPacket({ messages: messages.slice(-1), context: messages.slice(0, -1), peer, intent: { id: 'raw', text: '' }, redact: false, replay: false, ...packetTopic(task.peer) }).text
   const result = await $.model.complete({ model: speakerModel, system: delegateSystem(dialog), prompt: relayPrompt({ said, task, packet }), maxTokens: SPEAKER_MAX_TOKENS, timeoutMs: SPEAKER_TIMEOUT_MS })
   const at = await $.clock.now()
   const incoming = [{ id: 0, text: `Worker ${said.kind.toUpperCase()}: ${said.text}` }]
@@ -5293,18 +5426,18 @@ async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
   if (said.kind === 'fail') return toDraft([`the task failed: ${oneLine(said.text, 60)}`])
   const action = spoken.action === 'reply' || spoken.action === 'draft' || spoken.action === 'escalate' ? spoken.action : 'draft'
   const verdict = gate(dialog, { ...spoken, action }, {
-    sentLastHour: sentLastHour((await read($, autopilot)).ledger, task.peer.id, at),
+    sentLastHour: sentLastHour((await read($, autopilot)).ledger, peerKey(task.peer), at),
     minutes: localMinutes(at),
     isAllowed: await apIsAllowed($, task.peer),
   })
   if (verdict.kind === 'draft') return toDraft(verdict.reasons)
   const stopped = await dgOutgoing($, task.peer, spoken.text, seq)
   if (stopped !== null) return toDraft([stopped])
-  const rt = apRuntimes.get(task.peer.id)
+  const rt = apRuntimes.get(peerKey(task.peer))
   if (rt !== undefined) rt.isSending = true
   let sent: WriteResult
   try {
-    sent = await runWrite($, calls.reply(task.peer.arg), spoken.text)
+    sent = await runWrite($, calls.reply(task.peer.arg, false, task.peer.topic?.id), spoken.text)
   } finally {
     if (rt !== undefined) rt.isSending = false
   }
@@ -5342,7 +5475,7 @@ async function dgAlarms($: $): Promise<{ line: string | null; noStops: string | 
   const line = held === undefined ? null : `tg ⏸ HARD STOP ${held.stops.join(' + ')}: ${oneLine(held.what, 50)} · ${LEVEL_GLYPH.delegate} ${peerConfirmLabel(held.peer)} · answer in the dialog`
   const pilot = await read($, autopilot)
   const noStopsOf = await dgNoStopsOf($)
-  const marks = pilot.running.filter(id => pilot.dialogs[String(id)]?.level === 'delegate').map(noStopsOf)
+  const marks = pilot.running.filter(key => pilot.dialogs[key]?.level === 'delegate').map(noStopsOf)
   return { line, noStops: marks.find((one): one is string => one !== null) ?? null, holds }
 }
 
@@ -5367,14 +5500,14 @@ async function dgHoldCount($: $): Promise<number> {
  */
 async function drawChatTask($: $, els: Els, width: number, seat: Seat, lower: number): Promise<{ elements: RenderElement[]; rows: number }> {
   const open = await read($, thread)
-  if (open === null || (await apDialog($, open.peer.id))?.level !== 'delegate') return { elements: [], rows: 0 }
+  if (open === null || (await apDialog($, peerKey(open.peer)))?.level !== 'delegate') return { elements: [], rows: 0 }
   const lines = seat === 'dock' ? chatCardLines(lower) : 0
   const rows = chatTaskRows(lines)
-  const tasks = (await read($, delegate)).tasks.filter(task => task.peer.id === open.peer.id)
+  const tasks = (await read($, delegate)).tasks.filter(task => isSamePeer(task.peer, open.peer))
   const task = tasks.findLast(isLive) ?? tasks.at(-1)
   if (task === undefined) return { elements: [], rows }
   const guard = await dgGuardView($)
-  const noStops = (await dgNoStopsOf($))(task.peer.id)
+  const noStops = (await dgNoStopsOf($))(peerKey(task.peer))
   const view = viewOf(task, guard)
   const element = rows > 1 ? TaskCard(els, { task, view, now: await $.clock.now(), width, lines, noStops }) : TaskRow(els, { task, view, noStops })
   return { elements: [element], rows }
@@ -5453,9 +5586,9 @@ let stopTimer: Timer | null = null
 async function runRowsNow($: $): Promise<RunRow[]> {
   const pilot = await read($, autopilot)
   const at = Math.max(pilot.now, await $.clock.now())
-  const agents = pilot.running.flatMap(id => {
-    const dialog = pilot.dialogs[String(id)]
-    return dialog === undefined ? [] : [{ peer: dialog.peer, level: dialog.level, tail: apLevelTail(pilot, dialog, at), phase: pilot.phase[String(id)] ?? 'listening' }]
+  const agents = pilot.running.flatMap(key => {
+    const dialog = pilot.dialogs[key]
+    return dialog === undefined ? [] : [{ peer: dialog.peer, level: dialog.level, tail: apLevelTail(pilot, dialog, at), phase: pilot.phase[key] ?? 'listening' }]
   })
   const follows = (await read($, pins)).map(pin => ({ peer: pin.peer, to: pin.to.kind === 'main' ? 'main' : pin.to.label, state: pin.watch.status }))
   return runRows({ agents, follows, tasks: await dgTaskRuns($, at) })
@@ -5471,7 +5604,7 @@ async function stopEverything($: $): Promise<StopReport> {
   const stopped = stoppedOf(await runRowsNow($))
   const failed = await apStopAll($)
   const follows = await read($, pins)
-  const unpinned = await Promise.allSettled(follows.map(pin => unpin($, pin.peer.id)))
+  const unpinned = await Promise.allSettled(follows.map(pin => unpin($, peerKey(pin.peer))))
   unpinned.forEach((result, index) => {
     if (result.status === 'rejected') failed.push(`${follows[index]?.peer.label ?? '?'} (follow): ${reasonOf(result.reason)}`)
   })
@@ -5520,7 +5653,7 @@ async function openActivity($: $): Promise<void> {
 async function ringActivity($: $): Promise<void> {
   const view = await read($, activity)
   const row = view?.rows[view.cursor]
-  if (row !== undefined) await moveRing($, `act:${row.id}`)
+  if (row !== undefined) await moveRing($, `act:${peerKey(row)}`)
 }
 
 /** j and k among the running rows; the rows that started since are kept in their order first. */
@@ -5528,13 +5661,13 @@ async function moveActivity($: $, by: number): Promise<string | undefined> {
   const rows = await activityRows($)
   const view = await update($, activity, value => (value === null ? null : { rows, cursor: clamp(value.cursor + by, rows.length) }))
   const row = view?.rows[view.cursor]
-  return row === undefined ? undefined : `act:${row.id}`
+  return row === undefined ? undefined : `act:${peerKey(row)}`
 }
 
-/** The ring moved onto a running row (arrows, a click): the cursor follows. */
-async function followActivity($: $, chatId: number): Promise<void> {
+/** The ring moved onto a running row (arrows, a click): the cursor follows. Rows are keyed by peer key: a topic's agent is its own row. */
+async function followActivity($: $, key: string): Promise<void> {
   const rows = await activityRows($)
-  const index = rows.findIndex(row => row.id === chatId)
+  const index = rows.findIndex(row => peerKey(row) === key)
   if (index >= 0) await update($, activity, value => (value === null ? null : { rows, cursor: index }))
 }
 
@@ -5543,7 +5676,7 @@ async function openActivityRow($: $, index: number): Promise<void> {
   const rows = await activityRows($)
   const peer = rows[index]
   if (peer === undefined) return
-  const row = (await runRowsNow($)).find(one => one.peer.id === peer.id) ?? null
+  const row = (await runRowsNow($)).find(one => isSamePeer(one.peer, peer)) ?? null
   await update($, activity, () => null)
   if (activityTarget(row) === 'card') return apOpenCard($, peer)
   await apOpen($, peer)
@@ -5561,13 +5694,13 @@ async function drawActivity($: $, els: Els, width: number, rows: number): Promis
   const view = await read($, activity)
   const live = await runRowsNow($)
   const order = view === null ? [] : activityOrder(view, live)
-  const byId = new Map(live.map(row => [row.peer.id, row]))
+  const byId = new Map(live.map(row => [peerKey(row.peer), row]))
   const watched = (await read($, triage)).watched.map(peer => peer.label)
   return Activity(els, {
     colors,
     rows: order.map(peer => {
-      const row = byId.get(peer.id) ?? null
-      return { id: peer.id, text: activityText(row, peer.label), isStopped: row === null || !isRunning(row) }
+      const row = byId.get(peerKey(peer)) ?? null
+      return { id: peerKey(peer), text: activityText(row, peer.label), isStopped: row === null || !isRunning(row) }
     }),
     cursor: clamp(view?.cursor ?? 0, order.length),
     watching: watched.length === 0 ? null : watched.join(' · '),
@@ -5592,7 +5725,7 @@ let lastApCard: AutopilotCard | null = null
 async function apCardNow($: $): Promise<{ card: AutopilotCard | null; rows: number; isStale: boolean }> {
   const pilot = await read($, autopilot)
   const at = Math.max(pilot.now, await read($, now), await $.clock.now())
-  const dialogs = pilot.running.flatMap(id => pilot.dialogs[String(id)] ?? [])
+  const dialogs = pilot.running.flatMap(key => pilot.dialogs[key] ?? [])
   if (dialogs.length === 0) return { card: lastApCard, rows: 0, isStale: lastApCard !== null }
   const tasks = (await read($, delegate)).tasks.filter(isLive)
   const entries = await dgLedger($, pilot.ledger, pilot.dialogs) // ── delegate ── with the guard's stop events
@@ -5601,16 +5734,16 @@ async function apCardNow($: $): Promise<{ card: AutopilotCard | null; rows: numb
     entries,
     lanes: lanes(
       dialogs.map(dialog => {
-        const burst = apRuntimes.get(dialog.peer.id)?.burst
+        const burst = apRuntimes.get(peerKey(dialog.peer))?.burst
         return {
           peer: dialog.peer,
           level: dialog.level,
-          phase: pilot.phase[String(dialog.peer.id)] ?? 'listening',
+          phase: pilot.phase[peerKey(dialog.peer)] ?? 'listening',
           gapS: dialog.gapS,
           burstAt: burst === undefined || burst.messages.length === 0 ? null : burst.lastAt,
-          latest: entries.findLast(entry => entry.peer.id === dialog.peer.id) ?? null,
-          hasDraft: pilot.drafts.some(draft => draft.peer.id === dialog.peer.id),
-          taskAt: dialog.level === 'delegate' ? (tasks.find(task => task.peer.id === dialog.peer.id)?.startedAt ?? null) : null,
+          latest: entries.findLast(entry => isSamePeer(entry.peer, dialog.peer)) ?? null,
+          hasDraft: pilot.drafts.some(draft => isSamePeer(draft.peer, dialog.peer)),
+          taskAt: dialog.level === 'delegate' ? (tasks.find(task => isSamePeer(task.peer, dialog.peer))?.startedAt ?? null) : null,
         }
       }),
       at,
@@ -5915,6 +6048,7 @@ async function runPass($: $): Promise<void> {
   const kept = pruneVerdicts(verdicts, [...map.rows.values()])
   if (Object.keys(kept).length !== Object.keys(verdicts).length) await update($, triage, value => ({ ...value, verdicts: pruneVerdicts(value.verdicts, [...map.rows.values()]) }))
   await landPass($, map)
+  await refreshTopics($) // ── topics ── Topics on screen read their counts again with the pass
   // A watched chat whose unread count grew since the last pass raises the band (── footer ──).
   if (before !== null) await raiseGrown($, [...before.rows.values()], [...map.rows.values()])
   await storeFolders($)
@@ -6300,6 +6434,7 @@ async function pressAgentRow($: $, item: AgentItem): Promise<void> {
       const peer = await agentPeer($, item)
       if (peer === undefined) return
       await applyWaiting($)
+      if (peer.topic !== undefined) return openPeer($, peer) // ── topics ──
       return openThread($, (await knownDialogs($)).find(one => one.id === peer.id) ?? dialogOfPeer(peer))
     }
   }
@@ -6512,7 +6647,7 @@ async function footerText($: $): Promise<string> {
  */
 async function gaugeNow($: $): Promise<{ segs: Seg[] | null; pair: string } | null> {
   const pilot = await read($, autopilot)
-  const running = pilot.running.flatMap(id => pilot.dialogs[String(id)] ?? [])
+  const running = pilot.running.flatMap(key => pilot.dialogs[key] ?? [])
   if (running.length === 0) return null
   const tightest = gauge(running, pilot.ledger, Math.max(pilot.now, await $.clock.now()))
   return tightest === null ? { segs: null, pair: 'on' } : { segs: gaugeSegs(tightest), pair: gaugePair(tightest) }
@@ -6567,7 +6702,7 @@ async function drawCompact($: $, els: Els, width: number, isUnderItem: boolean):
   const agentOf = await agentMarks($)
   const rows = facts.rows.map((dialog, index) =>
     ChatRow(els, colors, {
-      ...dialogRow(dialog, { now, agent: agentOf(dialog.id) }),
+      ...dialogRow(dialog, { now, agent: agentOf(String(dialog.id)) }),
       rowKey: `compact:${dialog.id}`,
       width: inner,
       isCursor: index === at,
@@ -6748,7 +6883,8 @@ async function notifyHolds($: $, holds: readonly BandHold[]): Promise<void> {
 
 /** A watched chat whose unread count grew between two loads raises the band; the others wait in their folders. */
 async function raiseGrown($: $, before: readonly TgDialog[], after: readonly TgDialog[]): Promise<void> {
-  const watched = new Set((await read($, triage)).watched.map(peer => peer.id))
+  // A chat's count grew: its whole-chat watch raises the band; a watched topic's own watch does (§10.9).
+  const watched = new Set((await read($, triage)).watched.filter(peer => peer.topic === undefined).map(peer => peer.id))
   const grown = grownDialog(before, after.filter(dialog => watched.has(dialog.id)))
   if (grown === undefined) return
   // Only the chat is known, not who wrote: the band picks no sender's intents in a group.
@@ -6773,6 +6909,265 @@ async function statusLines($: $): Promise<string[]> {
   ]
 }
 // ── /footer ──
+
+// ── topics ──
+// dialogs-pane-ux.md §10.9 (T16): a forum's Topics, between Chats and the
+// chat. ⏎ on a forum's row opens them; a topic's thread, or `≡ all topics`'
+// merged stream, opens from there, and `h` goes back one level. A peer narrowed
+// to a topic (`PeerRef.topic`) is a peer of its own: every tg call on it passes
+// `--topic`, and its agents, watches, follows and drafts are keyed
+// `chatId:topicId` (./ui/model `peerKey`). Topics hold their order while the
+// cursor stays: a topic that moves waits (`↑N`) for g, h or ⏎, as Chats' rows
+// do (§4.3). Pure rules in ./ui/topics.
+
+/**
+ * The latest `tg topics` per forum this session: Topics' rows, the forum row's
+ * sums, the merged stream's topic column, and the topic a packet or a reply
+ * names. A hot reload starts it over; the forum's row then shows the pass's counts.
+ */
+const topicsHeld = new Map<number, Topic[]>()
+
+/** One row of Topics: `≡ all topics` (the forum's peer, no topic), then each topic. */
+type TopicItem = { key: string; peer: PeerRef; topic: Topic | null }
+
+/** Topics' rows as drawn: `≡ all topics` first, then the topics in the order drawn. */
+async function topicItems($: $): Promise<TopicItem[]> {
+  const view = await read($, forumTopics)
+  const list = view === null ? undefined : loaded(view.load)
+  if (view === null || list === undefined) return []
+  const { forum } = view
+  return [
+    { key: topicRowKey(view.gen, forum.id, 'all'), peer: forum, topic: null },
+    ...list.map(topic => ({ key: topicRowKey(view.gen, forum.id, topic.id), peer: topicPeer(forum, topicRef(topic)), topic })),
+  ]
+}
+
+async function cursorTopicItem($: $): Promise<TopicItem | undefined> {
+  const items = await topicItems($)
+  return items[clamp((await read($, nav)).topicCursor, items.length)]
+}
+
+/** ⏎ on a forum: its Topics, painted from what this session last read, then `tg topics` again. */
+async function openTopics($: $, forum: PeerRef): Promise<void> {
+  const chat = chatPeer(forum)
+  const held = topicsHeld.get(chat.id)
+  await update($, forumTopics, value => ({ forum: chat, load: held === undefined ? { status: 'loading' } : { status: 'ok', value: held }, gen: (value?.gen ?? 0) + 1 }))
+  await update($, nav, value => ({ ...value, view: 'topics', topicCursor: 0, topicStart: 0 }))
+  await ringCursor($)
+  await loadTopics($, chat, false)
+}
+
+/**
+ * `tg topics PEER`: a list with nothing drawn fills at once; a drawn one changes
+ * in place and what moved waits, unless `isApply` (the owner's g). An open
+ * topic's thread learns whether it was closed meanwhile: its writes stop at once.
+ */
+async function loadTopics($: $, forum: PeerRef, isApply: boolean): Promise<void> {
+  const result = await runTg($, tg.topics(forum.arg))
+  const at = await $.clock.now()
+  await update($, now, () => at)
+  const view = await read($, forumTopics)
+  if (view === null || view.forum.id !== forum.id) return
+  if (!result.ok) {
+    // A list on screen stays; one with nothing drawn says why, with g: retry (§7.4).
+    if (view.load.status !== 'ok') await update($, forumTopics, value => (value === null ? null : { ...value, load: failed(result.failure, at) }))
+    else await say($, 'warn', `${GLYPH.error} ${failureText(result.failure, at)}`)
+    return
+  }
+  const latest = result.value
+  topicsHeld.set(forum.id, latest)
+  const drawn = loaded(view.load)
+  if (drawn === undefined || isApply) {
+    await update($, forumTopics, value => (value === null ? null : { ...value, load: { status: 'ok', value: latest }, gen: value.gen + 1 }))
+    if ((await read($, mode)) === 'open' && (await underWhere($)) === 'topics') await ringCursor($)
+  } else {
+    const next = topicsInPlace(drawn, latest)
+    if (JSON.stringify(next) !== JSON.stringify(drawn)) await update($, forumTopics, value => (value === null ? null : { ...value, load: { status: 'ok', value: next } }))
+  }
+  await reopenTopic($, forum.id, latest)
+}
+
+/** The open topic's thread as `tg topics` has it now: a topic closed meanwhile takes no write from here on. */
+async function reopenTopic($: $, chatId: number, latest: readonly Topic[]): Promise<void> {
+  const open = await read($, thread)
+  const topic = open?.peer.topic
+  if (open === null || topic === undefined || open.peer.id !== chatId) return
+  const fresh = latest.find(one => one.id === topic.id)
+  if (fresh === undefined || (fresh.closed === topic.isClosed && fresh.title === topic.title)) return
+  const peer = topicPeer(open.peer, topicRef(fresh))
+  await update($, thread, value => (value === null || !isSamePeer(value.peer, peer) ? value : { ...value, peer }))
+}
+
+/** What waits in Topics applies at the owner's move (g, h back into them): the order `tg topics` last gave, under a new generation; the cursor follows its topic. */
+async function applyTopicsWaiting($: $): Promise<void> {
+  const view = await read($, forumTopics)
+  const drawn = view === null ? undefined : loaded(view.load)
+  const latest = view === null ? undefined : topicsHeld.get(view.forum.id)
+  if (view === null || drawn === undefined || latest === undefined || topicsWaiting(drawn, latest) === 0) return
+  const items = await topicItems($)
+  const before = clamp((await read($, nav)).topicCursor, items.length)
+  const atTopic = items[before]?.topic ?? null
+  // `≡ all topics` stays row 0; a topic keeps the cursor wherever it moved, and one gone leaves it where it was.
+  const found = atTopic === null ? 0 : latest.findIndex(one => one.id === atTopic.id) + 1
+  const cursor = atTopic === null || found > 0 ? found : clamp(before, latest.length + 1)
+  await update($, forumTopics, value => (value === null ? null : { ...value, load: { status: 'ok', value: latest }, gen: value.gen + 1 }))
+  await update($, nav, value => cursorTo(value, 'topics', cursor, latest.length + 1))
+}
+
+/** `g` in Topics: what waits applies, and `tg topics` runs again. */
+async function reloadTopics($: $): Promise<void> {
+  await applyTopicsWaiting($)
+  const view = await read($, forumTopics)
+  if (view === null) return
+  await loadTopics($, view.forum, true)
+  await ringCursor($)
+}
+
+/** A pass ran (every 60 s while the pane is open): Topics on screen, or a stream opened from them, read `tg topics` again. */
+async function refreshTopics($: $): Promise<void> {
+  const view = await read($, forumTopics)
+  const at = await read($, nav)
+  if (view === null || (await read($, mode)) !== 'open') return
+  if (at.view === 'topics' || (at.view === 'thread' && (await isInTopics($)))) await loadTopics($, view.forum, false)
+}
+
+/** ⏎ on a row of Topics: the topic's thread, or the merged stream on `≡ all topics`. */
+async function openTopicAt($: $, index: number): Promise<void> {
+  const item = (await topicItems($))[index]
+  if (item === undefined) return
+  await openPeer($, item.peer)
+}
+
+/** The open thread is a stream of the forum Topics show: `h` goes back to them. */
+async function isInTopics($: $): Promise<boolean> {
+  const open = await read($, thread)
+  const view = await read($, forumTopics)
+  return open !== null && view !== null && open.peer.id === view.forum.id && (await topicFact($, open.peer)) !== 'none'
+}
+
+/** Whether a chat is a forum: tg's `forum` on its row, or its topics read this session. */
+async function isForumChat($: $, chatId: number): Promise<boolean> {
+  if ((await read($, forumTopics))?.forum.id === chatId || topicsHeld.has(chatId)) return true
+  return (await knownDialogs($)).some(one => one.id === chatId && one.forum)
+}
+
+/** The topic a key acts on (./ui/keys `TopicFact`): none outside forums; `all` for a forum as a whole. */
+async function topicFact($: $, peer: PeerRef): Promise<TopicFact> {
+  if (peer.topic !== undefined) return peer.topic.isClosed ? 'closed' : 'open'
+  return (await isForumChat($, peer.id)) ? 'all' : 'none'
+}
+
+/** A topic of a chat by id, as `tg topics` last gave it; one not read yet by its id alone. */
+function topicOf(chatId: number, topicId: number): TopicRef {
+  const known = topicsHeld.get(chatId)?.find(one => one.id === topicId)
+  if (known !== undefined) return topicRef(known)
+  // Not read yet: tg refuses a write into a closed topic all the same (exit 7).
+  return { id: topicId, title: topicId === GENERAL_ID ? 'General' : `topic ${topicId}`, isClosed: false }
+}
+
+/**
+ * The peer a packet is about (§10.9): the open topic's, or in a forum's merged
+ * stream the topic every message shares; a mixed set stays the forum's, each
+ * message keeping its own `topic`.
+ */
+async function packetPeer($: $, peer: PeerRef, messages: readonly TgMessage[]): Promise<PeerRef> {
+  if (peer.topic !== undefined || messages.length === 0) return peer
+  const ids = [...new Set(messages.map(one => one.topic_id))]
+  const only = ids[0]
+  if (ids.length !== 1 || only === undefined || only === null || !(await isForumChat($, peer.id))) return peer
+  return topicPeer(peer, topicOf(peer.id, only))
+}
+
+/**
+ * The topic a drafted reply goes into (§10.9): the peer's own, or in a forum
+ * the topic of the message it answers, from the thread or `tg msg`. Null when
+ * a forum's topic cannot be named: the draft then sends nothing.
+ */
+async function replyPeer($: $, peer: PeerRef, replyTo: number): Promise<PeerRef | null> {
+  if (peer.topic !== undefined || !(await isForumChat($, peer.id))) return peer
+  const open = await read($, thread)
+  const shown = open !== null && open.peer.id === peer.id ? (await threadMessages($)).find(one => one.id === replyTo) : undefined
+  let topicId = shown?.topic_id ?? null
+  if (shown === undefined) {
+    const found = await runTg($, tg.msg(peer.arg, [replyTo]))
+    topicId = found.ok ? (found.value[0]?.topic_id ?? null) : null
+  }
+  return topicId === null ? null : topicPeer(peer, topicOf(peer.id, topicId))
+}
+
+/** The merged stream's topic column (§10.9): each message's topic, in its colour; nothing outside a forum's merged stream. */
+async function mergedColumn($: $, peer: PeerRef): Promise<(message: TgMessage) => { text: string; color: Color | undefined } | undefined> {
+  if (peer.topic !== undefined || !(await isForumChat($, peer.id))) return () => undefined
+  const list = topicsHeld.get(peer.id) ?? []
+  return message => {
+    if (message.topic_id === null) return undefined
+    const topic = list.find(one => one.id === message.topic_id)
+    const title = topic?.title ?? (message.topic_id === GENERAL_ID ? 'General' : undefined)
+    const color = topic === undefined || topic.id === GENERAL_ID ? colors.dim : topicColor(palette, topic.icon_color ?? -1)
+    return { text: topicColumn(title), color }
+  }
+}
+
+/** A forum's row symbol: its topics summed once read this session (§10.9); before that, the pass's own counts. */
+function forumRowSymbol(dialog: TgDialog, agent: AgentMark | null): { symbol?: { text: string; role: Role } | null } {
+  const held = dialog.forum ? topicsHeld.get(dialog.id) : undefined
+  return held === undefined ? {} : { symbol: forumSymbol(held, agent) }
+}
+
+/** The view Chats show, by its tab's name: the breadcrumb's second part. */
+async function viewTitle($: $): Promise<string | null> {
+  const where = await read($, nav)
+  const entry = (await shownEntries($)).find(one => sameView(one.view, where.list))
+  return entry?.title ?? (where.list.kind === 'archive' ? 'Archive' : null)
+}
+
+/** The breadcrumb of a topic's thread or a merged stream (`tg › Work › Project team › Design review`); null for any other chat. */
+async function streamCrumb($: $, peer: PeerRef, width: number): Promise<string | null> {
+  if ((await topicFact($, peer)) === 'none') return null
+  return breadcrumb({ folder: await viewTitle($), forum: chatPeer(peer).label, topic: peer.topic?.title ?? 'all topics' }, width >= LEGEND_MIN)
+}
+
+/** Topics' card (§10.9): the breadcrumb as its title, `6 topics` in the corner, and `↑N` while topics wait. */
+async function topicsLook($: $, width: number): Promise<CardLook> {
+  const view = await read($, forumTopics)
+  const list = view === null ? undefined : loaded(view.load)
+  const title = view === null ? 'TOPICS' : breadcrumb({ folder: await viewTitle($), forum: view.forum.label, topic: null }, width >= LEGEND_MIN)
+  const latest = view === null ? undefined : topicsHeld.get(view.forum.id)
+  const waiting = list === undefined || latest === undefined ? 0 : topicsWaiting(list, latest)
+  const count = list === undefined ? null : `${list.length} topic${list.length === 1 ? '' : 's'}`
+  const corner = [waiting === 0 ? null : `↑${waiting}`, count].filter(part => part !== null).join(' · ')
+  return { key: 'card:topics', role: 'group', title: [{ text: title, bold: true }], corner: corner === '' ? null : corner }
+}
+
+/** Topics' rows (§10.9): ChatRows, `≡ all topics` first; the window scrolls at its edges, as every list's does. */
+async function drawTopicList($: $, els: Els, width: number, rows: number): Promise<RenderElement[]> {
+  const view = await read($, forumTopics)
+  if (view === null) return []
+  const at = await read($, now)
+  const waiting = LoadState(els, colors, { load: view.load, now: at, rows, onReload: () => reloadTopics($) })
+  if (waiting !== null) return [waiting]
+  const list = loaded(view.load) ?? []
+  const items = await topicItems($)
+  const where = await read($, nav)
+  const agentOf = await agentMarks($)
+  const cursor = clamp(where.topicCursor, items.length)
+  windowRows.topics = rows
+  const start = edgeStart(where.topicStart, cursor, rows, items.length)
+  return windowAt(items, start, rows).map((item, index) =>
+    ChatRow(els, colors, {
+      ...(item.topic === null ? allTopicsRow(list, at) : topicRow(item.topic, { now: at, agent: agentOf(peerKey(item.peer)), color: topicColor(palette, item.topic.icon_color ?? -1) })),
+      rowKey: item.key,
+      isCursor: start + index === cursor,
+      isOpen: false,
+      width,
+      onPress: async () => {
+        await update($, nav, value => ({ ...value, view: 'topics', topicCursor: start + index }))
+        await openTopicAt($, start + index)
+      },
+    }),
+  )
+}
+// ── /topics ──
 
 // ── onboarding ──
 // dialogs-pane-ux.md §4.4, §8 T7 and §10.5: the first open's START HERE card,

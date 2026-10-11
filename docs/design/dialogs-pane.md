@@ -67,6 +67,20 @@ Fields always carried: id, peer (kind, username, id), sender, date, edit date, r
 forward origin, text + entities, buttons (kind, data), media (type, size, filename, local path if
 downloaded), reactions, views, latency (bot replies), a replay command.
 
+In a forum (`dialogs-pane-ux.md` §10.9) the packet names the chat and the topic: `<tg-packet>`
+gains `topic="12" topic_title="Design review"` for the open topic, or, in the merged stream, for
+the topic every packed message shares; a mixed set carries neither. Each `<message>` carries its
+own `topic="12"` (`1` is General; the attribute is left out outside forums), and the replay
+command sends back into the trigger's topic (`--topic 12`). `topic_title` is the chat's words and
+is masked as the peer's title is. The autopilot's Speaker and delegate's relay read a topic's
+packet the same way.
+
+```xml
+<tg-packet v="1" intent="explain" source="dialogs-pane" redacted="true" topic="20" topic_title="Design review">
+  <peer kind="supergroup" id="[id-1]" title="Project team"/>
+  <message id="809" date="2026-10-10T20:57:00Z" from="user" edited="false" reply_to="20" topic="20">
+```
+
 ## 4. Design system
 
 Replaced by [`dialogs-pane-ux.md`](dialogs-pane-ux.md): tokens, glyphs, layout and states in §7, the

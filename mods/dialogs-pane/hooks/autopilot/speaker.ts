@@ -5,7 +5,7 @@
 // <tg-packet> (escaped, marked as data); your brief is in the system prompt.
 // Pure: the prompts and the narrowing of the answers.
 import type { ApDialog, ApTopic } from '../../types'
-import { buildPacket, escapeText } from '../packet/build'
+import { buildPacket, escapeText, type PacketInput } from '../packet/build'
 import type { MessageView, Peer } from '../packet/types'
 import { AP_TOPICS } from './config'
 
@@ -64,8 +64,11 @@ export function speakerSystem(dialog: ApDialog): string {
   ].join('\n')
 }
 
+/** A forum topic the chat is narrowed to: the packet names it (dialogs-pane-ux.md §10.9). */
+type InTopic = { topic?: PacketInput['topic'] }
+
 /** The burst and the history around it as one packet, the burst as its messages. */
-function chatPacket(peer: Peer, burst: readonly MessageView[], history: readonly MessageView[]): string {
+function chatPacket(peer: Peer, burst: readonly MessageView[], history: readonly MessageView[], topic: InTopic['topic']): string {
   const ids = new Set(burst.map(message => message.id))
   return buildPacket({
     messages: burst,
@@ -74,13 +77,14 @@ function chatPacket(peer: Peer, burst: readonly MessageView[], history: readonly
     intent: { id: 'raw', text: '' },
     redact: false,
     replay: false,
+    ...(topic === undefined ? {} : { topic }),
   }).text
 }
 
 /** Writes the reply to a burst; `canReadMore` offers `read_history` once. */
-export function replyPrompt(input: { peer: Peer; burst: readonly MessageView[]; history: readonly MessageView[]; canReadMore: boolean }): string {
+export function replyPrompt(input: InTopic & { peer: Peer; burst: readonly MessageView[]; history: readonly MessageView[]; canReadMore: boolean }): string {
   return [
-    chatPacket(input.peer, input.burst, input.history),
+    chatPacket(input.peer, input.burst, input.history, input.topic),
     '',
     'The <message> elements are new messages (a burst) the owner has not answered; <context> is the chat before them.',
     'Answer the burst once. Reply with one JSON object and nothing else:',
@@ -96,11 +100,11 @@ export function replyPrompt(input: { peer: Peer; burst: readonly MessageView[]; 
 }
 
 /** Asks, right before sending, whether messages that came meanwhile change the reply. */
-export function checkPrompt(input: { peer: Peer; burst: readonly MessageView[]; reply: string; fresh: readonly MessageView[] }): string {
+export function checkPrompt(input: InTopic & { peer: Peer; burst: readonly MessageView[]; reply: string; fresh: readonly MessageView[] }): string {
   return [
-    chatPacket(input.peer, input.burst, []),
+    chatPacket(input.peer, input.burst, [], input.topic),
     `<draft-reply>${escapeText(input.reply)}</draft-reply>`,
-    chatPacket(input.peer, input.fresh, []),
+    chatPacket(input.peer, input.fresh, [], input.topic),
     '',
     'You wrote <draft-reply> to the first packet. The second packet came in after you wrote it. Choose:',
     '- "send": the new messages do not change the answer (ok, a sticker, thanks);',
@@ -117,8 +121,8 @@ export const LISTEN_SYSTEM = [
   'Reply with the line alone.',
 ].join('\n')
 
-export function listenPrompt(input: { peer: Peer; burst: readonly MessageView[]; history: readonly MessageView[] }): string {
-  return [chatPacket(input.peer, input.burst, input.history), '', 'Summarize the <message> elements (the new ones) in one line.'].join('\n')
+export function listenPrompt(input: InTopic & { peer: Peer; burst: readonly MessageView[]; history: readonly MessageView[] }): string {
+  return [chatPacket(input.peer, input.burst, input.history, input.topic), '', 'Summarize the <message> elements (the new ones) in one line.'].join('\n')
 }
 
 type Obj = Record<string, unknown>

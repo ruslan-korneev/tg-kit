@@ -1,7 +1,7 @@
 // The §4 components, each a plain function over the surface's element table:
 // called as `ChatRow(els, colors, props)`, never as a JSX tag, so nothing depends on
 // how `h` treats function components. Handlers come in as closures.
-import type { ElementTable, RenderElement } from 'claude-code'
+import type { Color, ElementTable, RenderElement } from 'claude-code'
 
 import type { Load, TgMessage } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
@@ -22,6 +22,7 @@ import {
 } from './model'
 import type { Colors, Role } from './palette'
 import { clockOf, fixedCells, type MessageLook } from './thread'
+import { TOPIC_COLUMN } from './topics'
 
 export type Els = ElementTable
 
@@ -75,7 +76,8 @@ export function ChatRow(
     isDim?: boolean
     /** `rowTime`'s text. */
     time: string
-    glyph: { text: string; role: Role }
+    /** `color`: a forum topic's own colour, over its role (§10.9). */
+    glyph: { text: string; role: Role; color?: Color }
     name: string
     /** The name bold in `text`; a read chat's name stays plain, not dim. */
     isUnread: boolean
@@ -94,7 +96,7 @@ export function ChatRow(
   const cellsOf = [
     <Text color={props.isDim === true ? colors.dim : colors.accent}>{mark}</Text>,
     <Text color={colors.dim}>{`${props.time.padStart(6)} `}</Text>,
-    <Text color={colors[props.glyph.role]}>{props.glyph.text}</Text>,
+    <Text color={props.glyph.color ?? colors[props.glyph.role]}>{props.glyph.text}</Text>,
     <Text> </Text>,
     <Text color={props.isUnread ? colors.text : undefined} bold={props.isUnread}>
       {fitCells(props.name, room.name)}
@@ -152,6 +154,8 @@ export function MessageCard(
     stamp?: { text: string; isSlow: boolean } | null
     /** The message's buttons; null without buttons. */
     chips: { element: RenderElement } | null
+    /** The merged stream's topic column (§10.9): the topic's title, 10 cells, in its colour; absent elsewhere. */
+    topic?: { text: string; color: Color | undefined }
   },
 ): RenderElement {
   const { Box, Button, Text } = els
@@ -163,7 +167,8 @@ export function MessageCard(
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
   // Beside the text the chips start at the thread's chips column, and the stamp and id follow them; elsewhere they end the row.
   const tail = isOnRow ? props.chipsAt.column + 1 + props.chipsAt.tail : (stamp === null ? 0 : stamp.text.length + 1) + (id === '' ? 0 : id.length + 1)
-  const textWidth = Math.max(10, props.width - fixedCells(props.sender) - tail)
+  const topicCells = props.topic === undefined ? 0 : TOPIC_COLUMN + 1
+  const textWidth = Math.max(10, props.width - fixedCells(props.sender) - topicCells - tail)
   const color = isErrorText(message.text) ? colors.unread : undefined
   // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.
   const mark = props.isSelected ? GLYPH.marked : props.isAnchor ? 'v' : ' '
@@ -171,6 +176,7 @@ export function MessageCard(
   const head = [
     <Text color={colors.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
     <Text dimColor> {clockOf(message.date).padEnd(5)} </Text>,
+    ...(props.topic === undefined ? [] : [<Text color={props.topic.color}>{`${props.topic.text} `}</Text>]),
     // The bot token is the ◆ glyph's alone (§7.1): the sender column stays plain.
     <Text>{fit(sender, props.sender.width)}</Text>,
     <Text>{' '.repeat(props.sender.gap)}</Text>,

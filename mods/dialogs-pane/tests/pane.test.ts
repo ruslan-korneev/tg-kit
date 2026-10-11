@@ -27,9 +27,9 @@ const INLINE: RenderPropsOf['Pane'] = { ...DOCK, bodyColumns: 96, placement: 'in
 /** One placeholder chat of every kind §4.6 tells apart. */
 const KINDS: TgDialog[] = [
   ...DIALOGS,
-  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', last_text: 'Can we call?' },
-  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', last_text: 'release' },
-  { id: 1006, kind: 'bot', title: 'BotFather', username: 'BotFather', unread: 0, mentions: 0, pinned: false, muted: false, last_id: 3, last_date: '2026-10-08T09:00:00Z', last_text: 'Done!' },
+  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', forum: false, last_text: 'Can we call?' },
+  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', forum: false, last_text: 'release' },
+  { id: 1006, kind: 'bot', title: 'BotFather', username: 'BotFather', unread: 0, mentions: 0, pinned: false, muted: false, last_id: 3, last_date: '2026-10-08T09:00:00Z', forum: false, last_text: 'Done!' },
 ]
 
 type Ui = Mounted<'terminal', 'Pane'>
@@ -1374,7 +1374,7 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       // What lands outside the pane while the cursor stays: two drafts, an undo window, a summary, and an agent on (the footer's part).
       await fillBand($, write)
       const dev: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
-      await write($, value => ({ ...value, running: [dev.id], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
+      await write($, value => ({ ...value, running: [String(dev.id)], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
       expect(await siteText($, FOOTER)).not.toBe(footer)
       expect(await siteText($, HINT)).toBe('? for shortcuts | tg: 2 for you · ctrl+x tab')
       expect(await place(ui)).toEqual(base)
@@ -1422,12 +1422,12 @@ describe('the dock\'s sections hold their rows for a layout generation (§10.5 "
       expect((await ui.find({ key: 'card:foryou-section' }))?.props.height).toBe(forYou)
       expect(await place(ui)).toEqual(base)
       // An agent starts: the header counts it at once, the card waits for the next generation.
-      await write($, value => ({ ...value, running: [1004], dialogs: { ...value.dialogs, '1004': { ...defaultDialog(contact), level: 'draft' } } }))
+      await write($, value => ({ ...value, running: ['1004'], dialogs: { ...value.dialogs, '1004': { ...defaultDialog(contact), level: 'draft' } } }))
       expect((await ui.find({ key: 'header' }))?.text).toContain('AUTOPILOT 1 CHATS')
       expect(await ui.find({ key: 'card:autopilot' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
       // A log entry lands: the same.
-      await write($, value => ({ ...value, running: [1004], dialogs: { ...value.dialogs, '1004': { ...defaultDialog(contact), level: 'draft' } }, ledger: [sent(1)] }))
+      await write($, value => ({ ...value, running: ['1004'], dialogs: { ...value.dialogs, '1004': { ...defaultDialog(contact), level: 'draft' } }, ledger: [sent(1)] }))
       expect(await ui.find({ key: 'card:log' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
       // g starts a generation: FOR YOU takes its rows over CHATS, the other two under it, and nothing above CHATS draws a stop.
@@ -1965,7 +1965,7 @@ describe('the compact card above the prompt (§10.7, T15)', () => {
   const rowKeys = async (band: Mounted<'terminal', 'AbovePrompt'>) =>
     (await band.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.key === 'string' && /^compact:\d+$/.test(button.props.key) ? [button.props.key] : []))
   const agentOn = (write: ReturnType<typeof autopilotWriter>, $: Engine) =>
-    write($, value => ({ ...value, running: [dev.id], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
+    write($, value => ({ ...value, running: [String(dev.id)], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
 
   test('3 chats waiting: the status line, then the top two of For you; one ring stop, the first row; right-aligned, 46 wide', { timeoutMs: 15_000 }, async ($, on) => {
     const { seen } = await compact($, on, mentioned([1001, 1002, 1004]))

@@ -30,6 +30,13 @@ every call exit 3 (not logged in), `down` every call exit 1, `readonly` every
 write exit 7 as tg's guard refuses it, --yes or not, and `slow` (seconds,
 default 5) makes every call wait first, for the loading rows. The
 folder Quiet, last, lists no chat: the empty folder.
+
+Forum topics (T16, README "Forum topics"): Project team (1008) is a forum with
+General (1), Releases (12, pinned), Design review (20, a mention) and Old
+roadmap (40, closed). `topics` lists them; `read`, `watch` and `send` take
+--topic; a write into Old roadmap exits 7, even with --yes; `topics` on a chat
+that is not a forum exits 2. A send without --topic goes into the topic of its
+--reply-to, else General, as tg's does. Every message carries `topic_id`.
 """
 
 import json
@@ -48,6 +55,8 @@ MEMBER_2 = {"id": 2002, "kind": "user", "username": None, "name": "Member 2"}
 CONTACT_A = {"id": 1004, "kind": "user", "username": None, "name": "Contact A"}
 CONTACT_B = {"id": 1005, "kind": "user", "username": None, "name": "Contact B"}
 CHANNEL = {"id": 1006, "kind": "channel", "username": None, "name": "Announcements"}
+ANNA = {"id": 2003, "kind": "user", "username": None, "name": "Anna"}
+OLEG = {"id": 2004, "kind": "user", "username": None, "name": "Oleg"}
 FATHER = {"id": 1007, "kind": "bot", "username": "BotFather", "name": "BotFather"}
 
 DIALOGS = [
@@ -65,10 +74,24 @@ DIALOGS = [
      "last_id": 7, "last_date": "2026-10-10T19:19:00Z", "last_text": "release 2.0 is out"},
     {"id": 1003, "kind": "self", "title": "Saved Messages", "username": None, "unread": 0,
      "last_id": 42, "last_date": "2026-10-09T08:20:00Z", "last_text": "note to self"},
+    {"id": 1008, "kind": "supergroup", "title": "Project team", "username": None, "unread": 9,
+     "last_id": 812, "last_date": "2026-10-10T21:04:00Z", "last_text": "v2.4 is out"},
 ]
-EXTRA = {"pinned": False, "muted": False, "mentions": 0}
+EXTRA = {"pinned": False, "muted": False, "mentions": 0, "forum": False}
+FORUM = 1008
+# Project team's topics in Telegram's order (pinned first, then the newest), as `tg topics --json` prints them.
+TOPICS = [
+    {"id": 12, "title": "Releases", "icon_color": 0x6FB9F0, "unread": 5, "mentions": 0, "pinned": True, "closed": False,
+     "hidden": False, "last_id": 812, "last_date": "2026-10-10T21:04:00Z", "last_text": "v2.4 is out"},
+    {"id": 20, "title": "Design review", "icon_color": 0xFF93B2, "unread": 1, "mentions": 1, "pinned": False, "closed": False,
+     "hidden": False, "last_id": 809, "last_date": "2026-10-10T20:57:00Z", "last_text": "can you review the PR?"},
+    {"id": 1, "title": "General", "icon_color": None, "unread": 3, "mentions": 0, "pinned": False, "closed": False,
+     "hidden": False, "last_id": 805, "last_date": "2026-10-10T19:30:00Z", "last_text": "lunch at 1?"},
+    {"id": 40, "title": "Old roadmap", "icon_color": 0xFB6F5F, "unread": 0, "mentions": 0, "pinned": False, "closed": True,
+     "hidden": False, "last_id": 41, "last_date": "2026-10-03T10:00:00Z", "last_text": "moved to Design review"},
+]
 # The channel is muted (its count draws dim, ·14); the group has an unread mention (For you).
-ROW_EXTRA = {1006: {"muted": True}, 1002: {"mentions": 1}}
+ROW_EXTRA = {1006: {"muted": True}, 1002: {"mentions": 1}, 1008: {"mentions": 1, "forum": True}}
 # Work's 60 placeholder people, oldest last: the ring checks need a folder longer than the pane.
 MANY = [
     {"id": 5000 + k, "kind": "user", "title": f"Contact {k + 10}", "username": None, "unread": 1 if k % 7 == 0 else 0,
@@ -77,7 +100,7 @@ MANY = [
 ]
 FOLDERS = [
     {"id": 1, "title": "Personal", "kind": "folder", "chats": [1004, 1005, 1003]},
-    {"id": 2, "title": "Work", "kind": "folder", "chats": [1002, 1001, 1004] + [d["id"] for d in MANY]},
+    {"id": 2, "title": "Work", "kind": "folder", "chats": [1008, 1002, 1001, 1004] + [d["id"] for d in MANY]},
     {"id": 0, "title": "All chats", "kind": "all", "chats": [d["id"] for d in DIALOGS]},
     {"id": 3, "title": "Bots", "kind": "folder", "chats": [1001, 1007]},
     {"id": 11, "title": "News", "kind": "shared", "chats": [1006]},
@@ -95,9 +118,12 @@ RETRY = [[{"row": 0, "col": 0, "type": "cb", "text": "Retry", "data_b64": "cmV0c
           {"row": 0, "col": 1, "type": "cb", "text": "Back", "data_b64": "YmFjaw=="}]]
 
 
-def msg(i, text, sender, chat, out=False, date="2026-10-10T21:00:00Z", buttons=(), reply_to=None):
+def msg(i, text, sender, chat, out=False, date="2026-10-10T21:00:00Z", buttons=(), reply_to=None, topic=None):
+    # A message posted straight into a forum topic replies to the topic's id (README "Forum topics").
+    if topic is not None and reply_to is None and topic != 1:
+        reply_to = topic
     return {"id": i, "chat_id": chat, "date": date, "sender": sender, "out": out, "text": text,
-            "reply_to": reply_to, "forward": None, "edited": None, "edits": 0, "pinned": False,
+            "reply_to": reply_to, "topic_id": topic, "forward": None, "edited": None, "edits": 0, "pinned": False,
             "service": None, "via_bot": None, "media": None, "keyboard": "inline" if buttons else None,
             "buttons": list(buttons), "reactions": [], "links": []}
 
@@ -135,7 +161,29 @@ THREADS = {
     1006: [msg(7, "release 2.0 is out", CHANNEL, 1006, False, "2026-10-10T19:19:00Z")],
     1007: [msg(3, "Done! Congratulations on your new bot.", FATHER, 1007, False, "2026-10-08T10:00:00Z", BUTTONS)],
     1003: [msg(42, "note to self", ME, 1003, True, "2026-10-09T08:20:00Z")],
+    FORUM: [
+        msg(41, "moved to Design review", OLEG, FORUM, False, "2026-10-03T10:00:00Z", topic=40),
+        msg(801, "welcome to the team", OLEG, FORUM, False, "2026-10-10T18:00:00Z", topic=1),
+        msg(805, "lunch at 1?", OLEG, FORUM, False, "2026-10-10T19:30:00Z", topic=1),
+        msg(806, "the runner is back", OLEG, FORUM, False, "2026-10-10T19:40:00Z", topic=12),
+        msg(807, "on it after lunch", ME, FORUM, True, "2026-10-10T20:50:00Z", topic=20),
+        msg(809, "can you review the PR?", ANNA, FORUM, False, "2026-10-10T20:57:00Z", topic=20),
+        msg(812, "v2.4 is out", ANNA, FORUM, False, "2026-10-10T21:04:00Z", topic=12),
+    ],
 }
+
+
+def topic_of(pid, argv):
+    """--topic ID on a forum: the topic, or tg's exits (2: not a forum, 4: no such topic)."""
+    raw = flag(argv, "--topic")
+    if raw is None:
+        return None
+    if pid != FORUM:
+        fail("not a forum: --topic needs a supergroup with topics\n  fix: tg dialogs", 2)
+    found = [t for t in TOPICS if str(t["id"]) == raw]
+    if not found:
+        fail(f"no topic {raw}\n  fix: tg topics {pid}", 4)
+    return found[0]
 
 
 def rows():
@@ -274,10 +322,17 @@ def main(argv):
             out([{**l, "unread": unread(f)} for l, f in zip(listed, FOLDERS)])
         out(listed)
     pid = peer_id(argv[1]) if len(argv) > 1 else None
-    if cmd in ("read", "msg", "send", "press", "delete", "watch") and pid is None:
+    if cmd in ("read", "msg", "send", "press", "delete", "watch", "topics") and pid is None:
         fail(f"no chat {argv[1] if len(argv) > 1 else ''}\n  fix: tg dialogs", 4)
+    if cmd == "topics":
+        if pid != FORUM:
+            fail("not a forum: tg topics needs a supergroup with topics\n  fix: tg dialogs", 2)
+        out(TOPICS)
     if cmd == "read":
         thread = THREADS.get(pid) or [msg(100, "placeholder note", CONTACT_A, pid, False, "2026-10-10T18:00:00Z")]
+        topic = topic_of(pid, argv)
+        if topic is not None:
+            thread = [m for m in thread if m["topic_id"] == topic["id"]]
         out(thread[-int(flag(argv, "--limit", "30")):])
     if cmd == "msg":
         wanted = {int(a) for a in argv[2:] if a.isdigit()}
@@ -286,13 +341,22 @@ def main(argv):
             fail("message not found", 4)
         out(found)
     if cmd == "send":
+        topic = topic_of(pid, argv)
+        reply = flag(argv, "--reply-to")
+        if pid == FORUM and topic is None:
+            # tg derives the topic from --reply-to, else the forum's General.
+            parent = [m for m in THREADS[FORUM] if reply is not None and str(m["id"]) == reply]
+            topic = next((t for t in TOPICS if parent and t["id"] == parent[0]["topic_id"]), TOPICS[2])
+        named = None if topic is None else {"id": topic["id"], "title": topic["title"], "closed": topic["closed"]}
+        if topic is not None and topic["closed"]:
+            fail(f"topic {topic['id']} ({topic['title']}) is closed: nothing was sent\n  fix: reopen it in Telegram", 7)
         verdict = guard(argv, pid)
         if "--dry-run" in argv:
-            out({"action": "send", "target": {"id": pid}, "steps": [], "guard": verdict})
+            out({"action": "send", "target": {"id": pid}, "topic": named, "steps": [], "guard": verdict})
         if not verdict["allowed"]:
-            refuse(verdict, {"action": "send", "target": {"id": pid}}, "ask the account owner; add --yes only with their explicit OK")
+            refuse(verdict, {"action": "send", "target": {"id": pid}, "topic": named}, "ask the account owner; add --yes only with their explicit OK")
         text = sys.stdin.read()
-        sent = msg(int(time.time()) % 100000 + 700000, text, ME, pid, True)
+        sent = msg(int(time.time()) % 100000 + 700000, text, ME, pid, True, topic=None if topic is None else topic["id"])
         replies = [msg(sent["id"] + 1, f"got: {text}", BOT, pid)] if pid == 1001 and "--wait" in argv else []
         out({"sent": [sent], "replies": replies})
     if cmd == "press":
@@ -305,6 +369,7 @@ def main(argv):
     if cmd == "delete":
         out({"deleted": [int(a) for a in argv[2:] if a.isdigit()]})
     if cmd == "watch":
+        topic = topic_of(pid, argv)
         spool = os.path.join(STATE, "watch.jsonl")
         open(spool, "a").close()
         print(json.dumps({"event": "ready", "date": "2026-10-10T21:05:00Z", "peers": [pid]}), flush=True)
@@ -314,7 +379,9 @@ def main(argv):
                 line = lines.readline()
                 if line:
                     event = json.loads(line)
-                    if event.get("chat_id", pid) == pid:
+                    # --topic keeps one topic's messages and edits; typing and deletes have no topic here.
+                    in_topic = topic is None or event.get("event") not in ("message", "edit") or event.get("topic_id") == topic["id"]
+                    if event.get("chat_id", pid) == pid and in_topic:
                         print(line.strip(), flush=True)
                 else:
                     time.sleep(0.2)

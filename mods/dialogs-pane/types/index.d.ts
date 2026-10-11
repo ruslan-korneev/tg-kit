@@ -79,6 +79,8 @@ export type MessageView = {
   buttons: Button[][]
   reactions: Reaction[]
   links: Link[]
+  /** The forum topic it belongs to: 1 is General; null outside forums (README "Forum topics"). */
+  topic_id: number | null
   /** Only in global search results. */
   chat_title?: string
 }
@@ -96,6 +98,26 @@ export type Dialog = {
   pinned: boolean
   /** The chat's own mute, or the account's default for its kind. */
   muted: boolean
+  last_id: number | null
+  last_date: string | null
+  last_text: string
+  /** A supergroup with topics: `tg topics` lists them, `--topic` reads, writes and watches one. */
+  forum: boolean
+}
+
+/** One row of `tg topics PEER --json` (README "Forum topics"), in Telegram's order, pinned first. */
+export type Topic = {
+  /** 1 is General; any other is the id of the message that opened the topic. */
+  id: number
+  title: string
+  /** Telegram's colour as an RGB int (one of six), or null. */
+  icon_color: number | null
+  unread: number
+  mentions: number
+  pinned: boolean
+  /** Closed: tg refuses every write into it (exit 7). */
+  closed: boolean
+  hidden: boolean
   last_id: number | null
   last_date: string | null
   last_text: string
@@ -143,12 +165,19 @@ export type Load<T> =
  */
 export type Mode = 'open' | 'compact' | 'hidden'
 
-/** The peer a thread is open on: `arg` is what tg is given (`@name` or the id). */
-export type PeerRef = { id: number; arg: string; label: string; kind: TgPeerKind }
+/** A forum topic a peer is narrowed to: every tg call on the peer passes `--topic id` (§10.9). */
+export type TopicRef = { id: number; title: string; isClosed: boolean }
+
+/**
+ * The peer a thread is open on: `arg` is what tg is given (`@name` or the id).
+ * `topic`: one forum topic of the chat (§10.9); its `label` then reads
+ * `Project team › Design review`. Missing: the whole chat.
+ */
+export type PeerRef = { id: number; arg: string; label: string; kind: TgPeerKind; topic?: TopicRef }
 
 export type Nav = {
-  /** Where the cursor is: the Folders list (`h` from Chats), Chats, or the open chat; inline shows only that one. */
-  view: 'folders' | 'dialogs' | 'thread'
+  /** Where the cursor is: the Folders list (`h` from Chats), Chats, a forum's Topics, or the open chat; inline shows only that one. */
+  view: 'folders' | 'dialogs' | 'topics' | 'thread'
   /** What Chats show: a Telegram folder, the Archive, or a pane view (── folders ──). */
   list: ListView
   /** `s`: a search of every chat in place of the list; '' shows the list. */
@@ -163,6 +192,9 @@ export type Nav = {
   dialogStart: number
   messageStart: number
   folderStart: number
+  /** Topics' cursor and window start (§10.9); row 0 is `≡ all topics`. */
+  topicCursor: number
+  topicStart: number
   /** `m`: the menu over the view. */
   isMenuOpen: boolean
   /** `s`: the search field is up, in the bar's row. */
@@ -170,6 +202,13 @@ export type Nav = {
 }
 
 export type Thread = { peer: PeerRef; load: Load<TgMessage[]> }
+
+/**
+ * A forum's Topics (§10.9): the forum, its topics in the order drawn, and the
+ * generation in their row keys (`topic:<gen>:<chat>:<id>`), up whenever the
+ * order the owner sees changes; a topic that moves while the cursor stays waits.
+ */
+export type TopicsView = { forum: PeerRef; load: Load<Topic[]>; gen: number }
 
 /** Selected message ids, and where a `v` range started. */
 export type Selection = { ids: number[]; anchor: number | null }
@@ -208,7 +247,7 @@ export type WatchHealth = 'connecting' | 'live' | 'retrying' | 'failed'
 export type Verdict = 'needs-you' | 'fyi' | 'noise'
 
 /** The summary of one thread, drawn above its messages. */
-export type Summary = { peerId: number } & (
+export type Summary = { /** The thread's peer key (hooks/ui/model `peerKey`): a topic's summary is its own. */ key: string } & (
   | { status: 'loading' }
   | { status: 'ok'; text: string; count: number }
   | { status: 'error'; message: string }
@@ -227,7 +266,7 @@ export type WatchedReply = {
 export type Triage = {
   /** Dialogs marked with `w`; kept in $.store. */
   watched: PeerRef[]
-  /** Each running watch, by dialog id. */
+  /** Each running watch, by peer key (hooks/ui/model `peerKey`): a watched topic is its own. */
   health: Record<string, WatchHealth>
   /** Model verdicts, by `dialogId:last_id`, so a dialog is asked about once per new message. */
   verdicts: Record<string, Verdict>
@@ -532,16 +571,19 @@ export type ApPhase = 'listening' | 'gathering' | 'typing' | 'thinking' | 'check
  * The agent card while it is open: its step, the rung picked (digits pick, ⏎
  * starts or stops it), a notice, and the step `o`'s options go back to.
  */
-export type ApView = { kind: 'none' } | { kind: 'card'; dialogId: number; step: CardStep; pick: ApRung; notice: string | null; back: 'ladder' | 'grant' }
+export type ApView = { kind: 'none' } | { kind: 'card'; /** The card's peer key (hooks/ui/model `peerKey`). */ key: string; step: CardStep; pick: ApRung; notice: string | null; back: 'ladder' | 'grant' }
 
 /** The newest auto reply while `u` may still delete it. */
 export type ApUndoWindow = { seq: number; peer: PeerRef; ids: number[]; text: string; confidence: number | null; until: number }
 
 export type Autopilot = {
-  /** Per dialog id; mirrors $.store. */
+  /**
+   * Per peer key (hooks/ui/model `peerKey`): the chat id, or `chatId:topicId` for a
+   * forum topic (§10.9); mirrors $.store.
+   */
   dialogs: Record<string, ApDialog>
-  /** Dialog ids answered in this session: started from the card, never resumed by a new session. */
-  running: number[]
+  /** Peer keys answered in this session: started from the card, never resumed by a new session. */
+  running: string[]
   phase: Record<string, ApPhase>
   view: ApView
   ledger: ApEntry[]
@@ -615,10 +657,10 @@ export type DgTask = {
 }
 
 /** The card's per-dialog skip, until you type the dialog's name. */
-export type DgPending = { dialogId: number; skip: DgSkip }
+export type DgPending = { key: string; skip: DgSkip }
 
 export type Delegate = {
-  /** Per dialog id; mirrors $.store. */
+  /** Per peer key (a chat's id: delegate is never a topic's, §10.9); mirrors $.store. */
   dialogs: Record<string, DgDialog>
   tasks: DgTask[]
   /** `/tg autopilot --dangerously-skip-hard-stops[=…]`: until the session ends. */
@@ -715,6 +757,8 @@ declare module 'claude-code' {
       nav: Nav
       dialogs: Load<TgDialog[]>
       thread: Thread | null
+      /** The forum whose Topics are open or were last (§10.9); null before any. */
+      topics: TopicsView | null
       selection: Selection
       band: BandEvent | null
       queue: BandQueue

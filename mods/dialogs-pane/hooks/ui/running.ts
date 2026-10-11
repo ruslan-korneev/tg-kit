@@ -6,7 +6,7 @@
 import type { ActivityView, ApDialog, ApEntry, ApLevel, ApOutcome, ApPhase, LedgerEntry, PeerRef, PinWatch, TgPeerKind } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { packetLogText } from '../routing/route'
-import { GLYPH, clockText, dialogGlyph, labelCells, oneLine } from './model'
+import { GLYPH, clockText, dialogGlyph, isSamePeer, labelCells, oneLine, peerKey } from './model'
 import type { Role } from './palette'
 
 /** One chat with something on it. */
@@ -32,12 +32,13 @@ export type RunInput = {
 
 /** The rows: the autopilot's dialogs first, then chats with a task only, then the ones only followed. */
 export function runRows(input: RunInput): RunRow[] {
-  const rows = new Map<number, RunRow>()
+  // By peer key: a forum topic's agent is a row of its own (§10.9).
+  const rows = new Map<string, RunRow>()
   const row = (peer: PeerRef): RunRow => {
-    const known = rows.get(peer.id)
+    const known = rows.get(peerKey(peer))
     if (known !== undefined) return known
     const fresh: RunRow = { peer, agent: null, follow: null, task: null, workers: 0 }
-    rows.set(peer.id, fresh)
+    rows.set(peerKey(peer), fresh)
     return fresh
   }
   for (const agent of input.agents) row(agent.peer).agent = { level: agent.level, tail: agent.tail, phase: agent.phase }
@@ -72,7 +73,7 @@ export function stripItems(rows: readonly RunRow[]): StripItem[] {
   return rows.filter(isRunning).map(row => {
     const to = row.agent === null && row.follow !== null ? ` → ${row.follow.to}` : ''
     const isHeld = row.task?.isLive === true && row.task.isHeld
-    return { key: String(row.peer.id), text: `${glyphsOf(row)} ${row.peer.label}${to}${isHeld ? ' ⏸' : ''}`, isHeld }
+    return { key: peerKey(row.peer), text: `${glyphsOf(row)} ${row.peer.label}${to}${isHeld ? ' ⏸' : ''}`, isHeld }
   })
 }
 
@@ -157,8 +158,8 @@ export function stopNotice(names: readonly string[], failed: number, width: numb
  * until the view closes, so a row never moves up under the ring (§4.3 rule 1).
  */
 export function activityOrder(view: ActivityView, rows: readonly RunRow[]): ActivityView['rows'] {
-  const known = new Set(view.rows.map(one => one.id))
-  return [...view.rows, ...rows.filter(row => !known.has(row.peer.id)).map(row => row.peer)]
+  const known = new Set(view.rows.map(peerKey))
+  return [...view.rows, ...rows.filter(row => !known.has(peerKey(row.peer))).map(row => row.peer)]
 }
 
 /** One running row of Activity: glyphs, the name in a column, what it does. */
@@ -226,7 +227,7 @@ export function gauge(dialogs: readonly ApDialog[], ledger: readonly ApEntry[], 
   let best: Gauge | null = null
   for (const dialog of dialogs) {
     if (dialog.perHour === null) continue
-    const counted = ledger.filter(entry => entry.peer.id === dialog.peer.id && entry.outcome.kind === 'sent' && entry.outcome.by === 'auto' && entry.at > now - HOUR_MS)
+    const counted = ledger.filter(entry => isSamePeer(entry.peer, dialog.peer) && entry.outcome.kind === 'sent' && entry.outcome.by === 'auto' && entry.at > now - HOUR_MS)
     const oldest = counted.reduce((min, entry) => Math.min(min, entry.at), Number.POSITIVE_INFINITY)
     const one: Gauge = { peer: dialog.peer, sent: counted.length, perHour: dialog.perHour, freeInMs: counted.length === 0 ? null : oldest + HOUR_MS - now }
     const ratio = (g: Gauge) => g.sent / g.perHour
