@@ -6,7 +6,9 @@ keymap (§4) and modes (§2). The engines stay as built: the packet, the watch h
 Worker and the guard do not change. What changes is how a person finds them and drives them.
 
 Status: built. §8 split the work into tasks, T0a to T10, built one at a time on `feat/pane-ux`; T7
-was the last. Where the build left a mockup, the text next to it says how and why.
+was the last. Where the build left a mockup, the text next to it says how and why. §10 is the v2
+visual system (2026-10-11), spec only, with tasks T11 to T16; where it supersedes a section, that
+section says so at its head.
 
 ## 0. The new model in one paragraph
 
@@ -1360,6 +1362,10 @@ What changes for keys the owner already uses:
 
 ## 7. Visual system
 
+v2 supersedes §7.1 to §7.3 (§10.2 tokens and the `palette` option, §10.3 glyphs, §10.4 the chat
+row, §10.5 the frame); §7.4's states stay and draw inside their view's card. What follows is v1, as
+built.
+
 ### 7.1 Tokens
 
 The palette names stay (they follow the theme). What changes is when color is used.
@@ -1444,6 +1450,9 @@ login is the owner's own act. The state says what to type instead, as decision 1
 allow.toml. The owner may revisit it.
 
 ## 8. Implementation plan
+
+T0a to T10 below are v1, built. The v2 tasks, T11 to T16, are in §10.12, with the engine probes
+they lean on in §10.11.
 
 Tasks for builder agents, each on its own branch from `design/pane-ux` (the doc is its spec), in
 its own worktree, with the repo's checks (`tsc -p mods/dialogs-pane`, `claude plugin validate`,
@@ -1958,7 +1967,780 @@ Decided by the owner during the build (2026-10-11):
     switch and the hard stops already assume the Worker cannot reach tg, and an escape hatch would
     quietly undo decision 11.
 
-## 10. Rejected
+## 10. v2 visual system
+
+Status: spec, not built; reviewed and decided with the owner (2026-10-11, §10.13). §10.12 splits it into tasks T11 to T16. Where §10
+supersedes §4–§8, the earlier section says so in a line at its head.
+
+**Why.** The owner's verdict on the built pane (2026-10-11): it reads as instructions, not data.
+Key hints stand in three places: the header's `ctrl+x tab: keys` and `s: search`, the four-line
+"start here", and the action bar. A row is a bare name behind `#` or `•`. Colour means almost
+nothing: today `TOKEN` has five ANSI names (`ui/model.ts:14`), and a row uses two of them, `cyan`
+on ▸ and `magenta` on `◆` (`ui/components.tsx:89–91`). The docked pane's grey fill runs the full
+height and the content stops halfway. The inline strip's `+3 4: Work 5: …` is noise.
+
+**References the owner likes.**
+
+- statuspane: a compact bordered card, one accent, `▰▱` gauges, dim labels and bright values. Its
+  card sits right-aligned above the prompt (`statuspane 1.3.3 hooks/register.tsx:719–727`).
+- flightdeck 0.3.2: rounded section cards inside the docked Pane, each in its own colour, with a
+  legend line. An uppercase summary header. A cell strip coloured by outcome. `━━━·····` lanes.
+  Keys sit inside the data (`f: file 8`, a dim `1-5 expand` in a corner). A log with dim time and a
+  coloured source column. A section with nothing to show takes no room
+  (`hooks/register.tsx:546–557`). A `palette` option: `theme` by default, plus a fixed `pastel`
+  (`hooks/core.ts:155–180`).
+
+**What stays.** The engines, the views and their graph (§4.2, with Topics added in §10.9), the
+key table (§6), and every §4.3 ring rule. That covers three rules: every view binds a–z and 0–9,
+stops stay stable while the cursor stays, and a Button in a `display: "none"` Box still takes its
+hotkey. §10.10 lists exactly what v2 changes in §3–§7, rule by rule.
+
+### 10.1 Three states
+
+| State | When | What draws |
+| --- | --- | --- |
+| **Wide** | the pane is open, in either seat | the Pane: a summary header, a legend row, section cards, one key line (§10.5). Docked it shows every section that has something; inline (≤ 12 rows) it shows the view's card only |
+| **Compact** | the pane is closed (`q`, ✕), the default once it is closed | a narrow bordered card, right-aligned above the prompt, 3–4 lines (§10.7). The band's queue (§5.3) keeps its full-width rows above the card |
+| **Hidden** | the card is put away (`q` in the card, `/tg hide`) | one line: `● tg: 15 unread · @2 · autopilot 12/50` (§10.8). The band still raises what needs the owner |
+
+`/tg` opens Wide from either of the other two states. Compact and Hidden are remembered in
+`$.store`, so the pane closes back into the one the owner left it in.
+
+### 10.2 Tokens and the `palette` option
+
+`palette` is a new `userConfig` option in `mods/dialogs-pane/.claude-plugin/plugin.json`:
+
+- `theme` (the default) uses Claude Code's theme key names, so the pane follows the owner's theme,
+  light themes included.
+- `mocha` uses Catppuccin Mocha's fixed colours and is meant for dark terminals.
+
+This is the same shape as flightdeck's `palette` (`theme` and `pastel`). Code names a role, never
+a colour. The role table below is the contract: it replaces `TOKEN` (`ui/model.ts:14`), and every
+task codes against these role names.
+
+| Role | Used for | `theme` (theme key) | `mocha` | 16-colour |
+| --- | --- | --- | --- | --- |
+| `accent` | ▸, the current folder tab, the focused card's border, `TG` in the header | `merged` | mauve `#CBA6F7` | `magenta` |
+| `unread` | the unread count, `N UNREAD`, `0: stop all`, error replies, ✗ | `error` | red `#F38BA8` | `red` |
+| `mention` | `@2`, the FOR YOU card, `N FOR YOU`, the cell for "asked" | `warning` | peach `#FAB387` | `yellow` |
+| `held` | a draft or a hard stop waiting, ✎ in FOR YOU, the cell for "held", a flood wait | `warning` | yellow `#F9E2AF` | `yellowBright` |
+| `ok` | ⚡, the AUTOPILOT card, the cell for "sent", ✓ | `success` | green `#A6E3A1` | `green` |
+| `person` | ○, the CHATS card | `permission` | blue `#89B4FA` | `blue` |
+| `group` | ◇ and ⌗ (forum) | `suggestion` | teal `#94E2D5` | `cyan` |
+| `channel` | ▷ | `text` | sky `#89DCEB` | `cyanBright` |
+| `bot` | ⬡ | `claude` | pink `#F5C2E7` | `magentaBright` |
+| `saved` | ★ | `warning` | yellow `#F9E2AF` | `yellowBright` |
+| `dim` | time, preview, ◌, labels, the legend's words, the key line | `inactive` | overlay `#6C7086` | `gray` |
+| `subtext` | the second tier: `@username` in the chat card's title, the log's text | `inactive` | subtext `#A6ADC8` | `white` |
+| `text` | names and values (bold when unread) | `text` | text `#CDD6F4` | default |
+| `surface` | every card's border while the pane does not hold the keys, the LOG card's border | `subtle` | surface `#45475A` | `gray` |
+
+Sections take their role's colour: FOR YOU `mention`, CHATS `person`, AUTOPILOT `ok`, LOG
+`surface` (its title in `subtext`). The CHAT card takes the open chat's kind role.
+
+Notes:
+
+- `theme` has only the ten keys that flightdeck and statuspane prove the engine accepts: `claude`,
+  `suggestion`, `success`, `permission`, `merged`, `warning`, `error`, `inactive`, `subtle` and
+  `text`. So three pairs share a key: `mention`, `held` and `saved` on `warning`; `dim` and
+  `subtext` on `inactive`; and channels draw as plain `text`. The glyph's shape still tells the
+  kind. Probe P6 (§10.11) checks for more keys. If it finds some, `channel` and `held` get their
+  own.
+- 16-colour: when the terminal has fewer than 256 colours, the engine's colour depth picks the
+  third column, if the engine exposes it (P7). Otherwise `ansi` becomes a third `palette` value.
+- `mocha` is the owner's list, plus `text #CDD6F4` (Catppuccin Mocha's text), which the list left
+  out.
+
+**Forum topic colours.** Telegram gives a topic one of six `icon_color` values. They map onto the
+palette as follows:
+
+| `icon_color` | Telegram | `mocha` | `theme` |
+| --- | --- | --- | --- |
+| `0x6FB9F0` | blue | blue `#89B4FA` | `permission` |
+| `0xFFD67E` | yellow | yellow `#F9E2AF` | `warning` |
+| `0xCB86DB` | violet | mauve `#CBA6F7` | `merged` |
+| `0x8EEE98` | green | green `#A6E3A1` | `success` |
+| `0xFF93B2` | rose | pink `#F5C2E7` | `claude` |
+| `0xFB6F5F` | red | maroon `#EBA0AC` | `error` |
+
+Red maps to maroon, not red, so that a topic's dot never reads as an unread count. Any other
+value draws in `dim`.
+
+### 10.3 Glyphs
+
+Kind glyphs, coloured by their role. The owner kept the glyphs and allowed refinements.
+
+| Kind | v1 | v2 | East Asian Width |
+| --- | --- | --- | --- |
+| person | `•` | `○` | A |
+| group, supergroup | `#` | `◇` | A |
+| channel | `#` | `▷` | A |
+| bot | `◆` | `⬡` | N |
+| Saved Messages | `★` | `★` | A |
+| forum (a group with topics) | — | `⌗` | N |
+| a topic | — | `●` in its `icon_color`; General `#`, dim | A |
+| all topics | — | `≡` | A |
+
+The symbol column holds one symbol, chosen by this priority:
+
+| Symbol | Role | Means |
+| --- | --- | --- |
+| `@2` | `mention` | unread mentions of the owner, also in a muted chat (Telegram notifies those) |
+| `12` | `unread` | unread messages in a chat that is not muted; `99+` past 99 |
+| `12` | `dim` | the same count in a muted chat (§4.7: muted counts would bury the rest) |
+| `⊘` | `dim` | a closed topic: no writes, no agent (§10.9) |
+| `⚡` | `ok`, or `held` while it holds something for the owner | an agent is on here, at any level |
+| `ro` | `held` | BotFather, read-only (it took the watch column in v1) |
+| `✎` | `held` | FOR YOU only: a draft waits for the owner |
+| `◌` | `dim` | muted, nothing unread |
+| blank | | |
+
+Pinned chats are shown by their order only, with no symbol. ▸ marks the cursor, and `›` marks
+the open chat while the cursor is elsewhere (dock). Both sit left of the time.
+
+Widths. A column takes Ambiguous (A) glyphs as one cell, as v1 already does with `◆ • ★ ● ◎`. The
+row code counts them through `labelCells`, so every one of them joins `NARROW_GLYPHS`
+(`ui/model.ts:123`). `⚡` is the exception: it is Wide, two cells, and the reason §7.2 removed it.
+It stays at the owner's word and fits the 3-cell symbol column, counted as two. It also has
+default emoji presentation, so a terminal may draw it as a colour emoji that ignores the `ok`
+role. Probe P5 checks for that. If it fails, the symbol becomes `↯` (one cell, takes the role).
+The agent's level glyph `↯` (delegate) then moves to the chat card's title only.
+
+Kept from §7.2: the level glyphs in the AUTOPILOT lanes and on the agent card (`⌁ ◉ ✎ ⟳ ↯`),
+`◎` watched (now in the chat card's title), `▪` marked, `▣` packet, `⏱` latency, and
+`… ✓ ✗ ■ ⏸ ⚠`. New: `▰▱` the gauge, `━·` the lanes, `■` the legend swatch and the cell strip,
+`↻` a slot frees. Every one of these is N or A.
+
+### 10.4 The chat row
+
+One line, in Chats, FOR YOU, the compact card and Topics:
+
+```text
+▸ 14:02 ○ Ivan Petrov          Can we call tomorro…   2
+│ │     │ │                    │                    └ symbol, 3, right-aligned (§10.3)
+│ │     │ │                    └ preview: dim, the rest of the width, cut first
+│ │     │ └ name: fixed column, cut with …; bold and `text` when unread
+│ │     └ kind glyph, its role
+│ └ time: 6, right-aligned, dim
+└ cursor ▸ / open ›, accent
+```
+
+- **Columns**: cursor 1 · time 6 · space · glyph 1 · space · name · space · preview · space ·
+  symbol 3. The fixed cells add up to 15, and the name and the preview share the rest.
+  `name = min(20, rest − 12)`, and the preview gets what is left. When `name` would drop under 10,
+  the preview goes and the name takes the whole rest. So the name keeps its room and the preview
+  gives way first: at 60 columns (a 56-cell card) it is name 20 and preview 21; at 44 it is
+  13 and 12. Widths are counted in cells (`cells`, `labelCells`).
+- **Time**: `14:02` today, `Mon` within the last six days, `Oct 3` older, `2025` before this
+  year. This replaces `shortTime`'s `yesterday` and `09-29`. **Width 6, not the owner's 5**:
+  `Oct 13` is six cells, and a two-digit day cannot fit five without a format the owner did not
+  pick (§10.13, decision 1).
+- **Name**: the dialog's `title`, which for a user is first and last name; `Saved Messages` for
+  `self`. Never `@username`: `dialogLabel` (`ui/model.ts:48`) stops returning it, and the username
+  moves, dim, into the chat card's title. Routing still uses `peerArg` (`@username`, the id, or
+  `me`) and does not change.
+- **Preview**: the chat's `last_text`, one line (`oneLine`), dim; a media tag as in the thread. The
+  pass carries no sender, so a group's preview has none, and neither does a topic's: `tg topics`
+  on `feat/tg-topics` gives `last_id`, `last_date` and `last_text` only (its worktree, uncommitted,
+  2026-10-11). A builder adds a sender only after tg gains a field for it, which would be a CLI
+  contract change.
+- **Unread**: the name is bold in `text`. A read chat's name is plain, not dim: data stays bright,
+  and only labels are dim.
+- **Gone from v1's row**: the level column (the symbol's ⚡ says an agent is on, and the AUTOPILOT
+  lanes and the chat card say which level), the watch column (`◎` moves to the chat card's title
+  and the CHATS card's corner), and the right-hand 10-cell time.
+
+### 10.5 Wide
+
+```text
+v2 · Wide · dock, 60 columns · home: no chat open, the pane holds the keys
+TG · 15 UNREAD · 2 FOR YOU · AUTOPILOT 2 CHATS
+■ for you  ■ chats  ■ autopilot  ■ log
+╭─ FOR YOU · 2 ─────────────────────────────────── y: all ─╮
+│   14:02 ○ Ivan Petrov          draft: Tomorrow is p…   ✎ │
+│   13:57 ⌗ Project team         can you review the P…  @1 │
+╰──────────────────────────────────────────────────────────╯
+╭─ CHATS  Personal  Work 15  Bots  › ──────── 1-9 folders ─╮
+│ ▸ 14:02 ○ Ivan Petrov          Can we call tomorrow…   2 │
+│   13:57 ⌗ Project team         can you review the P…  @1 │
+│   13:40 ◇ Dev chat             deploy is green        ⚡ │
+│   12:15 ⬡ Example Bot          Main menu               3 │
+│     Sat ▷ Release notes        v2.4: faster sync, n…   ◌ │
+│     Thu ★ Saved Messages       checklist for the re…     │
+│   Oct 3 ○ Anna Smirnova        thanks!                   │
+╰──────────────────────────────────────────────────────────╯
+╭─ AUTOPILOT · 2 chats ────────────────────── 0: stop all ─╮
+│ ▰▰▱▱▱ 12/50 per hour · Dev chat  ↻ 0:41                  │
+│ ■■■■■■■■■■■■■■  sent 11 · held 2 · asked 1               │
+│ ⟳ Dev chat     ━━━━━━━━━━··········  drafting 0:12       │
+│ ✎ Ivan Petrov  ····················  listening           │
+╰──────────────────────────────────────────────────────────╯
+╭─ LOG ─────────────────────────────────────────── l: all ─╮
+│ 14:02  Dev chat      sent "Merged, thanks" · 0.93        │
+│ 13:58  Ivan Petrov   draft waits · dates · 0.62          │
+│ 13:40  Example Bot   ▣ → main · Fix · ✓ done             │
+╰──────────────────────────────────────────────────────────╯
+⏎ open  t: summary  w: watch  a: agent  m: menu
+```
+
+Colours in the mockup above:
+
+- **Header**: `TG` in `accent`, `15 UNREAD` in `unread`, `2 FOR YOU` in `mention`, `AUTOPILOT 2
+  CHATS` in `ok`.
+- **Legend**: each `■` in its section's role.
+- **CHATS card**: its border is `accent`, because it holds the cursor and the pane has the keys.
+  Its tab `Work 15` is `accent` and bold.
+- **AUTOPILOT card**: the cell strip reads `s s h s s s a s s s h s s s`, where `s` is `ok`, `h`
+  is `held` and `a` is `mention`.
+
+```text
+v2 · Wide · dock, 44 columns · the same moment
+TG · 15 UNREAD · 2 FOR YOU · AUTOPILOT 2
+■ for you  ■ chats  ■ autopilot  ■ log
+╭─ FOR YOU · 2 ─────────────────── y: all ─╮
+│   14:02 ○ Ivan Petrov   draft: Tomo…   ✎ │
+│   13:57 ⌗ Project team  can you rev…  @1 │
+╰──────────────────────────────────────────╯
+╭─ CHATS  Work 15  Bots  › ────────────────╮
+│ ▸ 14:02 ○ Ivan Petrov   Can we call…   2 │
+│   13:57 ⌗ Project team  can you rev…  @1 │
+│   13:40 ◇ Dev chat      deploy is g…  ⚡ │
+│   12:15 ⬡ Example Bot   Main menu      3 │
+│     Sat ▷ Release notes v2.4: faste…   ◌ │
+│     Thu ★ Saved Messag… checklist f…     │
+│   Oct 3 ○ Anna Smirnova thanks!          │
+╰──────────────────────────────────────────╯
+╭─ AUTOPILOT · 2 ──────────────── 0: stop ─╮
+│ ▰▰▱▱▱ 12/50 · Dev chat ↻ 0:41            │
+│ ■■■■■■■■■■■■■■  11 · 2 · 1               │
+│ ⟳ Dev chat    ━━━━━━······ 0:12          │
+│ ✎ Ivan Petrov ············ listening     │
+╰──────────────────────────────────────────╯
+╭─ LOG ─────────────────────────── l: all ─╮
+│ 14:02  Dev chat     sent "Merged, th…    │
+│ 13:58  Ivan Petrov  draft waits · da…    │
+╰──────────────────────────────────────────╯
+⏎ open  t: summary  a: agent  m: menu
+```
+
+At 44 columns the folder tabs give up `1-9 folders`, then tabs from the left. The AUTOPILOT title
+shortens to `0: stop`, and the strip's counts lose their words.
+
+```text
+v2 · Wide · dock, 60 columns · a person chat open: CHATS keeps 3 rows, the other sections fold
+TG · 15 UNREAD · 2 FOR YOU · AUTOPILOT 2 CHATS
+■ for you  ■ chats  ■ autopilot  ■ log           0: stop all
+╭─ CHATS  Personal  Work 15  Bots  › ──────── 1-9 folders ─╮
+│ › 14:02 ○ Ivan Petrov          Can we call tomorrow…   2 │
+│   13:57 ⌗ Project team         can you review the P…  @1 │
+│   13:40 ◇ Dev chat             deploy is green        ⚡ │
+╰──────────────────────────────────────────────────────────╯
+╭─ ○ Ivan Petrov · @ivan_example ────────────── ◎ watched ─╮
+│   ── yesterday ──                                        │
+│   18:40 you   the draft is in the shared folder          │
+│   19:40 Ivan  got it, reading                            │
+│   ── today ──                                            │
+│ ▸ 14:02 Ivan  Can we call tomorrow at 10?                │
+╰──────────────────────────────────────────────────────────╯
+⏎ send…  n: write  a: agent  w: watch  m: menu
+```
+
+```text
+v2 · Wide · dock, 44 columns · the same; the running row says what runs instead of the legend
+TG · 15 UNREAD · AUTOPILOT 2
+⟳ Dev chat drafting 0:12             0: stop
+╭─ CHATS  Work 15  Bots  › ────────────────╮
+│ › 14:02 ○ Ivan Petrov   Can we call…   2 │
+│   13:57 ⌗ Project team  can you rev…  @1 │
+│   13:40 ◇ Dev chat      deploy is g…  ⚡ │
+╰──────────────────────────────────────────╯
+╭─ ○ Ivan Petrov ────────────────────── ◎ ─╮
+│   ── yesterday ──                        │
+│   18:40 you   the draft is in the share… │
+│   19:40 Ivan  got it, reading            │
+│   ── today ──                            │
+│ ▸ 14:02 Ivan  Can we call tomorrow at 1… │
+╰──────────────────────────────────────────╯
+⏎ send…  n: write  a: agent  m: menu
+```
+
+**The header** is one row: an uppercase summary in place of §4.5's glyph string and §5.0's
+location. Its parts:
+
+- `TG`;
+- `N UNREAD` (chats that are not muted, as §4.5 counts them);
+- `@N` (unread mentions), when no FOR YOU part shows them;
+- `N FOR YOU`;
+- `AUTOPILOT N CHATS`, in `held` when an agent holds something;
+- `◎ N NEW` (watched).
+
+Zero parts are left out, and `…` ends the row while something loads. On an error the header reads
+`TG ⚠` in `unread`. Where the pane is now goes to the card titles (`CHATS  Work 15`, `○ Ivan
+Petrov`, `tg › Work › Project team`), so the header no longer says it.
+
+**The legend row** is the row the dock always keeps under the header: §7.3's running strip, which
+carries the notices (T4b). Its left part shows one of three things, in this order:
+
+1. a notice (in the notice's tone);
+2. else, while the AUTOPILOT card is folded and something runs, what runs (`⟳ Dev chat drafting
+   0:12`, as the running strip did);
+3. else the legend: `■ for you  ■ chats  ■ autopilot  ■ log`, swatches in the section roles,
+   words dim.
+
+Its right part shows `0: stop all` in `unread` while something runs and the AUTOPILOT card is not
+on screen. The card's corner carries it otherwise, so the label is never drawn twice; the `0`
+Button stays the hidden one (§4.3). The row is text only, as it is today. The row's three
+contents have different widths, so the order also decides what gives way: under 52 columns the
+legend drops whenever anything else needs the row.
+
+**Section cards.** A card is a rounded box the full width of the pane. Its title sits in the top
+border, uppercase and in the section's role. One dim corner label sits at the top right and names
+the card's own key or count: `y: all`, `1-9 folders`, `0: stop all`, `l: all`, `◎ watched`,
+`6 topics`. Content is padded by one cell. The dock's order is:
+
+| Section | Shows | Rows (content) | Ring stops |
+| --- | --- | --- | --- |
+| FOR YOU | §5.3's items, agents' first, in the chat row's format; preview `draft: …` (`held`), `asks you: …` | 1–3; `y: all` opens the full view (§5.3) | none: text. ⏎ on an item works in `y`'s view and in the band, as built |
+| CHATS | the current folder; tabs in the title (`CHATS  Personal  Work 15  Bots  ›`), the current one `accent` and bold, `›` past the edge, counts as today | the rest, at least 5 (3 while a chat is open) | the rows, as today |
+| AUTOPILOT | §10.6 | 2 + one lane per chat on, at most 3 lanes | none |
+| LOG | §10.6 | what is left, at least 2; it grows to the bottom, so the pane is never half empty | none |
+| START HERE | the first open only, until `d` (§4.4); in `accent` with `d: got it` in the corner, three lines (the fourth, `keys work while ● keys shows`, goes with `● keys`) | 3 | none |
+
+A section with nothing to show takes no room: FOR YOU with no items, AUTOPILOT with no agent on,
+LOG with no entry. CHATS always shows; an empty folder holds §7.4's one sentence.
+
+**Opening a chat** (dock) keeps CHATS at 3 rows, with ▸ moving to the CHAT card. The CHAT card
+takes the lower part:
+
+- Its title is the kind glyph, the name, and `@username` in `subtext`.
+- Its corner shows the chat's state: `◎ watched`, an agent's level `✎ draft`, `ro`.
+- Its border is in the chat's kind role.
+- Message rows are §7.3's.
+
+FOR YOU, AUTOPILOT and LOG fold while a chat is open. Their counts stay in the header, and what
+runs shows in the legend row. The card, the send sheet, Folders, the menu and Activity each take
+the same lower part as a card titled after them (`AGENT · Ivan Petrov`, `SEND · 1 message`,
+`FOLDERS`, `MENU`, `ACTIVITY`). Activity is the AUTOPILOT and LOG cards at full height, with the
+running rows as Buttons, as built.
+
+**Inline** (the main screen, up to 12 rows): the header, the view's one card, and the key line.
+There is no legend row; the notice row stays as §7.3 has it. FOR YOU, AUTOPILOT and LOG never draw
+inline, and their counts are in the header. The folder tabs ride the CHATS title, as in the dock.
+That ends the inline header's `1: Personal 2: ‹Work 3› … +12` strip.
+
+**The key line** is the pane's last row, dim. It holds the verbs of §4.6's action bar for the
+context, in its order, with `m: menu` always last. It draws as many as fit, not seven. It is the
+one place keys are drawn, apart from corner labels on the cards and Wide's first-open START HERE.
+It is not drawn into a card's border, for two reasons. The last card changes (LOG, AUTOPILOT and
+CHATS come and go), and the line's Buttons are ring stops, so a line that hopped between borders
+would move stops while the cursor stays (§4.3 rule 1). While the pane does not hold the keys, the
+line starts with `ctrl+x tab: keys`.
+
+**Focus, by colour.** The card that holds the cursor draws its border in `accent` while the pane
+holds the keys; the other cards keep their section roles. When the keys are elsewhere, every
+border turns `surface`, ▸ dims, and the key line starts with `ctrl+x tab: keys`. This replaces the
+header's `● keys` and `ctrl+x tab: keys` (§3 principle 5, §10.10).
+
+**Heights hold still.** A card's rows are fixed for a *layout generation*. One starts when a view
+opens, and again at the moments T9 already applies waiting moves: ⏎ into a chat, `h`, a folder or
+view switch, and `g`. Between two of them:
+
+- A section that gains items shows what fits in its rows. Its corner counts the rest (`y: all · 3`).
+- A section that would appear waits, counted in the header.
+- A section that empties keeps its rows, which show its last state dim.
+
+So nothing above the CHATS list changes its room while the cursor stays. FOR YOU above CHATS
+draws no ring stop, and the stops above the cursor keep their count (§4.3 rule 1, including
+"rows under a list count too"). The test is T4b's, extended to sections.
+
+**The grey fill.** The owner saw the Pane's grey background run the full height, with the content
+stopping halfway. In flightdeck's screenshot the docked pane shows the same lighter fill, so the
+fill is most likely the engine's. P4 checks whether the mod can drop it. Either way, LOG grows to
+the bottom, so the fill never shows as an empty half.
+
+### 10.6 The AUTOPILOT card and the log
+
+```text
+╭─ AUTOPILOT · 2 chats ────────────────────── 0: stop all ─╮
+│ ▰▰▱▱▱ 12/50 per hour · Dev chat  ↻ 0:41                  │   gauge: the chat nearest its limit
+│ ■■■■■■■■■■■■■■  sent 11 · held 2 · asked 1               │   one cell per event, newest right
+│ ⟳ Dev chat     ━━━━━━━━━━··········  drafting 0:12       │   one lane per chat on
+│ ✎ Ivan Petrov  ····················  listening           │
+╰──────────────────────────────────────────────────────────╯
+```
+
+- **The gauge.** Limits are per chat (`perHour`, 50 by default, `autopilot/config.ts:19`). The
+  gate counts each chat's sends in the last hour (`sentLastHour`, `autopilot/burst.ts:110`). So
+  the gauge shows the chat nearest its limit, by sends over `perHour`, and names that chat. It
+  uses five cells, `▰` in `ok`, then `held` from 80 %, then `unread` at the limit, with `▱` in
+  `dim`. A chat with no limit (`∞/h`) has no gauge. The hour is rolling, so nothing "resets": the
+  owner's `↻ resets 0:41` is drawn `↻ 0:41`, the time until the oldest counted send leaves the
+  hour and a slot frees (§10.13, decision 4). The compact card and the Hidden line show the same pair
+  (`12/50`).
+- **The cell strip.** One `■` per autopilot event, newest at the right, as many as fit. The cells
+  map from `ApOutcome` (`types/index.d.ts:466`) as follows:
+
+  | Outcome | Cell | Role |
+  | --- | --- | --- |
+  | `sent` | sent | `ok` |
+  | `drafted` | held | `held` |
+  | `stop` | asked | `mention` |
+  | `failed`, and `skipped` | refused | `unread` |
+
+  `working`, `listened`, `dropped` and `allowed` draw no cell. The counts after the strip leave
+  zeros out.
+- **Lanes.** One per chat on, with the level glyph, the name, and a lane as wide as the card
+  allows. The lane is the burst's wait: `━` is the time since the last incoming message, against
+  the burst gap (`gapS`, 20 s by default), and `·` is what remains. Then the state, in this order:
+  `drafting 0:12` (the clock since the draft started), `draft waits` (`held`), `sent 0.93`,
+  `listening`. An idle lane is all `·`. A delegate lane shows its task's minutes (`task 42 min`)
+  instead. At most three lanes; past that the title counts the rest (`AUTOPILOT · 5 chats · +2`).
+- **The log.** Each line holds the time (`HH:MM`, dim), the chat's name (in its kind role, a fixed
+  column of 13 cells), and the text in `subtext`, or in its tone (`ok`, `held`, `unread`) for an
+  outcome. Newest first. It merges packets, bursts and stops as `mergedLog` does
+  (`ui/running.ts:191`). `LogRow` (`ui/running.ts:182`) gains `peer: {label, kind}` and loses the
+  time and the glyph from its `text`, so the columns can be coloured.
+
+### 10.7 Compact: the card above the prompt
+
+```text
+Compact · the pane closed, 100 columns · nothing in the band's queue
+                                                      ╭─ tg ───────────────────────────────────────╮
+                                                      │ ● 3 chats waiting   ⚡ ▰▰▱▱▱ 12/50         │
+                                                      │ ▸ 14:02 ○ Ivan Petrov     Can we call…   2 │
+                                                      │   13:57 ⌗ Project team    can you rev…  @1 │
+                                                      ╰─ ⏎ open · q: hide ─────────────────────────╯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+```
+
+- **Where**: AbovePrompt, right-aligned, `width = min(46, bodyColumns − 2)`, as statuspane draws
+  its card (`justifyContent="flex-end"`, a rounded border). Under 40 columns it is one line, the
+  title's. It calls `next(e)` and draws what the plugins beneath drew above itself, as statuspane
+  does, so the two cards stack (P3).
+- **Lines**: the title `tg` in the top border, in `accent`. Then a status line. Then the top two
+  chats in the row format: For you's first two, else the current folder's first two unread, else
+  none. The status line shows two things:
+  - `● 3 chats waiting`: the chats in For you, `●` in `mention`;
+  - the gauge pair `⚡ ▰▰▱▱▱ 12/50`, while an agent is on.
+- **When the band holds an item** (a draft, a hard stop, an undo; §5.3, §5.4), the item keeps its
+  full-width rows above the card, since a draft is read whole there (decision 9). The card drops
+  to its status line.
+- **Keys** after ctrl+x tab, as the band's: ⏎ opens the pane on the ringed chat (Wide); `j` and
+  `k` move between the two rows; `q` hides the card (Hidden). The bottom border reads
+  `⏎ open · q: hide`. The owner's `▾ hide` is drawn as `q: hide`, because the engine draws a
+  Button's hotkey before its label (§1) and `q` already means hide (§6). No digits, as §11 has it
+  for the band.
+- **Rows** are text in the band's ring: the row under the band's cursor is the one Button that
+  draws (`autoFocus`), and the other is text. The card adds no ring stops above the prompt beyond
+  the band's own.
+
+### 10.8 Hidden
+
+The owner's line: `● tg: 15 unread · @2 · autopilot 12/50`. Zero parts are left out, and `●` takes
+the most urgent part's role.
+
+**The footer label, not the status line** (§10.13, decision 2). The owner first said "a status-line entry". The engine, however,
+draws a plugin's status line as a yellow `⚠ name:` notice. That is audit #11, and flightdeck's
+screenshot shows the same `⚠ flightdeck: ctx 67% …`. So a routine count would read as an alarm,
+which §4.5 keeps for the three alarms. This spec puts the line in the `SessionMode` footer label,
+which is dim at the right end of the prompt footer and already carries §4.5's summary. The status
+line stays for alarms. If P6 or the engine's docs show a status entry without the warning style,
+the line moves there.
+
+### 10.9 Forum topics
+
+The CLI side comes from the parallel task on `feat/tg-topics`:
+
+- `forum` on dialog rows;
+- `tg topics PEER`;
+- `--topic ID` on `read`, `send` and `watch`;
+- `topic_id` on messages.
+
+T16 reads that contract from its branch once it lands. The pane needs `id`, `title`,
+`icon_color`, `closed`, `unread`, `mentions` and the last message's date and text per topic. If
+one of these is missing, the builder asks for it on the CLI branch rather than reading Telegram
+itself (the Telethon boundary, CLAUDE.md).
+
+```text
+v2 · Wide · 60 columns · ⏎ on a forum: its topics (the lower part in the dock, the body inline)
+TG · 15 UNREAD · 2 FOR YOU · AUTOPILOT 2 CHATS
+■ for you  ■ chats  ■ autopilot  ■ log
+╭─ tg › Work › Project team ──────────────────── 6 topics ─╮
+│ ▸ 14:05 ≡ all topics           Releases · v2.4 is o…   9 │
+│   14:05 ● Releases             v2.4 is out               │
+│   13:57 ● Design review        can you review the P…  @1 │
+│   12:30 # General              lunch at 1?             3 │
+│     Thu ● Infra                the runner is back     ⚡ │
+│   Oct 3 ● Old roadmap          moved to Design revi…   ⊘ │
+╰──────────────────────────────────────────────────────────╯
+⏎ open  w: watch  a: agent  h: back  m: menu
+```
+
+```text
+v2 · Wide · 44 columns · the same
+TG · 15 UNREAD · AUTOPILOT 2
+■ for you  ■ chats  ■ autopilot  ■ log
+╭─ Work › Project team ────────────────────╮
+│ ▸ 14:05 ≡ all topics    Releases · …   9 │
+│   14:05 ● Releases      v2.4 is out      │
+│   13:57 ● Design review can you rev…  @1 │
+│   12:30 # General       lunch at 1?    3 │
+│     Thu ● Infra         the runner …  ⚡ │
+│   Oct 3 ● Old roadmap   moved to De…   ⊘ │
+╰──────────────────────────────────────────╯
+⏎ open  a: agent  h: back  m: menu
+```
+
+```text
+v2 · 60 columns · ⏎ on ≡ all topics: one stream, each message labelled with its topic
+╭─ tg › Work › Project team › all topics ──────────────────╮
+│   14:05 Releases  Anna   v2.4 is out                     │
+│   13:57 Design    Anna   can you review the PR?          │
+│   13:50 Design    you    on it after lunch               │
+│ ▸ 12:30 General   Oleg   lunch at 1?                     │
+╰──────────────────────────────────────────────────────────╯
+```
+
+The view works like this:
+
+- **The forum's row** in Chats has the `⌗` glyph. Its symbol sums its topics: mentions first,
+  then unread. ⏎ opens **Topics**, a new view between Chats and Chat (§4.2):
+  `Chats ──⏎ on a forum──▶ Topics ──⏎──▶ Chat (one topic, or all)`. `h` goes back one level, as
+  everywhere.
+- **The breadcrumb** is the card's title: `tg › Work › Project team`, and `› Design review` once a
+  topic is open. At 44 columns `tg ›` goes first.
+- **Topic rows** use the chat row (§10.4). The glyph is `●` in the topic's colour (§10.2), and
+  General is `#`, dim. The symbol follows §10.3's order, with `⊘` for a closed topic. `≡ all
+  topics` is the first row: its symbol sums the topics', and its preview is the newest topic's last message,
+  labelled with that topic (`Releases · v2.4 is out`). Telegram's order follows: pinned topics, then the newest.
+- **The merged stream** (`≡`) adds a topic column (10 cells, in the topic's colour) between the
+  time and the sender. It reads `tg read PEER` without `--topic` and labels each message by its
+  `topic_id`.
+- **Keys** follow §4.6, per topic:
+  - ⏎ on a message opens the send sheet. The packet carries the chat and the topic
+    (`<tg-packet … topic="12" topic_title="Design review">`), and the packet contract in
+    `dialogs-pane.md` gains the two attributes.
+  - `n` writes into the open topic (`tg send PEER --topic ID`). In the merged stream it is "not
+    now": `n: write · open a topic`.
+  - `w` on the forum row watches every topic, and on a topic row that topic.
+  - `a` on a topic row opens the agent card for (chat, topic). On the forum row it is "not now":
+    `a: agent · open a topic`. Levels are a group's, all but delegate (decision 8).
+- **Agents and watch target a topic.** The autopilot's key becomes `chatId:topicId` for a forum.
+  It reads `watch PEER --topic ID` and replies with `send PEER --topic ID`. A lane reads
+  `⟳ Project team › Design`. `0` and `/tg stop` stop topic agents like any other.
+- **A closed topic** (`⊘`) can be read, summarized and sent to main. `n` there is "never here"
+  (`n: closed topic`), and the card lists no level that writes: follow and summarize only.
+- **Rings**: Topics is a new view in the sweep, so each of a–z and 0–9 has exactly one Button.
+  Its digits number nothing, so they are stray keys with a notice (`1-9: folders, from Chats`).
+  The topic list keeps §4.3's rules as the chat list does: its rows are keyed
+  `topic:<gen>:<chat>:<id>`, and a topic that moves while the cursor stays waits, as T9's chats do.
+
+### 10.10 What v2 changes in §3–§7
+
+| Where | v1 | v2 |
+| --- | --- | --- |
+| §3 principle 5 | `● keys` or `ctrl+x tab: keys` in the header | the focused card's `accent` border; every border `surface` without the keys; `ctrl+x tab: keys` leads the key line |
+| §3 principle 6 | colour only for attention | colour carries meaning: kind, section, outcome (§10.2). Dim stays for labels, and the yellow status line stays for alarms |
+| §4.3 rule 1 | rows that come and go ride rows that are always there | the same rule, extended to section cards (§10.5, "Heights hold still"); no section draws a ring stop above the CHATS list |
+| §4.3 mouse | the folder strip's tabs are text, digits hidden | unchanged; the tabs move into the CHATS title and no digit is drawn at all. `1-9 folders` is a dim corner label, and `h` still lists the folders as pressable rows |
+| §4.4 | the action bar (≤ 7), the start block until `d` | one key line, as many as fit; START HERE as a card, first open only, never after `d` |
+| §4.5 | `tg 22 · ⌁1 ◉1 ✎1 ⟳1 ↯1 · ◎ 3 new · 2 for you` | the header's words (§10.5); the footer label and `/tg status` take the Hidden line (§10.8) |
+| §4.6 action bar | ≤ 7 keys, 0 and m included | the same order and contexts; the width decides how many show, `m` always last; `0: stop all` is a label in the AUTOPILOT corner or the legend row, never in the key line |
+| §4.7 strip | its own row in the dock, the header inline | the CHATS card's title, both seats; `›` replaces `+N` at the right edge, and `↑N` (waiting moves) joins the corner |
+| §6 | every view binds a–z and 0–9; hidden Buttons take hotkeys | unchanged. New view: Topics (§10.9). The compact card binds the band's letters only (no digits, §11) |
+| §7.1–§7.3 | five ANSI tokens; `◆ # • ★`; the dialog row with level and watch columns | §10.2, §10.3, §10.4 |
+
+Kept as is: §7.4's states, which now draw inside the card of their view, and the message row.
+
+### 10.11 Engine probes
+
+Run by T11 before T12–T16 lean on them, in throwaway probe mods on the lab (Appendix A). Each
+result goes into §1's table.
+
+| # | Probe | Already known | Pass | If it fails |
+| --- | --- | --- | --- | --- |
+| P1 | hex colours in `Text color`, `Box borderColor` | flightdeck's `pastel` draws hex in both (`hooks/core.ts:168`, `register.tsx:588`) | `#CBA6F7` draws mauve on our engine version, in the Pane and AbovePrompt | `mocha` downgrades to the 16-colour column |
+| P2 | rounded borders in the Pane, with a title in the top border | flightdeck draws `borderStyle="round"` in its Pane; our `/tg` cards use it in the transcript (`ui/band.tsx:252`) | a Box with `borderTop={false}` under a Text `╭─ TITLE ───╮` in the same colour joins at both corners | each card draws its sides as Text too (`│ ` … ` │`), or the title moves inside as flightdeck's are (+1 row a card) |
+| P3 | a right-aligned narrow card in AbovePrompt, with statuspane installed | statuspane draws one (`register.tsx:719–727`) and chains `next(e)` | both cards draw, stacked; ours takes ⏎ `j k q` after ctrl+x tab | ours draws left of statuspane's, or above it with a blank row |
+| P4 | dropping the Pane's grey fill | flightdeck's dock shows the same fill | a root `backgroundColor` or a Pane prop removes or matches it | accepted; LOG fills the height (§10.5) |
+| P5 | ⚡ in a 3-cell column | U+26A1 is Wide, emoji presentation | two cells in Terminal.app, iTerm2, Ghostty and tmux, and it takes the `ok` colour | `↯` (§10.3) |
+| P6 | theme keys beyond the ten; an unknown key | the ten work | a list of the keys the engine resolves; an unknown key falls back without throwing | `theme` keeps its collisions (§10.2) |
+| P7 | colour depth | — | the engine reports < 256 colours, or downsamples hex | `palette = ansi` as a third option |
+| P8 | Buttons in the last row beside `ctrl+x tab: keys` text, dim | the action bar does this today | unchanged | — (a regression check for T13) |
+
+### 10.12 Tasks T11–T16
+
+Branches come off `design/pane-v2` (this doc), each in its own worktree. The checks are §8's (`tsc
+-p mods/dialogs-pane`, `claude plugin validate`, `claude plugin test`, `uv run pytest`), plus a
+live run on the fake tg (Appendix A) in a 60-column and a 44-column dock, inline at 100×12, and
+the pane closed. Each task captures its live run into the commit body. No real names: Ivan Petrov,
+Project team, Dev chat, @example_bot.
+
+```text
+T11 probes (½ day) ─┬─▶ T12 palette + row ──(palette.ts lands first)──┬─▶ T13 frame, sections, keys
+                    │                                                 ├─▶ T14 autopilot card, strip, log
+                    │                                                 └─▶ T15 compact card, Hidden
+feat/tg-topics ─────┴──────────────────────────── T12 + T13 ────────────▶ T16 forum topics
+```
+
+T13, T14 and T15 run in parallel once T12's first commit (`palette.ts` with §10.2's roles) is in.
+They can start against §10.2's role names before that. The conflict points are:
+
+- `ui/keys.ts`: T13, T16;
+- `register.tsx`'s marked blocks: all of them;
+- `types/index.d.ts`: T14 (`LogRow`), T16 (topics).
+
+**T11 — engine probes** (½ day; first; one builder). Runs P1–P8 (§10.11) and writes each result
+into §1's table and §10.11's "Pass" column, with the engine version. Acceptance:
+
+- every probe has a result, seen live and captured with `tmux capture-pane -e`;
+- the fallbacks the failures pick are named in the doc.
+
+**T12 — palette and the chat row** (1 day; after T11's P1, P5, P6 and P7).
+
+- `hooks/ui/palette.ts`: `type Palette = 'theme' | 'mocha'` (`| 'ansi'` after P7);
+  `type Role` with §10.2's 14 roles; `PALETTES satisfies Record<Palette, Record<Role, string>>`;
+  `TOPIC_COLOR` keyed by `icon_color`. The `palette` option goes in `plugin.json` `userConfig`,
+  read once in `register`. The palette reaches components the way the surface's element table
+  does (an argument), not through module state. `TOKEN` goes; every caller names a role.
+- `ui/model.ts`:
+  - `GLYPH` and `dialogGlyph` take §10.3's kinds and symbols, including `forum`;
+  - `NARROW_GLYPHS` gains every N or A glyph of §10.3;
+  - `dialogLabel` returns `title` (`Saved Messages` for `self`), while `peerArg` is unchanged;
+  - `shortTime` becomes `rowTime`: `14:02` / `Mon` / `Oct 3` / `2025`, in 6 cells;
+  - `rowSymbol(dialog, agent)` returns one symbol and its role, by §10.3's order.
+- `ui/components.tsx`: `DialogRow` becomes `ChatRow`, with §10.4's columns and widths, keeping
+  its ring behaviour (`rowKey`, `isStatic`, `autoFocus`).
+- Update the comments that cite §10 for the band's "no digits" rule, which is now §11
+  (`tests/surfaces.tsx:42`, `tests/pane.test.ts:1365`).
+- Tests:
+  - every `Role` has a value in every palette;
+  - the time column at 14:02 today, 6 days back, 7 days back, and last year;
+  - each symbol by priority (mention over unread over ⚡ over muted; a muted unread count dim;
+    BotFather `ro`);
+  - name and preview widths at 56, 40 and 30 cells, with an emoji name counted by cells;
+  - no row shows `@username`;
+  - `peerArg` is unchanged for a user, a bot and `self`;
+  - every glyph of §10.3 is in `NARROW_GLYPHS` except `⚡`.
+- Live: a folder of each kind at 60 and 44 columns, in both palettes, on a dark and a light theme.
+
+**T13 — frame, sections, keys** (1½ days; after T12's `palette.ts`).
+
+- `ui/frame.tsx`:
+  - `Card(els, {title, corner, role, rows, children})`, per P2's result.
+  - `Header` becomes the uppercase summary (§10.5); `● keys` and `ctrl+x tab: keys` leave it.
+  - The legend row takes the running strip's place and contents (notice > what runs > legend) and
+    the right-hand `0: stop all` (§10.5).
+  - The key line replaces `ActionBar`: as many keys as fit, `m` last, `ctrl+x tab: keys` first
+    without the keys.
+  - `Strip`'s tabs move into the CHATS title, and `+N` becomes `›`.
+  - `StartBlock` becomes the START HERE card, three lines.
+- Sections in the dock: FOR YOU, CHATS, AUTOPILOT (T14's element, a slot until it lands), LOG. A
+  section with nothing takes no room. Heights hold per layout generation (§10.5), and the CHAT
+  card plus the folds apply while a chat is open. Inline: header, one card, key line.
+- Focus by border: the cursor's card `accent` with the keys, every border `surface` without; ▸ dim.
+- Tests:
+  - At 30–33 dock rows, in a 60-chat folder with the cursor in CHATS, a FOR YOU item arriving, an
+    agent starting and a log entry landing each leave the cursor's stop and the CHATS window's
+    first row unchanged. Each one applies at the next ⏎, `h`, folder switch or `g`.
+  - No section above CHATS draws a Button.
+  - The §6 sweep (each of a–z and 0–9 exactly one Button) passes in every view.
+  - The header leaves out zero parts.
+  - `0: stop all` is drawn once, in the corner or the legend row.
+  - The key line holds `m` last at 44 and 60 columns.
+  - START HERE never draws after `d`.
+- Live: Appendix A's ring check (`k` ×10, ⏎ `h` ⏎) at 60 and 44, plus `j` and `q` with the menu
+  closed (hidden Buttons still press).
+
+**T14 — the AUTOPILOT card, the cell strip, the log** (1 day; after T12's `palette.ts`; parallel
+to T13).
+
+- `ui/running.ts`:
+  - `gauge(dialogs, ledger, now)` gives the chat nearest its limit, sends over `perHour`, and the
+    time until a slot frees;
+  - `cells(entries, room)` maps per §10.6;
+  - `lanes(running, now)` gives the level glyph, the name, the gap progress and the state;
+  - `LogRow` gains `peer: {label, kind}`, and its `text` loses the time and the glyph.
+- `ui/activity.tsx`: `AutopilotSection` and `LogSection` return `{rows, element}` for T13's slots.
+  Activity (`l`) draws both at full height, with the running rows as Buttons, as built.
+- Tests:
+  - the gauge picks the tightest chat, and none with `perHour: null`;
+  - `↻` equals the oldest counted send plus 60 min, minus now;
+  - each `ApOutcome` kind maps to its cell or to none;
+  - the strip keeps the newest when cut;
+  - a lane at 0, 10 and 20 s of a 20 s gap;
+  - at most three lanes and `+N`;
+  - the log's columns at 44 and 60 columns.
+- Live: an auto chat on the fake tg that sends, drafts and refuses once each, read in the strip.
+
+**T15 — the compact card, Hidden** (1 day; after T12's `palette.ts`; parallel).
+
+- `ui/band.tsx`'s AbovePrompt render:
+  - the card per §10.7, right-aligned and chained through `next(e)`;
+  - the band's items stay above it at full width, and the card drops to its status line while one
+    shows;
+  - ⏎ `j k q` after ctrl+x tab;
+  - the bottom border `⏎ open · q: hide`.
+- States in `$.store`: Wide, Compact, Hidden. `q` in the pane closes to Compact; `q` in the card
+  and `/tg hide` go to Hidden; `/tg` opens Wide.
+- The Hidden line in the `SessionMode` footer label (§10.8, decision 2). `$.ui.status`
+  keeps its three alarms.
+- Tests:
+  - the card's lines for 0, 1 and 3 waiting chats, with and without an agent;
+  - under 40 columns, one line;
+  - with a band item, the item's rows at full width and the card on its status line;
+  - no digit hotkey in the card;
+  - each state's transitions;
+  - the Hidden text with zero parts left out;
+  - `$.ui.status` set only for the alarms.
+- Live: at 100 and 60 columns, with statuspane installed and without it (P3).
+
+**T16 — forum topics in the pane** (1–1½ days; after `feat/tg-topics` lands, and T12 and T13).
+
+- The Topics view (§10.9):
+  - ⏎ on a forum row opens it, and `h` goes back;
+  - the rows are `ChatRow`s with the topic glyph and `TOPIC_COLOR`, `≡ all topics` first, and
+    `⊘` for a closed topic;
+  - the breadcrumb is the card's title.
+- The merged stream's topic column. Writes, watch and agents per topic (`chatId:topicId`,
+  `--topic ID`). The packet's `topic` and `topic_title`, recorded in `dialogs-pane.md`'s packet
+  contract in the same change.
+- §4.6 per topic: `n` never in a closed topic; not now in the merged stream and on the forum row
+  for `a`.
+- Tests:
+  - a forum row's symbol sums its topics;
+  - ⏎ `h` round trip;
+  - topic order;
+  - each `icon_color` maps to its role, and an unknown one to `dim`;
+  - `n` in a topic runs `tg send PEER --topic ID`, and in a closed topic runs nothing and says
+    why;
+  - an auto agent on a topic watches and replies with `--topic`;
+  - the packet carries both attributes;
+  - Topics passes the a–z and 0–9 sweep;
+  - a topic moving while the cursor stays waits (T9's ring tests, on Topics).
+- Live: a fake forum with three topics (one closed) on the fake tg, which T16 extends to answer
+  `topics` and `--topic`.
+
+### 10.13 Decisions
+
+Asked in the first draft of §10 and decided by the owner on 2026-10-11, each as proposed:
+
+1. **The time column is 6 cells, not 5.** `Oct 13` needs six. Rejected: `Oct13` and `10-13`,
+   which fit five.
+2. **Hidden's line goes in the `SessionMode` footer label**, dim. The status line stays for the
+   three alarms: the engine draws a plugin's status as a yellow `⚠` notice, so a routine count
+   there reads as an alarm (§10.8, audit #11).
+3. **The agent symbol is `⚡`**, and `↯` replaces it if probe P5 shows `⚡` ignoring its colour
+   or not drawing two cells.
+4. **`↻ 0:41`, not `↻ resets 0:41`.** The hour is rolling, so the number is when a slot frees.
+5. **A muted chat's unread count is dim, not red.** Mentions stay `mention` (peach) in a muted
+   chat.
+6. **The compact card's hide key reads `q: hide`**, not `▾ hide`: the engine draws a Button's
+   hotkey before its label (§1), and `q` already means hide (§6).
+
+## 11. Rejected
 
 - **Engine tabs for views** (several panes): the probe showed the tab strip, but reaching a tab
   takes Tab-walking; one pane with in-pane views keeps every view one key away.
