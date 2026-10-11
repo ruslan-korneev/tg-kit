@@ -11,7 +11,7 @@ import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, Ren
 import { describe, expect, mock, test, type Engine, type MockClock, type Plugin } from 'claude-code/testing'
 
 import type { TgDialog, TgMessage } from '../types'
-import { DIALOGS, chatKey, findChat, folderRun } from './fixtures'
+import { DIALOGS, STARTED, chatKey, findChat, folderRun } from './fixtures'
 import { bandKeyProblems } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
@@ -135,7 +135,7 @@ function world(
     asked: [],
     status: [],
     toasts: [],
-    store: new Map(),
+    store: new Map(Object.entries(STARTED)),
     history: [message(498, 'can you add a health check?')],
     registered: [],
     spawned: [],
@@ -403,7 +403,7 @@ describe('the card', () => {
     expect((await ui.find({ key: 'key:start:grant' }))?.text).toBe('⏎ add to allow.toml…')
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
-    expect(seen.questions).toEqual(['delegate sends in Contact B without you, so Contact B must be in allow.toml. Run  tg allow add 1007 --yes  ?'])
+    expect(seen.questions).toEqual(['delegate sends in Contact B without you, so Contact B must be in allow.toml. Run  tg allow add 1007 --yes  ? (kept for later: tg allow remove takes it out)'])
     expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add').map(one => one.argv)).toEqual([['tg', 'allow', 'add', '1007', '--yes']])
     expect(seen.children).toHaveLength(1)
     await ui.unmount()
@@ -465,6 +465,8 @@ describe('the handshake with the guard plugin', () => {
     await ui.press({ key: 'ap:level:delegate' })
     await ui.press({ key: 'key:start:warning' })
     expect(await ui.find({ type: 'Text', text: /^✗ the dialogs-pane-guard plugin is not loaded or not answering/ })).toBeDefined()
+    // §7.4: with how to install it (T7).
+    expect(await ui.find({ type: 'Text', text: /claude plugin install dialogs-pane-guard@tg-kit$/ })).toBeDefined()
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
     expect(await ui.find({ type: 'Text', text: /Not started: delegate needs the dialogs-pane-guard plugin/ })).toBeDefined()

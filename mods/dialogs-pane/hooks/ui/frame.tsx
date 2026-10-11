@@ -6,7 +6,7 @@
 import type { RenderElement } from 'claude-code'
 
 import type { Notice } from '../../types'
-import type { Els } from './components'
+import { Divider, type Els } from './components'
 import { MENU_GROUPS, type MenuGroup, type MenuSection, type RunKey, type ShownKey } from './keys'
 import { GLYPH, TOKEN, type SummaryParts } from './model'
 
@@ -23,6 +23,8 @@ export function Header(
     summary: SummaryParts
     /** `● rec 3` while recording: state of the open chat, not of the pane. */
     chips: readonly { text: string; color?: string }[]
+    /** `…` while what the pane shows is on its way: the folder list, a pass, the list or the chat (§7.4). */
+    isLoading: boolean
     isFocused: boolean
   },
 ): RenderElement {
@@ -44,6 +46,7 @@ export function Header(
         {summary.levels === '' ? null : <Text dimColor>{summary.levels}</Text>}
         {summary.watched === '' ? null : <Text dimColor>{`${summary.levels === '' ? '' : '· '}${summary.watched}`}</Text>}
         {summary.forYou === '' ? null : <Text color={TOKEN.warn}>{`${summary.levels === '' && summary.watched === '' ? '' : '· '}${summary.forYou}`}</Text>}
+        {props.isLoading ? <Text dimColor>{GLYPH.working}</Text> : null}
         <Text> </Text>
         {props.isFocused ? <Text color={TOKEN.accent}>{FOCUS_HELD}</Text> : <Text dimColor>{FOCUS_ELSEWHERE}</Text>}
       </Box>
@@ -71,8 +74,6 @@ export function Strip(
     query: string
     /** Chats waiting to move (§8 T9); drawn dim in the dock, where the strip has its own row. */
     waiting: number
-    /** `…` while the folder list or the pass is on its way (§7.4). */
-    isLoading: boolean
     /** The dock draws `s: search` here (`key`), or the Button alone over a layer (`click`); inline has it in the action bar. */
     search: 'key' | 'click' | 'none'
     onSearch: () => void
@@ -94,7 +95,6 @@ export function Strip(
           ),
         )}
         {props.after > 0 ? <Text dimColor>{`+${props.after}`}</Text> : null}
-        {props.isLoading ? <Text dimColor>{GLYPH.working}</Text> : null}
       </Box>
       <Box flexDirection="row" columnGap={1} flexShrink={0}>
         {props.query === '' ? null : <Text dimColor>{`"${props.query}"`}</Text>}
@@ -302,7 +302,8 @@ export function Menu(els: Els, props: { sections: readonly MenuSection[]; onKey:
               const id = def.id as RunKey
               return (
                 <Button key={`menu:${def.id}`} plain hotkey={def.hotkey ?? undefined} onPress={() => props.onKey(id)}>
-                  {def.hotkey === null ? head : entry.label}
+                  {/* 0 is drawn red while it has something to stop, here as in the bar and the strip (§7.1). */}
+                  {def.id === 'stop' ? <Text color={TOKEN.danger}>{entry.label}</Text> : def.hotkey === null ? head : entry.label}
                 </Button>
               )
             })}
@@ -310,6 +311,36 @@ export function Menu(els: Els, props: { sections: readonly MenuSection[]; onKey:
         ),
       )}
       {row('keys', 'keys', <Text dimColor wrap="wrap">only while ● keys shows; ctrl+x tab hands them over, Esc gives them back to the prompt</Text>)}
+    </Box>
+  )
+}
+
+/** The start block's lines (§4.4, §5.0 "the first open"): the keys that matter, in the order a first visit needs them. */
+export const START_LINES = [
+  '⏎ opens a chat · ⏎ on a message sends it to Claude',
+  '1-9: your Telegram folders · h: all of them · y: for you',
+  'a: hand a chat to an agent · w: notify me · 0: stop all',
+  'm: every key, any time · keys work while ● keys shows',
+] as const
+
+/** Rows the start block takes: its divider and its lines. */
+export const START_ROWS = 1 + START_LINES.length
+
+/**
+ * The first open's start block, until `d` (§4.4, §8 T7). Text only: it draws
+ * no ring stop, and `d` is the table's dismiss key, kept live by the frame's
+ * hidden keys, so neither drawing it nor putting it away moves a stop.
+ */
+export function StartBlock(els: Els, props: { width: number }): RenderElement {
+  const { Box, Text } = els
+  return (
+    <Box key="start" flexDirection="column" flexShrink={0}>
+      {Divider(els, { label: 'start here', right: 'd: got it', width: props.width })}
+      {START_LINES.map(line => (
+        <Text key={`start:${line.slice(0, 3)}`} wrap="truncate-end">
+          {line}
+        </Text>
+      ))}
     </Box>
   )
 }

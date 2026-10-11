@@ -5,7 +5,8 @@ How the dialogs pane should look and respond, from the first `/tg` to `delegate`
 keymap (§4) and modes (§2). The engines stay as built: the packet, the watch hub, the Speaker, the
 Worker and the guard do not change. What changes is how a person finds them and drives them.
 
-Status: design; §8 splits the work into tasks, built one at a time.
+Status: built. §8 split the work into tasks, T0a to T10, built one at a time on `feat/pane-ux`; T7
+was the last. Where the build left a mockup, the text next to it says how and why.
 
 ## 0. The new model in one paragraph
 
@@ -300,7 +301,7 @@ lower part. Inline, each view takes the body.
 | --- | --- |
 | Action bar | the ≤ 7 verbs for the cursor row, in the engine's `k: label` form |
 | Menu `m` | every key this chat can use; one that needs a step first is dim with the step ("needs a reply with an earlier pair"); one that can never work here is not listed (§4.6) |
-| First open | a four-line "start here" block on Chats until `d` |
+| First open | a four-line "start here" block until `d`: in the dock's lower part while no chat is open, inline over the chat list (§5.0) |
 | Empty and error states | one sentence and one key: `No chats in Work. h: folders` |
 | `/tg help`, `/tg status` | the same key table, and what runs, as cards in the transcript |
 | Typeahead | `/tg  Telegram pane: chats, send to Claude, bots, agents · /tg stop` |
@@ -551,7 +552,7 @@ Wide · dock, 64 columns · a bot thread open, the pane holds the keys
 │              [Settings] [Help]                                 │
 │   21:02 you  /settings                                         │
 │▸  21:02 bot  ⚠ Something went wrong                ⏱6s  #677791│
-│              1: Retry  2: Back                                 │
+│              1: Retry 2: Back                                  │
 │   21:03 bot  Main menu                                         │
 │              [Settings] [Help]                                 │
 │                                                                │
@@ -621,22 +622,28 @@ Compact · inline, 100 columns, up to 12 rows · chats in the Work folder
 ```
 
 ```text
-Compact · a bot thread (chips sit on the message row from 90 columns)
-╭───────────────────────────────────────────────────────────────────────────────────────────────✕─╮
-│ tg › Work › @example_bot · ◎ watched                                  ⟳1 ↯1 · 2 for you   ● keys │
-│    20:11 you  /start                                                                             │
-│    20:11 bot  Hi! I am Example Bot. Pick an option:                    [Settings] [Help]         │
-│    21:02 you  /settings                                                                          │
-│ ▸  21:02 bot  ⚠ Something went wrong                            1: Retry  2: Back   ⏱6s  #677791 │
-│    21:03 bot  Main menu                                                [Settings] [Help]         │
+Compact · a bot thread scrolled up (chips sit on the message row from 90 columns; T7, live)
+╭────────────────────────────────────────────────────────────────────────────────────────────────✕─╮
+│ tg › @example_bot · yesterday                                                             ● keys │
+│    21:38 you  /ping 15                                                                           │
+│    21:39 bot  pong 15                                                                       ⏱1m  │
+│    21:40 you  /ping 16                                                                           │
+│    21:41 bot  pong 16                                                                       ⏱1m  │
+│    22:11 you  /start                                                                             │
+│    22:11 bot  Hi! I am Example Bot. Pick an option:           [Settings] [Help] ⏱6s              │
+│    23:02 you  /settings                                                                          │
+│    23:02 bot  ⚠ Something went wrong                          [Retry] [Back] ⏱6s                 │
+│ ▸  23:03 bot  Main menu                                       1: Settings 2: Help ⏱1m #677792    │
 │                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│ ⏎ send…  1-2: press  n: write  r: rec  x: mark  h: chats  m: menu                                │
+│ ⏎ send…  1-2: press  n: write  r: rec  f: diff  x: mark  h: chats  m: menu                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+The header names the day of the window's top row once the divider that named it has scrolled off
+(`· yesterday`, `· 10-08`); text only, so no ring stop comes with it (§4.3 rule 1). Chips beside
+the text start at one column for the whole thread, the widest keyboard's, one space apart, and
+the stamp follows each row's own chips one space after; the room for the stamp and the id is kept
+after them on every such row, so a move does not shift the column.
 
 ```text
 Hidden · the pane is closed; 100 columns
@@ -648,21 +655,46 @@ Hidden · the pane is closed; 100 columns
 ```
 
 ```text
-Wide · the first open: Telegram's first folder (the block stays until d)
+Wide · the first open: Telegram's first folder; the block takes the lower part until d (T7, live)
 ┌────────────────────────────────────────────────────────────────┐
 │tg › chats                                                ● keys│
+│1: ‹Personal 1›  2: Work 12  3: All chats 3  +15       s: search│
+│▸   • Contact A                                      1 yesterday│
+│    • Contact B                                        yesterday│
+│    ★ Saved Messages                                       10-09│
 │─ start here ─────────────────────────────────────── d: got it ─│
 │⏎ opens a chat · ⏎ on a message sends it to Claude              │
 │1-9: your Telegram folders · h: all of them · y: for you        │
 │a: hand a chat to an agent · w: notify me · 0: stop all         │
 │m: every key, any time · keys work while ● keys shows           │
-│────────────────────────────────────────────────────────────────│
-│1: ‹Personal 1›  2: Work 3  3: Clients  +12            s: search│
-│▸   • Contact A                                     1      20:49│
-│    ★ Saved Messages                                   yesterday│
-│  …                                                             │
+│                                                                │
 │⏎ open  h: folders  t: summary  w: watch  a: agent  m: menu     │
 └────────────────────────────────────────────────────────────────┘
+```
+
+The first design put the block above the strip. The dock draws it in the lower part instead, where
+`⏎ on a chat opens it here.` stands while no chat is open: the chat list keeps its rows, so the
+block coming and going moves no row above the cursor (§4.3 rule 1). Opening a chat takes the
+lower part, and the block shows again only where no chat is open. Inline, where one view takes
+the body, it sits over the chat list and takes five of its rows. It is text: `d` is the table's
+dismiss key, kept live under the bar, and `$.store` keeps the `d` for every later session. With a
+notice up, `d` dismisses the notice first. Putting the block away inline gives the list its rows
+back under a new generation, so the ring waits for the drawing that brings them (§8 T9).
+
+```text
+Compact · inline, 100 columns · the first open (T7, live)
+╭────────────────────────────────────────────────────────────────────────────────────────────────✕─╮
+│ tg  1: ‹Personal 1›  2: Work 12  3: All chats 3  4: Bots 1  5: News  6: Clients  +12      ● keys │
+│ ─ start here ─────────────────────────────────────────────────────────────────────── d: got it ─ │
+│ ⏎ opens a chat · ⏎ on a message sends it to Claude                                               │
+│ 1-9: your Telegram folders · h: all of them · y: for you                                         │
+│ a: hand a chat to an agent · w: notify me · 0: stop all                                          │
+│ m: every key, any time · keys work while ● keys shows                                            │
+│ ▸   • Contact A                                                                      1 yesterday │
+│     • Contact B                                                                        yesterday │
+│     ★ Saved Messages                                                                       10-09 │
+│ ⏎ open  h: folders  s: search  t: summary  w: watch  a: agent  m: menu                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ```text
@@ -1360,10 +1392,19 @@ One glyph, one meaning, each one cell wide (checked with East Asian Width; `⚡`
 ### 7.3 Layout
 
 Dialog row, both seats: cursor 2 · level 2 · kind 2 · name (flex) · watch 2 · unread 4 · time 10.
+(Built as written in T7; before, the level column came and went with the agent.)
 
 Message row: cursor 1 · mark 1 · time 5 · sender (3 in bot chats, up to 10 in groups) · text (flex)
 · latency and id at the right, the id on the cursor row only. A day divider (`── yesterday ──`)
-replaces dates in the time column. From 90 columns a message's buttons sit on its own row's right.
+replaces dates in the time column; once the one above the window's top row has scrolled off, the
+header names that day (`tg › @example_bot · 10-08`). From 90 columns a message's buttons sit on
+its own row's right, at one column for the thread, one space apart, the stamp one space after
+them; under the message (narrower, or a URL chip) they start where the text starts. The sender
+column is plain: the `bot` token is the `◆` glyph's alone.
+
+Dialog row: the level column is drawn on every row, so a name does not move when an agent
+starts; a follow (`⌁`) is level 1 and sits there too. The watch column holds `◎` or BotFather's
+`ro`. An agent's tail (`auto 3/50`) follows the name.
 
 Folder strip: titles as Telegram has them (12 characters at most; an emoji counts two cells), two
 spaces apart, the current one scrolled into view, `+N` at an edge with folders past it, `s: search`
@@ -1385,17 +1426,22 @@ Cards align their labels in a 7-column left column (`brief`, `limits`, `asks`, `
 
 | State | Shows |
 | --- | --- |
-| loading | dim `…` rows, `…` in the header; no spinner |
+| loading | dim `…` rows, `…` in the header; no spinner. No tab is drawn before the folder list is in, and no `refreshing in N s` while the first pass is on its way |
 | empty folder | one sentence and one key: `No chats in Work. h: folders`; a type-built folder adds "among the latest 500 chats" |
-| folders loading | the last folder list and the folder's last chats paint at once, `…` in the header while they refresh |
-| error | one red line and `g: retry` |
-| flood wait | yellow `Telegram asks to wait 23 s · retrying`, counting down |
-| not logged in | `Not logged in. ⏎ puts ! tg login in your prompt` (login stays a human act) |
-| tg missing | `tg is not on PATH. README → Install` and `g: retry` |
+| folders loading | the last folder list and the folder's last chats paint at once, their times right, `…` in the header while they refresh |
+| error | one red line and `g: retry` (`tg: the fake is down`); the header drops its `…` and the footer reads `tg ⚠` |
+| flood wait | yellow `Telegram asks to wait 23 s · retrying in 60 s`, the second number counting down to the retry, which never comes within 60 s of the last pass (§8 T9). Said once: the list says it, so the notice row does not. With rows on screen, the notice row counts Telegram's wait, then `refreshing in N s` |
+| not logged in | `Not logged in: type ! tg login in your prompt` and `g: retry`; the status line's alarm; the footer `tg ⚠ not logged in` |
+| tg missing | `tg is not on PATH, or did not answer in time. README → Install` and `g: retry` |
 | BotFather | dim buttons and `ro`; a press explains, runs nothing |
-| a write tg refuses (`readonly = true`) | the guard's reason in the notice row; nothing is retried |
-| guard missing | the card's `guard` row in red with how to install it; delegate dim |
+| a write tg refuses (`readonly = true`) | the guard's reason in the notice row (`tg: readonly = true in config.toml: every write is refused`, tg's `error:` line, not the plan it prints before it); nothing is retried |
+| guard missing | the card's `guard` row in red with how to install it (`claude plugin install dialogs-pane-guard@tg-kit`); delegate dim with its step |
 | keys elsewhere | `ctrl+x tab: keys` in the header, the action bar dim |
+
+Not logged in left the first design's "⏎ puts `! tg login` in your prompt": `$.prompt.fill` cannot
+put the box in shell mode (§1), so a filled `! tg login` would go to the model as a prompt, and
+login is the owner's own act. The state says what to type instead, as decision 1 did for
+allow.toml. The owner may revisit it.
 
 ## 8. Implementation plan
 
@@ -1951,7 +1997,11 @@ Decided by the owner during the build (2026-10-11):
   · `watch PEER --jsonl [--after ID] [--idle-exit …]` (prints `ready`, then lines appended to a
   spool file). Placeholder chats only. After T8 and T8b it also answers
   `folders [--counts | --chats] --json` and `dialogs --folder ID --limit N --json`, with
-  placeholder folders.
+  placeholder folders; the last, Quiet, lists no chat. §7.4's states (T7) are files in
+  `$FAKE_TG_DIR`: `flood` (seconds, the next pass), `auth` (exit 3), `down` (exit 1), `readonly`
+  (every write refused as tg's guard refuses it, plan first) and `slow` (seconds before every
+  answer). The tg-missing state is a session whose PATH holds `claude` and no `tg` at all: a
+  broken link to tg would let the shell find the real one further down PATH.
 - Driving it: `tmux send-keys`, `tmux capture-pane -p` (`-e` shows the ring as inverse).
 - After every engine upgrade, with the pane holding the keys and the menu closed: `j` moves the
   cursor, `p` in a bot chat puts `⌁1` in the header (`p` again stops it), `q` hides the pane. If

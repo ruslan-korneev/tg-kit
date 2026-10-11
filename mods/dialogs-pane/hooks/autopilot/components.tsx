@@ -104,7 +104,7 @@ function essentials(els: Els, props: LadderProps): RenderElement[] {
     case 'delegate':
       return [
         ...writesRows(els, { label: dialog.peer.label, arg: dialog.peer.arg, rung: pick, allow: props.allow }),
-        props.isGuardUp ? Row(els, 'guard', `${GLYPH.done} dialogs-pane-guard answering`, TOKEN.ok) : Row(els, 'guard', '✗ dialogs-pane-guard is not loaded or not answering: it holds the Worker’s hard stops', TOKEN.danger),
+        props.isGuardUp ? Row(els, 'guard', `${GLYPH.done} dialogs-pane-guard answering`, TOKEN.ok) : Row(els, 'guard', '✗ dialogs-pane-guard is not loaded or not answering: it holds the Worker’s hard stops · claude plugin install dialogs-pane-guard@tg-kit', TOKEN.danger),
       ]
   }
 }

@@ -4,7 +4,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type TestBody } from 'claude-code/testing'
 
 import type { BotTest } from '../types'
-import { DIALOGS, MESSAGES, chatKey, folderRun } from './fixtures'
+import { DIALOGS, STARTED, MESSAGES, chatKey, folderRun } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const PROPS: RenderPropsOf['Pane'] = {
@@ -61,7 +61,7 @@ function world(
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work/example-bot' }))
-  on('store.get', () => ({ value: undefined }))
+  on('store.get', (_$, e) => ({ value: STARTED[e.key] }))
   on('store.set', () => ({ value: undefined }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -300,6 +300,45 @@ describe('message rows (§7.3, §8 T6)', () => {
     await ui.unmount()
   })
 
+  test('beside the text the chips start at one column, one space apart, the stamp one space after them; under it they line up with the text (T7)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const SETTINGS = [
+      [
+        { row: 0, col: 0, type: 'cb', text: 'Settings', data_b64: 'c2V0' },
+        { row: 0, col: 1, type: 'cb', text: 'Help', data_b64: 'aGVscA==' },
+      ],
+    ] as const
+    const messages = MESSAGES.map(one => (one.id === 677792 ? { ...one, keyboard: 'inline' as const, buttons: SETTINGS.map(row => [...row]) } : one))
+    world(on, { messages })
+    const ui = await openBot($, clock)
+    // The cursor on 677792 (its chips carry digits), 677791's in brackets: the text before them is as wide on both rows.
+    const head = async (id: number) => (await ui.find({ key: `msg:${id}` }))?.text ?? ''
+    expect((await head(677792)).length).toBe((await head(677791)).length)
+    await ui.press({ key: 'key:up' })
+    expect((await head(677792)).length).toBe((await head(677791)).length)
+    // And the row still fits: the text, a space, the widest chips (`1: Settings 2: Help`), then the room kept for
+    // the stamp and the id (` ⏱1.4s`, ` #677792`) take at most the 100 columns.
+    expect((await head(677792)).length + 1 + '1: Settings 2: Help'.length + ' ⏱1.4s'.length + ' #677792'.length).toBeLessThanOrEqual(100)
+    // One space between chips, in either form, and no padding after them.
+    for (const id of [677791, 677792]) {
+      const chips = await ui.find({ key: `chips:${id}` })
+      expect(chips?.props.columnGap).toBe(1)
+      expect(chips?.props.width).toBeUndefined()
+    }
+    // The stamp follows the chips: the line's children are the row, a space, the chips, then the stamp.
+    const line = (await ui.find({ key: 'line:677791' })) as { children?: { props?: { key?: unknown }; children?: unknown[] }[] } | undefined
+    const order = (line?.children ?? []).map(child => (typeof child.props?.key === 'string' ? child.props.key : (child.children ?? []).join('')))
+    expect(order.slice(2, 4)).toEqual(['chips:677791', ' ⏱7s'])
+    await ui.unmount()
+    // At 64 columns the chips take the row under the message, starting where its text starts.
+    const narrow = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: { ...PROPS, bodyColumns: 64 } })
+    const under = (await narrow.find({ key: 'under:677791' })) as { children?: { children?: unknown[] }[] } | undefined
+    const indent = String(under?.children?.[0]?.children?.[0] ?? '')
+    const row = (await narrow.find({ key: 'msg:677791' }))?.text ?? ''
+    expect(indent.length).toBe(row.indexOf('⚠ Something went wrong'))
+    await narrow.unmount()
+  })
+
   test('from 90 columns the chips share their message’s row; at 64 they take the row under it', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     world(on)
@@ -429,6 +468,8 @@ describe('recorder', () => {
       await clock.settle()
       expect(seen.questions).toEqual([expect.stringContaining('An agent replaying this recording writes to @example_bot on its own')])
       expect(seen.questions[0]).toContain('tg allow add @example_bot --yes')
+      // The add outlives this hand-off: the question says it is kept (T7).
+      expect(seen.questions[0]).toContain('(kept for later: tg allow remove takes it out)')
       const added = runs.filter(run => run.argv[1] === 'allow' && run.argv[2] === 'add')
       if (answer === 'No') {
         expect(added).toEqual([])

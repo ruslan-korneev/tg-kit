@@ -124,6 +124,13 @@ export function messagesFor(peer: string | undefined): TgMessage[] {
   }
 }
 
+/**
+ * The start block put away (§8 T7): every world starts past the first open,
+ * so its rows take nothing from the views under test. The onboarding tests
+ * override it with `undefined`.
+ */
+export const STARTED: Readonly<Record<string, unknown>> = { 'start.dismissed': true }
+
 /** A placeholder Telegram folder: its chats in its order, its pins first. */
 export type FolderSpec = { id: number; title: string; kind: FolderKind; chats: number[]; pinned?: number[] }
 

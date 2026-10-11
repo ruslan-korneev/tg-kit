@@ -8,6 +8,7 @@ import type { BotStep, Handoff, PeerRef, Recording, StepMessage, StepOutcome, St
 import type { RecordingInput, RecordingStep } from '../packet/build'
 import { shellQuote } from '../packet/replay'
 import type { MessageView } from '../packet/types'
+import { ALLOW_KEPT } from '../autopilot/ladder'
 import { latencyText } from './latency'
 
 export const RECORDINGS_DIR = '.tg-recordings'
@@ -165,5 +166,5 @@ export function recordedIds(steps: readonly BotStep[]): number[] {
  * replay is the agent's own write, which allow.toml gates.
  */
 export function replayAllowQuestion(label: string, argv: readonly string[]): string {
-  return `An agent replaying this recording writes to ${label} on its own, so ${label} must be in allow.toml. Run  ${argv.join(' ')}  ?`
+  return `An agent replaying this recording writes to ${label} on its own, so ${label} must be in allow.toml. Run  ${argv.join(' ')}  ? ${ALLOW_KEPT}`
 }

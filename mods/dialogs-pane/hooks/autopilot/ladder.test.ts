@@ -41,6 +41,8 @@ describe('what ⏎ does on the card', () => {
     expect(cardAction(input({ pick: 'auto' }))).toEqual({ kind: 'start' })
     expect(allowArgv('1004')).toEqual(['tg', 'allow', 'add', '1004', '--yes'])
     expect(allowQuestion('Contact A', 'auto', allowArgv('1004'))).toContain('Run  tg allow add 1004 --yes  ?')
+    // The add outlives the rung: the question says it is kept, and how it comes out (T7).
+    expect(allowQuestion('Contact A', 'auto', allowArgv('1004'))).toMatch(/\(kept for later: tg allow remove takes it out\)$/)
   })
 
   test('a read of allow.toml that failed is a retry, never "not in allow.toml" (§7.4); one on its way waits', () => {

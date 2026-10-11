@@ -7,7 +7,7 @@ import type { CommandSpec, ModelCompleteInput, ModelCompleteResult, On, ProcessR
 import { describe, expect, mock, test, type Engine, type MockClock, type Mounted } from 'claude-code/testing'
 
 import type { TgMessage } from '../types'
-import { DIALOGS, chatKey, findChat, folderRun } from './fixtures'
+import { DIALOGS, STARTED, chatKey, findChat, folderRun } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -101,7 +101,7 @@ function world(
     send?: (ran: Ran) => ProcessRunResult
   } = {},
 ): World {
-  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], opens: [], store: new Map(), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
+  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], opens: [], store: new Map(Object.entries(STARTED)), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
@@ -407,7 +407,7 @@ describe('auto', () => {
     await clock.settle()
     expect(seen.opens.slice(opens)).toEqual([{ id: 'tg', focus: true }])
     // The argv is built once: the dialog shows it verbatim, and it is what runs.
-    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ?', options: ['No', 'Yes, add it'] }])
+    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ? (kept for later: tg allow remove takes it out)', options: ['No', 'Yes, add it'] }])
     expect(adds(seen)).toEqual([['tg', 'allow', 'add', '1002', '--yes']])
     // Read again after the add, then straight on into the level: the card closes and the watch starts.
     expect(seen.runs.at(seen.runs.findIndex(one => one.argv[2] === 'add') + 1)?.argv).toEqual(['tg', 'allow', 'list', '--json'])

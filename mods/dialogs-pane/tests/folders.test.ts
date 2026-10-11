@@ -8,7 +8,7 @@ import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
 import type { TgDialog } from '../types'
-import { DIALOGS, MESSAGES, chatIds, chatKey, findChat, folderRun, type FolderSpec } from './fixtures'
+import { DIALOGS, STARTED, MESSAGES, chatIds, chatKey, findChat, folderRun, type FolderSpec } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -67,14 +67,14 @@ type World = {
   /** The plugin's $.state values as last written, by key. */
   state: Map<string, unknown>
   /** What the next pass answers; a test changes it between passes. */
-  pass: { rows: TgDialog[]; folders: FolderSpec[]; answer?: ProcessRunResult | Promise<ProcessRunResult> }
+  pass: { rows: TgDialog[]; folders: FolderSpec[]; answer?: ProcessRunResult | Promise<ProcessRunResult>; list?: Promise<ProcessRunResult> }
 }
 
 const passes = (seen: World) => seen.runs.filter(argv => argv[1] === 'folders' && argv.includes('--chats')).length
 const tgCalls = (seen: World) => seen.runs.filter(argv => argv[0] === 'tg').length
 
 function world(on: On, store: Record<string, unknown> = {}): World {
-  const seen: World = { runs: [], store: new Map(Object.entries(store)), children: [], state: new Map(), pass: { rows: ROWS, folders: FOLDERS } }
+  const seen: World = { runs: [], store: new Map(Object.entries({ ...STARTED, ...store })), children: [], state: new Map(), pass: { rows: ROWS, folders: FOLDERS } }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('state.set', (_$, e, next) => {
     if (e.plugin === PLUGIN) seen.state.set(e.key, e.value)
@@ -90,7 +90,8 @@ function world(on: On, store: Record<string, unknown> = {}): World {
     seen.runs.push(e.argv)
     const [, cmd] = e.argv
     if (cmd === 'folders') {
-      const answer = e.argv.includes('--chats') ? seen.pass.answer : undefined
+      // `list`: what `tg folders` (the strip's first paint) answers, when a test holds it back.
+      const answer = e.argv.includes('--chats') ? seen.pass.answer : seen.pass.list
       return { value: answer === undefined ? folderRun(e.argv, json(seen.pass.rows), seen.pass.folders) : await answer }
     }
     if (cmd === 'dialogs') {
@@ -289,17 +290,41 @@ describe('the strip and the Folders list (§4.7)', () => {
 
   test('a new session with a stored folder shows it at once, while its first pass is still out', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const work = MANY.slice(0, 5)
+    // One stored row from the day before: its time column must read yesterday before any tg call answers.
+    const work = MANY.slice(0, 5).map((one, index) => (index === 4 ? { ...one, last_date: '2026-10-09T08:00:00Z' } : one))
     const seen = world(on, { folders: { list: [{ id: 1, title: 'Personal', kind: 'folder', unread: 0 }, { id: 2, title: 'Work', kind: 'folder', unread: 2 }], view: { kind: 'folder', id: 2 }, rows: work } })
     seen.pass.answer = new Promise(() => undefined)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await $.command.run(tgCommand())
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
-    // `…`: the pass is on its way (§7.4).
-    expect(await tabsOf(ui)).toEqual(['1: Personal', '2: ‹Work 2›', '3: For you', '4: Bots', '…'])
+    // `…` in the header: the pass is on its way (§7.4).
+    expect(await tabsOf(ui)).toEqual(['1: Personal', '2: ‹Work 2›', '3: For you', '4: Bots'])
+    expect((await ui.find({ key: 'header' }))?.text).toContain('…')
     expect(await drawnIds(ui)).toEqual(work.map(one => one.id))
+    expect((await findChat(ui, work[4]?.id ?? 0))?.text).toMatch(/yesterday$/)
     expect(passes(seen)).toBe(1)
+    await ui.unmount()
+  })
+
+  test('a first open with nothing held: … rows and … in the header while its pass runs, never `refreshing in` (§7.4, T7)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    // Neither the folder list nor the pass has answered yet.
+    seen.pass.list = new Promise(() => undefined)
+    seen.pass.answer = new Promise(() => undefined)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(tgCommand())
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
+    expect(await ui.find({ key: 'loading' })).toBeDefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('…')
+    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('refreshing in')
+    // No folder list yet: no tab it would take back, and no digit for one.
+    expect(await tabsOf(ui)).toEqual([])
+    expect(await ui.find({ key: 'keys:digits' }).then(found => found?.text ?? '')).toBe('')
+    await clock.advance(5_000)
+    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('refreshing in')
     await ui.unmount()
   })
 
@@ -394,6 +419,32 @@ describe('passes (§8 T9)', () => {
     await clock.settle()
     expect(passes(seen)).toBe(3)
     expect(await ui.find({ key: 'running' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a first open whose pass floods for less than the 60 s gap: the list counts down to the retry, which runs once, at 60 s (T7)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    seen.pass.answer = failure(5, 'error: FLOOD_WAIT 40s: Telegram asks to wait before retrying')
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(tgCommand())
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
+    expect(passes(seen)).toBe(1)
+    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 40 s · retrying in 60 s' })).toBeDefined()
+    seen.pass.answer = undefined
+    // Past Telegram's 40 s the pass is still inside its 60 s gap: no pass, and the count goes on.
+    await clock.advance(45_000)
+    await clock.settle()
+    expect(passes(seen)).toBe(1)
+    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 40 s · retrying in 15 s' })).toBeDefined()
+    await clock.advance(15_000)
+    await clock.settle()
+    expect(passes(seen)).toBe(2)
+    expect((await drawnIds(ui)).length).toBeGreaterThan(0)
+    await clock.advance(5_000)
+    await clock.settle()
+    expect(passes(seen)).toBe(2)
     await ui.unmount()
   })
 
@@ -504,7 +555,8 @@ describe('a list that changes while the cursor stays keeps the ring (§4.3, §8 
       await clock.settle()
       expect(await place(ui)).toEqual(base)
       expect(await genOf(ui)).toBe(gen)
-      expect((await findChat(ui, 3002))?.text).toMatch(/Contact 12 +1 /)
+      // The count changes in place, after the watch column's ◎ (§7.3).
+      expect((await findChat(ui, 3002))?.text).toMatch(/Contact 12 +◎ +1 /)
       if (inline) expect((await ui.find({ key: 'notice' }))?.text).toBe('↑ 1 moved · g: apply')
       else expect((await ui.find({ key: 'strip' }))?.text).toContain('↑1')
       await ui.unmount()

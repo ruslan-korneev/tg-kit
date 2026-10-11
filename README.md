@@ -36,13 +36,16 @@ Leave out `-g` to install into the current project instead (`.claude/skills/`, `
 
 ## Dialogs pane (Claude Code mod)
 
-`mods/dialogs-pane` adds a pane to Claude Code. It lists your Telegram dialogs, sends a message or a
-range as a full `<tg-packet>` to the current agent or to other agents, tests bots (press, record,
-diff, latency), and gives each chat an agent card: follow, summarize, draft, auto, and delegate in
-person chats.
-`mods/dialogs-pane-guard` enforces the delegate Worker's grant and hard stops. Install it with the
-pane if you plan to use `delegate`. The design is in
-[`docs/design/dialogs-pane.md`](docs/design/dialogs-pane.md).
+A Telegram pane inside Claude Code. Your Telegram folders and chats sit next to the session; ⏎ on
+a message hands it to Claude; a bot is tested with single keys; and any chat can be given to an
+agent, from "follow it" to "do the work it asks for". The pane reads and writes Telegram only
+through `tg`.
+
+### Install the pane
+
+It is two plugins from this repository's marketplace. `dialogs-pane` is the pane.
+`dialogs-pane-guard` holds a `delegate` Worker to its grant and hard stops. Without the guard
+everything works except `delegate`, which does not start.
 
 ```bash
 claude plugin marketplace add ruslan-korneev/tg-kit      # or a local checkout's path
@@ -50,8 +53,74 @@ claude plugin install dialogs-pane@tg-kit
 claude plugin install dialogs-pane-guard@tg-kit
 ```
 
-Then type `/tg` in a session. The pane needs the `tg` CLI on PATH with `tg watch`, and a logged-in
-account.
+The pane needs `tg` on PATH with `tg watch` and `tg folders`, and a logged-in account (see Log
+in). The v0.1.0 release has neither command; until the next one, install `tg` from a checkout of
+this repository (`uv tool install --editable .`). `tg folders --help` tells you which you have.
+
+### First run
+
+Type `/tg` in a session. The pane opens on your first Telegram folder. In fullscreen, from 110
+columns, it docks beside the transcript: the chat list on top, the open chat below. In a narrower
+terminal it sits above the prompt and shows one view at a time. A "start here" block names the
+keys that matter until you press `d`.
+
+- The pane takes the keys while its header shows `● keys`. `ctrl+x tab` hands them over, and `Esc`
+  gives them back to the prompt.
+- `m` lists every key the current view can use, and each entry is pressable. `/tg help` prints the
+  same table in the transcript; `/tg status` shows what runs.
+- `h` goes one level up. `q` hides the pane; the footer then keeps the unread count and what runs.
+  `/tg` brings the pane back.
+
+### What you do with it
+
+- **Folders and chats.** `1`–`9` open your first nine Telegram folders, in Telegram's order. `h`
+  from the chat list lists every folder, the Archive, For you and Bots. `s` searches every chat.
+  `y` (For you) gathers what waits for you: agents' drafts first, then people who mention you or
+  wrote to you.
+- **Hand a message to Claude.** ⏎ on a message opens the send sheet, and a digit sends it with an
+  intent: `⏎ 1` sends a bot's reply as Fix. The intents follow who wrote the message: Fix,
+  Reproduce, Explain and Test for a bot; Do it, Explain and Draft reply for a person. `a` picks
+  another agent, `i` shows what it will read, and `x` or `v` mark several messages first. Claude
+  gets a `<tg-packet>`: the whole message record, with phone numbers, usernames, ids and names
+  masked.
+- **Test a bot.** In a bot chat, digits press the buttons of the message under the cursor, and `n`
+  writes to the bot. `r … r` records your sends and presses into a script under `.tg-recordings/`;
+  `1` on the sheet that follows hands it to an agent as a live test. `f` diffs a reply with the
+  last reply to the same message. `⏱` marks each reply's latency.
+- **Watch and summarize.** `w` tells you about new messages in a chat, above the prompt too while
+  the pane is hidden. `t` summarizes a chat.
+- **Give a chat to an agent.** `a` opens the chat's agent card, a ladder: `1` follow (new messages
+  go to Claude's context), `2` summarize, `3` draft (the agent drafts, you send with ⏎), `4` auto
+  (it replies within limits) and `5` delegate (it replies and does the work in your repo). Each
+  kind of chat gets only the levels that fit: in a bot chat or a channel an agent only reads, and
+  delegate is for person chats. A draft waits as a row of its chat, in For you and above the
+  prompt.
+
+### Safety
+
+- **Stop everything:** `0` stops every follow, autopilot and Worker at once, from any view.
+  `/tg stop` does the same from the prompt, even while Claude is mid-turn. Settings stay, and the
+  card restarts a chat.
+- **Your keys, your writes.** What you send with your own key goes out as yours: a message after
+  `n`, a draft you read whole, a button press. What an agent sends on its own (auto, delegate, an
+  agent replaying a recording) needs the chat in `allow.toml`. The pane never adds it silently:
+  the card asks in Claude Code's dialog, No first, showing the exact `tg allow add … --yes`, and
+  only your Yes runs it. The add is kept; `tg allow remove` takes it out. BotFather stays
+  read-only, and `readonly = true` in tg's config refuses every write.
+- **What `delegate` may do.** The Worker works in a fresh git worktree of each repo you grant,
+  never in your checkout. It runs only the repo's own checks (read off `package.json`,
+  `pyproject.toml` with `uv.lock`, `Makefile`, `justfile`, `Cargo.toml`, `go.mod`), local git and
+  read-only commands. Everything else is refused, `sh -c`, `eval` and scripts it writes included.
+  It never runs `tg` and never reads tg-kit's config, so the chat has one voice: the agent that
+  replies as you. Spending money, pushing, merging, deploying, sharing your files, deleting outside
+  the worktree and agreeing to a deadline or price on your behalf stop and ask you (hard stops).
+  The one thing the guard cannot read around: a check you allow runs the repository's own code.
+  Grant a check only to code you trust to run.
+
+The design is in [`docs/design/dialogs-pane.md`](docs/design/dialogs-pane.md) (the packet,
+autopilot, delegate and its guard) and
+[`docs/design/dialogs-pane-ux.md`](docs/design/dialogs-pane-ux.md) (the views, the keys, the
+states, and decisions 1–12).
 
 ## Log in
 

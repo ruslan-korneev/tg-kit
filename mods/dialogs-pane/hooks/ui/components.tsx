@@ -43,6 +43,9 @@ export function edgeStart(start: number, cursor: number, rows: number, length: n
   return Math.min(Math.max(0, moved), Math.max(0, length - room))
 }
 
+/** A dialog row's cells besides the name (§7.3): cursor 2, level 2, kind 2, watch 2, unread 4, time 10. */
+const DIALOG_FIXED = 22
+
 /** The rows of `list` a window of `rows` from `start` shows. */
 export function windowAt<T>(list: readonly T[], start: number, rows: number): T[] {
   return list.slice(start, start + Math.max(1, rows))
@@ -62,9 +65,9 @@ export function DialogRow(
     width: number
     now: number
     onOpen: () => void
-    /** One glyph after `ro`/`⌁`: the watch mark. */
+    /** The watch column's glyph (◎, colored by the watch's health); BotFather's `ro` takes the column instead. */
     mark?: { text: string; color?: string }
-    /** The autopilot's level glyph before the name, and `auto 3/50` after the marks; `warn` (red): ── delegate ── skipped hard stops. */
+    /** The autopilot's level glyph in the level column, and `auto 3/50` after the name; `warn` (red): ── delegate ── skipped hard stops. */
     autopilot?: { glyph: string; tail: string; warn?: string }
   },
 ): RenderElement {
@@ -74,23 +77,26 @@ export function DialogRow(
   // A muted chat's count is dim and marked `·14`: muted ones would bury the rest (§4.7, §5).
   const badge = isUnread ? `${dialog.muted ? '·' : ''}${dialog.unread}` : ''
   const time = shortTime(dialog.last_date, props.now)
-  const marks = isReadOnlyPeer(dialog) ? 'ro' : props.isPinned ? GLYPH.pinned : ''
-  // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left; an autopilot mark takes its own.
   const pilot = props.autopilot
-  const nameWidth = Math.max(8, props.width - 21 - (pilot === undefined ? 0 : pilot.tail.length + 3 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)))
+  // §7.3: cursor 2 · level 2 · kind 2 · name · watch 2 · unread 4 · time 10. The level column is always drawn,
+  // so a name does not shift when an agent starts; a follow is the ladder's first level (decision 2), so ⌁ sits there too.
+  const level = pilot !== undefined ? pilot.glyph : props.isPinned ? GLYPH.pinned : ' '
+  // The watch column: `ro` on BotFather (read-only, nothing to watch there), else the watch mark.
+  const watch = isReadOnlyPeer(dialog) ? { text: 'ro', color: TOKEN.warn } : props.mark
+  const tail = pilot === undefined ? 0 : pilot.tail.length + 1 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)
+  const nameWidth = Math.max(8, props.width - DIALOG_FIXED - tail)
   const cells = [
     <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : props.isOpen ? `${GLYPH.open} ` : '  '}</Text>,
-    pilot === undefined ? null : <Text color={TOKEN.accent}>{pilot.glyph} </Text>,
+    <Text color={TOKEN.accent}>{`${level} `}</Text>,
     <Text color={color}>{glyph} </Text>,
     <Text bold={(isUnread && !dialog.muted) || props.isOpen} underline={props.isOpen}>
       {pad(dialogLabel(dialog), nameWidth)}
     </Text>,
-    <Text bold={!dialog.muted} dimColor={dialog.muted}>{badge.padStart(3)} </Text>,
-    <Text dimColor>{time.padStart(9)} </Text>,
-    <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>,
-    props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>,
-    pilot === undefined ? null : <Text dimColor> {pilot.tail}</Text>,
-    pilot?.warn === undefined ? null : <Text color={TOKEN.danger}> {pilot.warn}</Text>,
+    pilot === undefined ? null : <Text dimColor>{`${pilot.tail} `}</Text>,
+    pilot?.warn === undefined ? null : <Text color={TOKEN.danger}>{`${pilot.warn} `}</Text>,
+    <Text color={watch?.color}>{(watch?.text ?? '').padEnd(2)}</Text>,
+    <Text bold={!dialog.muted} dimColor={dialog.muted}>{badge.padStart(4)}</Text>,
+    <Text dimColor>{time.padStart(10)}</Text>,
   ]
   if (props.isStatic === true) {
     return (
@@ -130,12 +136,14 @@ export function MessageCard(
     width: number
     /** The chat's sender column, and this message's divider and chips placement (./thread). */
     sender: { width: number; gap: number }
+    /** Where chips beside the text start (./thread `chipsColumn`) and what the row keeps after them (`chipsTail`). */
+    chipsAt: { column: number; tail: number }
     look: MessageLook
     onPress: () => void
     /** Bot testing: the reply's latency stamp. */
     stamp?: { text: string; isSlow: boolean } | null
-    /** The message's buttons and the cells they take; null without buttons. */
-    chips: { element: RenderElement; cells: number } | null
+    /** The message's buttons; null without buttons. */
+    chips: { element: RenderElement } | null
   },
 ): RenderElement {
   const { Box, Button, Text } = els
@@ -145,7 +153,8 @@ export function MessageCard(
   const chips = props.chips
   const isOnRow = chips !== null && look.isChipsOnRow
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
-  const tail = (stamp === null ? 0 : stamp.text.length + 1) + (id === '' ? 0 : id.length + 1) + (isOnRow ? chips.cells + 1 : 0)
+  // Beside the text the chips start at the thread's chips column, and the stamp and id follow them; elsewhere they end the row.
+  const tail = isOnRow ? props.chipsAt.column + 1 + props.chipsAt.tail : (stamp === null ? 0 : stamp.text.length + 1) + (id === '' ? 0 : id.length + 1)
   const textWidth = Math.max(10, props.width - fixedCells(props.sender) - tail)
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
   // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.
@@ -154,7 +163,8 @@ export function MessageCard(
   const head = [
     <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
     <Text dimColor> {clockOf(message.date).padEnd(5)} </Text>,
-    <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{fit(sender, props.sender.width)}</Text>,
+    // The bot token is the ◆ glyph's alone (§7.1): the sender column stays plain.
+    <Text>{fit(sender, props.sender.width)}</Text>,
     <Text>{' '.repeat(props.sender.gap)}</Text>,
     <Text color={color}>{fit(oneLine(body, textWidth), textWidth)}</Text>,
   ]
@@ -200,7 +210,11 @@ export function MessageCard(
   )
 }
 
-/** Loading, flood wait, not logged in, tg missing, an error: one place draws them. */
+/**
+ * Loading, flood wait, not logged in, tg missing, an error: one place draws
+ * them (§7.4), each one sentence and one key. A flood wait retries by itself,
+ * counting down in the warn token; the rest end in `g: retry`, an error's line red.
+ */
 export function LoadState<T>(
   { Box, Text, Button }: Els,
   props: { load: Load<T>; now: number; rows: number; onReload: () => void },
@@ -221,12 +235,11 @@ export function LoadState<T>(
   return (
     <Box key="failure" flexDirection="column">
       <Text color={failureColor(load.failure)} wrap="wrap">
-        {load.failure.kind === 'flood' ? `${GLYPH.error} ` : ''}
         {failureText(load.failure, props.now, load.retryAt)}
       </Text>
       {load.failure.kind === 'flood' ? null : (
         <Button key="reload" plain hotkey="g" dimColor onPress={props.onReload}>
-          reload
+          retry
         </Button>
       )}
     </Box>
@@ -242,11 +255,13 @@ export function EmptyList({ Text }: Els, props: { text: string }): RenderElement
   )
 }
 
-export function Divider({ Text }: Els, props: { label: string; width: number }): RenderElement {
+/** `─ label ───…`; `right` ends it (`─ start here ──── d: got it ─`). */
+export function Divider({ Text }: Els, props: { label: string; width: number; right?: string }): RenderElement {
   const label = props.label === '' ? '' : ` ${props.label} `
+  const right = props.right === undefined ? '' : ` ${props.right} ─`
   return (
     <Text color={TOKEN.accent} dimColor wrap="truncate-end">
-      {`─${label}`.padEnd(Math.max(1, props.width), '─')}
+      {`─${label}`.padEnd(Math.max(1, props.width - right.length), '─') + right}
     </Text>
   )
 }

@@ -78,7 +78,7 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
-import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, fixedCells, messageLooks, senderColumn, type MessageLook } from './ui/thread'
+import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, chipsColumn, chipsTail, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
@@ -211,6 +211,7 @@ export const register: Register = (on, options) => {
       })
     }
     const started = await next(e)
+    await startOnboarding($) // ── onboarding ──
     await startFolders($) // ── folders ──
     await startRouting($) // ── routing ──
     await startTriage($)
@@ -545,6 +546,8 @@ async function toNewest($: $): Promise<void> {
  */
 const windowRows = { dialogs: 0, messages: 0, folders: 0 }
 let threadHeights: number[] = []
+/** The day the drawn thread's top row belongs to, once its divider scrolled off (./ui/thread `topDay`); null otherwise. Set while drawing, read by the header. */
+let shownTopDay: string | null = null
 
 /**
  * The cursor of one list moved by a step: its window start is first settled
@@ -725,6 +728,7 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       hasFinished: tasks.some(task => !isLive(task)),
       undoLeft: undoLeft(pilot.undo, Math.max(pilot.now, await $.clock.now())),
       hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null || (await stopNoticeNow($, Infinity)) !== null,
+      hasStart: await isStartDrawn($, seat, where), // ── onboarding ──
       marks: chosen.ids.length,
       isRangeOpen: chosen.anchor !== null,
       hasPair: chosen.ids.length > 0 ? diffPair(chosen.ids, messages).ok : atCursor !== undefined && replyPair(atCursor, messages) !== null,
@@ -829,6 +833,11 @@ async function runKey($: $, id: RunKey): Promise<void> {
       if (where === 'activity') return dismissEnded($)
       if (where === 'recorded') return discardRecorded($) // ── bottest ──
       if (where === 'chat' && (await cursorItem($))?.kind === 'draft') return dropAtCursor($)
+      // ── onboarding ── with no notice up, d in Chats puts the start block away.
+      if (where === 'chats') {
+        const { facts } = await keyContext($, lastSeat ?? 'dock', where)
+        if (facts.hasStart && !facts.hasNotice) return dismissStart($)
+      }
       // The notice row's notice: a write's result, or what 0 stopped.
       await update($, bottest, value => ({ ...value, notice: null }))
       await update($, lastStop, () => null) // ── running ──
@@ -956,6 +965,8 @@ type Seating = { seat: Seat; width: number; rows: number; isFocused: boolean }
  */
 async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement> {
   const { seat, width, rows } = seating
+  // The thread's drawing below sets it when its top row's day divider has scrolled off; the header reads it.
+  shownTopDay = null
   const where = await underWhere($)
   const isMenu = (await read($, nav)).isMenuOpen
   const context = await keyContext($, seat, where)
@@ -979,7 +990,8 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   // ── folders ── the strip shows while Chats do: not over the Folders list or For you (§5.0, §5.3).
   const isChatsOnTop = await chatsOnTop($)
   const summary = await summaryOf($)
-  const stripWidth = seat === 'inline' ? inlineStripRoom(width, summary, seating.isFocused) : width
+  const isLoading = !isMenu && (await isLoadingShown($, seat, where))
+  const stripWidth = seat === 'inline' ? inlineStripRoom(width, summary, seating.isFocused) - (isLoading ? 2 : 0) : width
   const strip = isMenu || !isChatsOnTop || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search, width: stripWidth })
   // ── running ── the dock's strip comes and goes as things start and stop, mostly while the cursor
   // stays: it draws no ring stop, and its row is kept whether it shows or not, so neither the stops
@@ -1002,11 +1014,15 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const sheetRows = recordedBar !== null ? (seat === 'dock' ? 4 : 2) : sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
   const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + runningRows + noticeRows
   const room = Math.max(3, rows - chrome)
+  // ── onboarding ── inline, the start block sits over the chat list and takes its rows; the dock draws it below (drawLower).
+  const isStartOver = !isMenu && seat === 'inline' && (await isStartDrawn($, seat, where))
   const slot = isMenu
     ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
     : seat === 'dock'
       ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - runningRows))
-      : await drawInline($, els, where, width, room)
+      : isStartOver
+        ? [StartBlock(els, { width }), ...(await drawInline($, els, where, width, Math.max(1, room - START_ROWS)))]
+        : await drawInline($, els, where, width, room)
   const drawn = new Set(sheetBar === null && fieldBar === null && recordedBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
   if (recordedBar !== null) drawn.add('d')
   if (strip !== null && search === 'key') drawn.add('s')
@@ -1025,6 +1041,7 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
     strip: isInlineChats ? strip : null,
     summary,
     chips: await chipsOf($),
+    isLoading,
     isFocused: seating.isFocused,
   })
   const barRow = sheetBar ?? fieldBar ?? recordedBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey })
@@ -1034,6 +1051,23 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const taken = hotkeysIn([header, running, strip, slot, notice, barRow, hidden, digits])
   const stray = StrayKeys(els, { keys: STRAY_KEYS.filter(key => !taken.has(key)), onKey: key => say($, 'info', strayText(key, barContext)) })
   return Frame(els, { rows, header, running, strip: isInlineChats ? null : strip, slot, notice, bar: barRow, hidden, digits, stray })
+}
+
+/**
+ * `…` in the header (§7.4): the folder list or a pass on its way, or the list
+ * or the chat on screen loading. The dock shows the list over the chat; inline
+ * shows one of them.
+ */
+async function isLoadingShown($: $, seat: Seat, where: Where): Promise<boolean> {
+  const state = await read($, folders)
+  const list = await read($, dialogs)
+  if (state.pass.isRunning) return true
+  // A first open whose pass failed has no folder list yet, and nothing on its way: the list says why (§7.4).
+  if (state.list === null && list.status !== 'error') return true
+  const isListShown = seat === 'dock' || where === 'chats' || where === 'foryou' || where === 'folders'
+  if (isListShown && list.status === 'loading') return true
+  const open = await read($, thread)
+  return open !== null && open.load.status === 'loading' && (seat === 'dock' || where === 'chat')
 }
 
 async function hasReloadRow($: $, isListShown: boolean, isThreadShown: boolean): Promise<boolean> {
@@ -1054,7 +1088,7 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
     case 'foryou':
       return 'tg › for you'
     case 'chat':
-      return `tg › ${label}`
+      return `tg › ${label}${dayPart()}`
     case 'card': {
       // ── autopilot ── the card's step after its chat: delegate's warning and grant, `o`'s options.
       const view = (await read($, autopilot)).view
@@ -1067,22 +1101,27 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
       if (shown.kind === 'broadcast') return `tg › several agents · ${label}`
       if (shown.kind === 'sheet' && shown.step === 'targets') return `tg › send to · ${label}`
       if (shown.kind === 'sheet' && shown.step === 'inspect') return `tg › inspect · ${label}`
-      return `tg › ${label}`
+      return `tg › ${label}${dayPart()}`
     }
     case 'diff':
       return `tg › diff · ${label}`
     case 'recorded':
-      return `tg › ${label}`
+      return `tg › ${label}${dayPart()}`
     case 'activity':
       return 'tg › activity'
     case 'summary':
       return `tg › summary · ${label}`
     case 'field':
-      return (await read($, nav)).isSearching ? 'tg › search' : `tg › ${label}`
+      return (await read($, nav)).isSearching ? 'tg › search' : `tg › ${label}${dayPart()}`
     case 'menu':
     case 'band':
       return 'tg'
   }
+}
+
+/** ` · 10-08`: the top row's day, while the thread under the header has scrolled its divider off. */
+function dayPart(): string {
+  return shownTopDay === null ? '' : ` · ${shownTopDay}`
 }
 
 /** §4.5: agents by level, new messages in watched chats, what waits for the owner. One summary: the header, the footer label, `/tg status`. */
@@ -1169,6 +1208,8 @@ async function drawDock($: $, els: Els, where: Where, width: number, room: numbe
   const mode = where === 'chats' || where === 'folders' || where === 'foryou' ? 'active' : where === 'field' ? 'static' : 'idle'
   const list = await drawTop($, els, width, topRows, mode)
   const lower = Math.max(1, room - topRows - 1)
+  // ── onboarding ── with no chat open, the start block takes the lower part, its divider the divider's row.
+  if (await isStartDrawn($, 'dock', where)) return [...list, StartBlock(els, { width })]
   return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, 'dock', where, width, lower, open !== null))]
 }
 
@@ -1303,6 +1344,9 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
   const layout = await threadLayout($, width, rows)
   windowRows.messages = rows
   threadHeights = layout.heights
+  // The header names the top row's day once its divider has scrolled off (text only: no ring stop, §4.3 rule 1).
+  const topMessage = layout.items.slice(0, layout.start + 1).findLast(item => item.kind === 'message')
+  shownTopDay = topMessage?.kind === 'message' ? topDay(messages, topMessage.message.id, at) : null
   lastThread = { width, rows } // ── footer ──
   const bt = await bottestCards($, open.peer, messages, layout.look, width, mode)
   return layout.shown.map((item, index) => {
@@ -1336,6 +1380,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
       isAnchor: chosen.anchor === message.id,
       width,
       sender: layout.look.sender,
+      chipsAt: layout.look.chipsAt,
       look: layout.look.looks.get(message.id) ?? { divider: null, isChipsOnRow: false },
       // ⏎ (or a click) on a message: the send sheet for it (§5.1).
       onPress: async () => {
@@ -1351,17 +1396,17 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
  * holds whole, from where it starts. The drawing and the band (which leaves
  * out a draft the pane draws) read the same answer.
  */
-async function threadLayout($: $, width: number, rows: number): Promise<{ shown: ThreadRow[]; start: number; cursor: number; heights: number[]; look: ThreadLook }> {
+async function threadLayout($: $, width: number, rows: number): Promise<{ items: ThreadRow[]; shown: ThreadRow[]; start: number; cursor: number; heights: number[]; look: ThreadLook }> {
   const items = await threadItems($)
   const where = await read($, nav)
   const look = await threadLook($, width)
   const heights = items.map(item => rowHeight(item, width, look.looks))
   const cursor = clamp(where.messageCursor, items.length)
   const start = windowStart(where.messageStart, cursor, heights, rows)
-  return { shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights, look }
+  return { items, shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights, look }
 }
 
-type ThreadLook = { sender: { width: number; gap: number }; looks: Map<number, MessageLook> }
+type ThreadLook = { sender: { width: number; gap: number }; looks: Map<number, MessageLook>; chipsAt: { column: number; tail: number } }
 
 /** How the open chat draws its message rows at `width` (§7.3, ./ui/thread): the sender column, each message's divider and chips. */
 async function threadLook($: $, width: number): Promise<ThreadLook> {
@@ -1369,7 +1414,9 @@ async function threadLook($: $, width: number): Promise<ThreadLook> {
   const messages = await threadMessages($)
   const kind = open === null ? null : openChatKind(open)
   const sender = senderColumn(messages, kind)
-  return { sender, looks: messageLooks(messages, width, await read($, now), sender, kind === 'botfather') }
+  const isReadOnly = kind === 'botfather'
+  const looks = messageLooks(messages, width, await read($, now), sender, isReadOnly)
+  return { sender, looks, chipsAt: { column: chipsColumn(messages, looks, isReadOnly), tail: chipsTail(messages) } }
 }
 
 // ── triage ──
@@ -2580,7 +2627,7 @@ import { diffPair, replyDiff, replyPair } from './bottest/diff'
 import { chipAction, isBotFather, readOnlyText } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, handoffInput, outcomeOf, recordedIds, replayAllowQuestion, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
-import { Chips, DiffView, MAX_DIGIT_CHIPS, RecordedSheet, SendBox, chipKey, chipsWidth } from './bottest/ui'
+import { Chips, DiffView, MAX_DIGIT_CHIPS, RecordedSheet, SendBox, chipKey } from './bottest/ui'
 import type { Button as KeyButton, MessageView } from './packet/types'
 
 const NO_BOTTEST: BotTest = {
@@ -3024,7 +3071,7 @@ async function bottestCards($: $, peer: PeerRef, messages: readonly MessageView[
       isReadOnly,
       onChip: button => pressChip($, message, button),
     })
-    return { stamp, chips: { element, cells: chipsWidth(labels, isReadOnly) } }
+    return { stamp, chips: { element } }
   }
 }
 
@@ -4569,7 +4616,8 @@ async function drawGrant($: $, els: Els, dialog: ApDialog, allow: AllowView, isG
     skipped,
     noStops: (await dgNoStopsOf($))(id),
     isGuardUp,
-    guardText: `the ${GUARD} plugin is not loaded or not answering: it holds the Worker's hard stops`,
+    // §7.4: the row says how to put it right, as the install line in README has it.
+    guardText: `the ${GUARD} plugin is not loaded or not answering: it holds the Worker's hard stops · claude plugin install ${GUARD}@tg-kit`,
     allow,
     notice,
     onRepos: text => dgEditGrant($, id, grant => ({ ...grant, repos: parseRepos(text) })),
@@ -5400,6 +5448,9 @@ async function openFolders($: $): Promise<void> {
 
 /** What the last session left: the folder list with its counts, the view, and its rows when it is a folder. */
 async function paintStored($: $, stored: StoredFolders): Promise<void> {
+  // The rows' times read `now`, which only a tg answer has set so far: without it a stored row dated yesterday reads as a time of today.
+  const at = await $.clock.now()
+  await update($, now, () => at)
   const isListed = stored.view.kind !== 'folder' || stored.list.some(folder => sameView({ kind: 'folder', id: folder.id }, stored.view))
   const first = stored.list[0]
   const view: ListView = isListed || first === undefined ? stored.view : { kind: 'folder', id: first.id }
@@ -5458,7 +5509,9 @@ async function armNext($: $): Promise<void> {
   const cadence = state.startedAt === null ? null : isOpen ? state.startedAt + PASS_GAP_MS : state.hasOpened ? state.startedAt + HIDDEN_GAP_MS : null
   const due = state.queuedFor ?? cadence
   if (due === null || state.isRunning) return
-  const when = Math.max(due, state.floodUntil ?? 0)
+  // Never before passPlan would let it run: a timer due earlier finds the pass not free, skips, and arms
+  // itself again at once (seen live: a 40 s flood wait inside the 60 s gap spun, stuck at `wait 0 s`).
+  const when = Math.max(due, nextAllowed(state))
   const timer = $.clock.after(Math.max(0, when - (await $.clock.now())), () => {
     if (passNext === timer) passNext = null
     requestPass($, 'tick').catch(() => {
@@ -5523,11 +5576,14 @@ async function runPass($: $): Promise<void> {
  */
 async function passFailed($: $, failure: TgFailure, at: number): Promise<void> {
   const floodUntil = failure.kind === 'flood' ? at + failure.seconds * 1000 : null
-  await update($, folders, value => ({
-    ...value,
-    pass: { ...value.pass, isRunning: false, floodUntil: floodUntil ?? value.pass.floodUntil, queuedFor: floodUntil ?? value.pass.queuedFor, error: floodUntil === null ? failureText(failure, at) : null },
-  }))
-  if ((await read($, dialogs)).status !== 'ok') await update($, dialogs, () => failed(failure, at))
+  const state = await update($, folders, value => {
+    // The retry: once the wait is over, and never within 60 s of the failed pass's start (passPlan).
+    const retry = floodUntil === null ? value.pass.queuedFor : Math.max(floodUntil, (value.pass.startedAt ?? at) + PASS_GAP_MS)
+    return { ...value, pass: { ...value.pass, isRunning: false, floodUntil: floodUntil ?? value.pass.floodUntil, queuedFor: retry, error: floodUntil === null ? failureText(failure, at) : null } }
+  })
+  // A list with no rows counts down to that retry itself, not to the end of Telegram's wait.
+  const retryAt = state.pass.queuedFor
+  if ((await read($, dialogs)).status !== 'ok') await update($, dialogs, () => (failure.kind === 'flood' && retryAt !== null ? { status: 'error', failure, retryAt } : failed(failure, at)))
   if (floodUntil !== null) await startCountdown($)
   await refreshStatus($)
 }
@@ -5772,8 +5828,14 @@ async function digitsLabel($: $): Promise<string | null> {
   return count === 0 ? null : count === 1 ? '1: folder' : `1-${count}: folder`
 }
 
+/** The strip's entries; none while the folder list is on its way, so a first open draws no tab it would take back (§7.4). */
+async function shownEntries($: $) {
+  const list = (await read($, folders)).list
+  return list === null ? [] : stripEntries(list)
+}
+
 async function drawDigitKeys($: $, els: Els): Promise<RenderElement> {
-  const entries = stripEntries((await read($, folders)).list ?? [])
+  const entries = await shownEntries($)
   return DigitKeys(els, {
     digits: entries.flatMap(entry => (entry.digit === null ? [] : [{ digit: entry.digit, title: entry.title, onPress: () => switchView($, entry.view) }])),
   })
@@ -5787,9 +5849,8 @@ function inlineStripRoom(width: number, summary: { levels: string; watched: stri
 }
 
 async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key' | 'click' | 'none'; width: number }): Promise<RenderElement> {
-  const state = await read($, folders)
   const where = await read($, nav)
-  const entries = stripEntries(state.list ?? [])
+  const entries = await shownEntries($)
   const current = entries.findIndex(entry => sameView(entry.view, where.list))
   const texts = entries.map((entry, index) => tabText(entry, index === current, props.isLive))
   const waiting = props.search === 'none' ? 0 : await movedCount($)
@@ -5801,7 +5862,6 @@ async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key'
     after: Math.max(0, entries.length - shown.end),
     query: where.query,
     waiting,
-    isLoading: state.list === null || state.pass.isRunning,
     search: props.search,
     onSearch: () => startSearch($),
   })
@@ -6026,17 +6086,25 @@ async function passNotice($: $): Promise<PaneNotice | null> {
   const pass = (await read($, folders)).pass
   const at = Math.max(await read($, now), await $.clock.now())
   const seconds = (until: number) => Math.max(0, Math.ceil((until - at) / 1000))
+  const list = await read($, dialogs)
+  // A list with no rows shows a flood wait itself (LoadState), the retry with it: the notice would say it twice.
+  if (list.status === 'error' && list.failure.kind === 'flood') return null
   if (pass.floodUntil !== null && pass.floodUntil > at) return { tone: 'warn', text: `Telegram asks to wait ${seconds(pass.floodUntil)} s · retrying` }
-  if (pass.error !== null && (await read($, dialogs)).status === 'ok') return { tone: 'danger', text: `${pass.error} · g: retry` }
+  if (pass.error !== null && list.status === 'ok') return { tone: 'danger', text: `${pass.error} · g: retry` }
   if (pass.queuedFor !== null && pass.queuedFor > at) return { tone: 'info', text: `refreshing in ${seconds(pass.queuedFor)} s` }
   if (await isRefreshShown($)) return { tone: 'info', text: `refreshing in ${seconds(nextAllowed(pass))} s` }
   return null
 }
 
-/** After a hot reload, a view the module no longer holds shows `…` rows until the next pass (§8 T9 c). */
+/**
+ * After a hot reload, a view the module no longer holds shows `…` rows until
+ * the next pass (§8 T9 c). Not while a pass runs: the first open's pass is the
+ * one on its way, and the header's `…` says so (§7.4).
+ */
 async function isRefreshShown($: $): Promise<boolean> {
   const where = await read($, nav)
-  return passHeld === null && (await read($, folders)).pass.hasOpened && (await read($, dialogs)).status === 'loading' && where.list.kind !== 'archive' && where.query === ''
+  const state = await read($, folders)
+  return passHeld === null && state.pass.hasOpened && !state.pass.isRunning && (await read($, dialogs)).status === 'loading' && where.list.kind !== 'archive' && where.query === ''
 }
 
 /** One sentence and one key (§7.4). */
@@ -6095,7 +6163,11 @@ async function unreadHead($: $): Promise<UnreadHead> {
   if (all !== undefined && all.unread !== null) return { kind: 'count', unread: all.unread }
   const load = await read($, dialogs)
   // Once the pane opened, the list on screen is a folder's, not the latest chats: wait for the pass.
-  if (state.pass.hasOpened) return passHeld === null ? { kind: 'loading' } : { kind: 'count', unread: unreadChats([...passHeld.rows.values()]) }
+  if (state.pass.hasOpened) {
+    if (passHeld !== null) return { kind: 'count', unread: unreadChats([...passHeld.rows.values()]) }
+    // No pass held: one on its way is `tg …`; one that failed with nothing on screen is `tg ⚠`, as the list says.
+    return load.status === 'error' && load.failure.kind !== 'flood' && !state.pass.isRunning ? { kind: 'failed', isLoggedOut: false } : { kind: 'loading' }
+  }
   if (load.status === 'ok') return { kind: 'count', unread: unreadChats(load.value) }
   return load.status === 'error' ? { kind: 'failed', isLoggedOut: false } : { kind: 'loading' }
 }
@@ -6266,3 +6338,43 @@ async function statusLines($: $): Promise<string[]> {
   ]
 }
 // ── /footer ──
+
+// ── onboarding ──
+// dialogs-pane-ux.md §4.4 and §8 T7: the first open's start block, four lines
+// of the keys that matter, until `d`. `$.store` keeps the `d` across sessions;
+// `$.state` holds whether it shows, so drawing reads no file. The dock draws it
+// in the lower part while no chat is open, where `⏎ on a chat opens it here.`
+// stood, so the chat list keeps its rows; inline it sits over the chat list.
+// It is text: no ring stop comes or goes with it (§4.3 rule 1).
+import { START_ROWS, StartBlock } from './ui/frame'
+
+const STORE_START = 'start.dismissed'
+const isStartShown = atom({ plugin: 'dialogs-pane', key: 'isStartShown' } as const, false)
+
+/** From session.start: shown until a `d` in any session put it away. */
+async function startOnboarding($: $): Promise<void> {
+  const isDismissed = (await $.store.get(STORE_START)) === true
+  await update($, isStartShown, () => !isDismissed)
+}
+
+/** Whether the start block is drawn: the dock's lower part with no chat open, or inline over the chat list. */
+async function isStartDrawn($: $, seat: Seat, where: Where): Promise<boolean> {
+  if (!(await read($, isStartShown))) return false
+  const at = await read($, nav)
+  if (seat === 'dock') return (await read($, thread)) === null && (where === 'chats' || where === 'folders' || where === 'foryou' || (where === 'field' && at.isSearching))
+  // Inline: over Chats, and over the list the search field types for, so a search neither adds nor takes its rows.
+  return (where === 'chats' || (where === 'field' && at.isSearching)) && at.view === 'dialogs'
+}
+
+/**
+ * `d` in Chats: the block goes, for this session and the next ones. Inline the
+ * list gains its rows, so its window may start higher: a new generation gives
+ * the rows new keys, and the ring waits for the drawing that brings them (§8 T9).
+ */
+async function dismissStart($: $): Promise<void> {
+  await update($, isStartShown, () => false)
+  await $.store.set(STORE_START, true)
+  await update($, folders, value => ({ ...value, gen: value.gen + 1 }))
+  await ringCursor($)
+}
+// ── /onboarding ──
