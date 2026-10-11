@@ -130,12 +130,14 @@ export function MessageCard(
     width: number
     /** The chat's sender column, and this message's divider and chips placement (./thread). */
     sender: { width: number; gap: number }
+    /** Where chips beside the text start (./thread `chipsColumn`) and what the row keeps after them (`chipsTail`). */
+    chipsAt: { column: number; tail: number }
     look: MessageLook
     onPress: () => void
     /** Bot testing: the reply's latency stamp. */
     stamp?: { text: string; isSlow: boolean } | null
-    /** The message's buttons and the cells they take; null without buttons. */
-    chips: { element: RenderElement; cells: number } | null
+    /** The message's buttons; null without buttons. */
+    chips: { element: RenderElement } | null
   },
 ): RenderElement {
   const { Box, Button, Text } = els
@@ -145,7 +147,8 @@ export function MessageCard(
   const chips = props.chips
   const isOnRow = chips !== null && look.isChipsOnRow
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
-  const tail = (stamp === null ? 0 : stamp.text.length + 1) + (id === '' ? 0 : id.length + 1) + (isOnRow ? chips.cells + 1 : 0)
+  // Beside the text the chips start at the thread's chips column, and the stamp and id follow them; elsewhere they end the row.
+  const tail = isOnRow ? props.chipsAt.column + 1 + props.chipsAt.tail : (stamp === null ? 0 : stamp.text.length + 1) + (id === '' ? 0 : id.length + 1)
   const textWidth = Math.max(10, props.width - fixedCells(props.sender) - tail)
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
   // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.

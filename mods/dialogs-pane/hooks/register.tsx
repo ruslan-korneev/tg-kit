@@ -78,7 +78,7 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
-import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
+import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, chipsColumn, chipsTail, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
@@ -1361,6 +1361,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
       isAnchor: chosen.anchor === message.id,
       width,
       sender: layout.look.sender,
+      chipsAt: layout.look.chipsAt,
       look: layout.look.looks.get(message.id) ?? { divider: null, isChipsOnRow: false },
       // ⏎ (or a click) on a message: the send sheet for it (§5.1).
       onPress: async () => {
@@ -1386,7 +1387,7 @@ async function threadLayout($: $, width: number, rows: number): Promise<{ items:
   return { items, shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights, look }
 }
 
-type ThreadLook = { sender: { width: number; gap: number }; looks: Map<number, MessageLook> }
+type ThreadLook = { sender: { width: number; gap: number }; looks: Map<number, MessageLook>; chipsAt: { column: number; tail: number } }
 
 /** How the open chat draws its message rows at `width` (§7.3, ./ui/thread): the sender column, each message's divider and chips. */
 async function threadLook($: $, width: number): Promise<ThreadLook> {
@@ -1394,7 +1395,9 @@ async function threadLook($: $, width: number): Promise<ThreadLook> {
   const messages = await threadMessages($)
   const kind = open === null ? null : openChatKind(open)
   const sender = senderColumn(messages, kind)
-  return { sender, looks: messageLooks(messages, width, await read($, now), sender, kind === 'botfather') }
+  const isReadOnly = kind === 'botfather'
+  const looks = messageLooks(messages, width, await read($, now), sender, isReadOnly)
+  return { sender, looks, chipsAt: { column: chipsColumn(messages, looks, isReadOnly), tail: chipsTail(messages) } }
 }
 
 // ── triage ──
@@ -2605,7 +2608,7 @@ import { diffPair, replyDiff, replyPair } from './bottest/diff'
 import { chipAction, isBotFather, readOnlyText } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, handoffInput, outcomeOf, recordedIds, replayAllowQuestion, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
-import { Chips, DiffView, MAX_DIGIT_CHIPS, RecordedSheet, SendBox, chipKey, chipsWidth } from './bottest/ui'
+import { Chips, DiffView, MAX_DIGIT_CHIPS, RecordedSheet, SendBox, chipKey } from './bottest/ui'
 import type { Button as KeyButton, MessageView } from './packet/types'
 
 const NO_BOTTEST: BotTest = {
@@ -3049,7 +3052,7 @@ async function bottestCards($: $, peer: PeerRef, messages: readonly MessageView[
       isReadOnly,
       onChip: button => pressChip($, message, button),
     })
-    return { stamp, chips: { element, cells: chipsWidth(labels, isReadOnly) } }
+    return { stamp, chips: { element } }
   }
 }
 

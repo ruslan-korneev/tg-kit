@@ -23,8 +23,8 @@ export function chipCells(label: string): number {
   return label.length + 3
 }
 
-/** Gap between two chips, and before the `·` that separates two keyboard rows. */
-export const CHIP_GAP = 2
+/** Gap between two chips, and before the `·` that separates two keyboard rows: one space (`1: Retry 2: Back`). */
+export const CHIP_GAP = 1
 
 /** The chips' labels, row by row, as drawn: a URL button carries its URL, each cut to `max`. */
 export function chipLabels(buttons: readonly (readonly Button[])[], max: number): string[][] {
@@ -37,6 +37,24 @@ export function chipsCells(labels: readonly (readonly string[])[]): number {
   const separators = Math.max(0, labels.length - 1)
   const items = chips.length + separators
   return chips.reduce((sum, one) => sum + one, 0) + separators + CHIP_GAP * Math.max(0, items - 1)
+}
+
+/** Cells the chips take, whichever form is drawn: the digit form's, with `ro` after them on BotFather's. */
+export function chipsWidth(labels: readonly (readonly string[])[], isReadOnly: boolean): number {
+  return chipsCells(labels) + (isReadOnly ? 2 + CHIP_GAP : 0)
+}
+
+/** Cells a latency stamp may take on a chips row, with its space: ` ⏱1.4s`. */
+const STAMP_RESERVE = 6
+
+/**
+ * What a row with its chips beside the text keeps after them: the stamp and the
+ * id (` #677792`, the longest loaded), on every such row, so the chips start at
+ * the same column wherever the cursor is.
+ */
+export function chipsTail(messages: readonly Pick<TgMessage, 'id'>[]): number {
+  const longest = messages.reduce((top, message) => Math.max(top, String(message.id).length), 1)
+  return STAMP_RESERVE + 2 + longest
 }
 
 /**
@@ -117,6 +135,15 @@ export function fixedCells(sender: { width: number; gap: number }): number {
 /** How one message draws: its day divider, and whether its buttons share its row. */
 export type MessageLook = { divider: string | null; isChipsOnRow: boolean }
 
+/**
+ * Where the chips beside the text start, for every such row of the thread: the
+ * widest of them sets the column, so their left edges line up and each row's
+ * stamp follows its own chips, one space after (§7.3). 0 when none share a row.
+ */
+export function chipsColumn(messages: readonly TgMessage[], looks: ReadonlyMap<number, MessageLook>, isReadOnly: boolean): number {
+  return messages.reduce((widest, message) => (looks.get(message.id)?.isChipsOnRow === true ? Math.max(widest, chipsWidth(chipLabels(message.buttons, CHIP_LABEL_MAX), isReadOnly)) : widest), 0)
+}
+
 /** The look of every loaded message at `width`. */
 export function messageLooks(
   messages: readonly TgMessage[],
@@ -126,16 +153,17 @@ export function messageLooks(
   isReadOnly: boolean,
 ): Map<number, MessageLook> {
   const dividers = dayDividers(messages, now)
+  const tail = chipsTail(messages)
   return new Map(
     messages.map(message => {
-      // The stamp and the id are left out: the text gives them its room on the rows that have them.
+      // The stamp and the id are kept room for after the chips (chipsTail), so the text keeps MIN_TEXT on every row.
       // Only whole labels share the row: a URL chip carries its URL, which the row under the message has room for.
       const labels = chipLabels(message.buttons, Infinity)
       const isChipsOnRow =
         message.buttons.length > 0 &&
         width >= CHIPS_ON_ROW_FROM &&
         labels.every(row => row.every(label => label.length <= CHIP_LABEL_MAX)) &&
-        chipsCells(labels) + (isReadOnly ? 2 + CHIP_GAP : 0) + 1 <= width - fixedCells(sender) - MIN_TEXT
+        chipsWidth(labels, isReadOnly) + 1 + tail <= width - fixedCells(sender) - MIN_TEXT
       return [message.id, { divider: dividers.get(message.id) ?? null, isChipsOnRow }]
     }),
   )

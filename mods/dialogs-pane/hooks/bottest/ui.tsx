@@ -7,7 +7,7 @@ import type { Button, MessageView } from '../packet/types'
 import type { Els } from '../ui/components'
 import { GLYPH, TOKEN, oneLine } from '../ui/model'
 import { keyboardLines, type ReplyDiff } from './diff'
-import { CHIP_GAP, chipsCells } from '../ui/thread'
+import { CHIP_GAP } from '../ui/thread'
 
 /** The pane's chip address: `btn:<message>:<row>:<col>`; `b` moves the focus ring here. */
 export function chipKey(messageId: number, button: Pick<Button, 'row' | 'col'>): string {
@@ -20,10 +20,11 @@ export const MAX_DIGIT_CHIPS = 9
 /**
  * A message's buttons as chips (§5.2, §8 T6). The cursor message's first nine
  * carry the digits that press them (`1: Retry  2: Back`); every other chip is
- * drawn in brackets (`[Settings] [Help]`). Each chip is one Button wherever the
- * cursor is, so a move changes no ring stop above the cursor row (§4.3 rule 1),
- * and the brackets are padded to the digit form's width, so the stamp and the id
- * after them stay put. Dim and marked `ro` where the pane will not press
+ * drawn in brackets (`[Settings] [Help]`), one space apart either way. Each chip
+ * is one Button wherever the cursor is, so a move changes no ring stop above the
+ * cursor row (§4.3 rule 1). The chips take their own width, so the stamp follows
+ * one space after them; ./thread `chipsColumn` lines their left edges up on the
+ * rows that carry them beside the text. Dim and marked `ro` where the pane will not press
  * (BotFather: a press explains). `isPressable` false (a chat with no presses, or
  * a layer holding the ring, rule 3): text, no stops.
  */
@@ -63,20 +64,12 @@ export function Chips(
       )
     }),
   ])
-  // A bracketed chip is a cell narrower than its digit form: the Box keeps the digit form's width, so what follows stays put.
   return (
-    <Box key={`chips:${message.id}`} width={chipsWidth(props.labels, props.isReadOnly)} flexShrink={0}>
-      <Box flexDirection="row" columnGap={props.isDigits ? CHIP_GAP : 1}>
-        {...items}
-        {props.isReadOnly ? <Text color={TOKEN.warn}>ro</Text> : null}
-      </Box>
+    <Box key={`chips:${message.id}`} flexDirection="row" columnGap={CHIP_GAP} flexShrink={0}>
+      {...items}
+      {props.isReadOnly ? <Text color={TOKEN.warn}>ro</Text> : null}
     </Box>
   )
-}
-
-/** Cells Chips takes, whichever form: the digit form's, with `ro` after the chips where it is drawn. */
-export function chipsWidth(labels: readonly (readonly string[])[], isReadOnly: boolean): number {
-  return chipsCells(labels) + (isReadOnly ? 2 + CHIP_GAP : 0)
 }
 
 /**
