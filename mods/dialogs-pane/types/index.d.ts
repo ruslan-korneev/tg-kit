@@ -136,8 +136,12 @@ export type Load<T> =
   | { status: 'ok'; value: T }
   | { status: 'error'; failure: TgFailure; retryAt?: number }
 
-/** Open: the pane is up, laid out for where the engine seats it (dock or inline). Hidden: closed. */
-export type Mode = 'open' | 'hidden'
+/**
+ * The three states (dialogs-pane-ux.md §10.1). Open (Wide): the pane is up, laid
+ * out for where the engine seats it. Compact: the pane closed, a card above the
+ * prompt. Hidden: the card put away too, the footer label alone.
+ */
+export type Mode = 'open' | 'compact' | 'hidden'
 
 /** The peer a thread is open on: `arg` is what tg is given (`@name` or the id). */
 export type PeerRef = { id: number; arg: string; label: string; kind: TgPeerKind }
@@ -714,6 +718,8 @@ declare module 'claude-code' {
       selection: Selection
       band: BandEvent | null
       queue: BandQueue
+      /** The compact card's ringed row, 0 or 1 (dialogs-pane-ux.md §10.7). */
+      compactAt: number
       now: number
       triage: Triage
       // ── routing ──
