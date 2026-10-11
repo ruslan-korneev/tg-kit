@@ -67,7 +67,7 @@ type World = {
   /** The plugin's $.state values as last written, by key. */
   state: Map<string, unknown>
   /** What the next pass answers; a test changes it between passes. */
-  pass: { rows: TgDialog[]; folders: FolderSpec[]; answer?: ProcessRunResult | Promise<ProcessRunResult> }
+  pass: { rows: TgDialog[]; folders: FolderSpec[]; answer?: ProcessRunResult | Promise<ProcessRunResult>; list?: Promise<ProcessRunResult> }
 }
 
 const passes = (seen: World) => seen.runs.filter(argv => argv[1] === 'folders' && argv.includes('--chats')).length
@@ -90,7 +90,8 @@ function world(on: On, store: Record<string, unknown> = {}): World {
     seen.runs.push(e.argv)
     const [, cmd] = e.argv
     if (cmd === 'folders') {
-      const answer = e.argv.includes('--chats') ? seen.pass.answer : undefined
+      // `list`: what `tg folders` (the strip's first paint) answers, when a test holds it back.
+      const answer = e.argv.includes('--chats') ? seen.pass.answer : seen.pass.list
       return { value: answer === undefined ? folderRun(e.argv, json(seen.pass.rows), seen.pass.folders) : await answer }
     }
     if (cmd === 'dialogs') {
@@ -289,17 +290,41 @@ describe('the strip and the Folders list (§4.7)', () => {
 
   test('a new session with a stored folder shows it at once, while its first pass is still out', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const work = MANY.slice(0, 5)
+    // One stored row from the day before: its time column must read yesterday before any tg call answers.
+    const work = MANY.slice(0, 5).map((one, index) => (index === 4 ? { ...one, last_date: '2026-10-09T08:00:00Z' } : one))
     const seen = world(on, { folders: { list: [{ id: 1, title: 'Personal', kind: 'folder', unread: 0 }, { id: 2, title: 'Work', kind: 'folder', unread: 2 }], view: { kind: 'folder', id: 2 }, rows: work } })
     seen.pass.answer = new Promise(() => undefined)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await $.command.run(tgCommand())
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
-    // `…`: the pass is on its way (§7.4).
-    expect(await tabsOf(ui)).toEqual(['1: Personal', '2: ‹Work 2›', '3: For you', '4: Bots', '…'])
+    // `…` in the header: the pass is on its way (§7.4).
+    expect(await tabsOf(ui)).toEqual(['1: Personal', '2: ‹Work 2›', '3: For you', '4: Bots'])
+    expect((await ui.find({ key: 'header' }))?.text).toContain('…')
     expect(await drawnIds(ui)).toEqual(work.map(one => one.id))
+    expect((await findChat(ui, work[4]?.id ?? 0))?.text).toMatch(/yesterday$/)
     expect(passes(seen)).toBe(1)
+    await ui.unmount()
+  })
+
+  test('a first open with nothing held: … rows and … in the header while its pass runs, never `refreshing in` (§7.4, T7)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    // Neither the folder list nor the pass has answered yet.
+    seen.pass.list = new Promise(() => undefined)
+    seen.pass.answer = new Promise(() => undefined)
+    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+    await $.command.run(tgCommand())
+    await clock.settle()
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
+    expect(await ui.find({ key: 'loading' })).toBeDefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('…')
+    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('refreshing in')
+    // No folder list yet: no tab it would take back, and no digit for one.
+    expect(await tabsOf(ui)).toEqual([])
+    expect(await ui.find({ key: 'keys:digits' }).then(found => found?.text ?? '')).toBe('')
+    await clock.advance(5_000)
+    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('refreshing in')
     await ui.unmount()
   })
 
@@ -406,13 +431,13 @@ describe('passes (§8 T9)', () => {
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
     expect(passes(seen)).toBe(1)
-    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 60 s; retrying then.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 40 s · retrying in 60 s' })).toBeDefined()
     seen.pass.answer = undefined
     // Past Telegram's 40 s the pass is still inside its 60 s gap: no pass, and the count goes on.
     await clock.advance(45_000)
     await clock.settle()
     expect(passes(seen)).toBe(1)
-    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 15 s; retrying then.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 40 s · retrying in 15 s' })).toBeDefined()
     await clock.advance(15_000)
     await clock.settle()
     expect(passes(seen)).toBe(2)

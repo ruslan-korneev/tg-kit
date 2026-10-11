@@ -170,14 +170,17 @@ export function selectWhole(order: readonly number[]): Selection {
 
 export function failureText(failure: TgFailure, now: number, retryAt?: number): string {
   switch (failure.kind) {
+    // §7.4's sentences; the key after them (`g: retry`) is the caller's. Login stays the owner's act: the pane
+    // cannot fill a `!` line that runs (§1, `$.prompt.fill`), so it says what to type.
     case 'auth':
-      return 'Not logged in. Run `! tg login` in the prompt, then press g to reload.'
+      return 'Not logged in: type ! tg login in your prompt'
     case 'flood': {
-      const left = retryAt === undefined ? failure.seconds : Math.max(0, Math.ceil((retryAt - now) / 1000))
-      return `Telegram asks to wait ${left} s; retrying then.`
+      // Telegram's wait, then the count to the retry, which may come later: a pass never runs within 60 s of the last (§8 T9).
+      if (retryAt === undefined) return `Telegram asks to wait ${failure.seconds} s · retrying`
+      return `Telegram asks to wait ${failure.seconds} s · retrying in ${Math.max(0, Math.ceil((retryAt - now) / 1000))} s`
     }
     case 'missing':
-      return 'tg is not on PATH, or did not answer in time. Install tg-kit (README → Install).'
+      return 'tg is not on PATH, or did not answer in time. README → Install'
     case 'not-found':
     case 'error':
       return `tg: ${failure.message}`

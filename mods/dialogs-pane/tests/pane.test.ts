@@ -1485,20 +1485,61 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
 describe('states', () => {
   test('not logged in tells the person to run ! tg login', async ($, on) => {
     const { ui } = await openPane($, on, DOCK, () => failure(3, 'error: not logged in\n  fix: tg login'))
-    expect(await ui.find({ type: 'Text', text: '! tg login' })).toBeDefined()
-    expect(await ui.find({ key: 'reload' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Not logged in: type ! tg login in your prompt' })).toBeDefined()
+    expect((await ui.find({ key: 'reload' }))?.text).toBe('retry')
     // g is drawn by the error row; the hidden keys do not draw it twice.
     expect((await hotkeys(ui)).filter(key => key === 'g')).toEqual(['g'])
     await ui.unmount()
   })
 
-  test('loading shows dim … rows', async ($, on) => {
+  test('loading shows dim … rows, and … in the header', async ($, on) => {
     mock.clock(on, { now: Date.parse('2026-10-10T12:00:00Z') })
     world(on, happy)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     // No /tg yet: nothing loaded, so the list is in its loading state.
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
     expect(await ui.find({ key: 'loading' })).toBeDefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('…')
+    await ui.unmount()
+  })
+
+  test('once the list is in, the header drops its …', async ($, on) => {
+    const { ui } = await openPane($, on)
+    expect((await ui.find({ key: 'header' }))?.text).not.toContain('…')
+    await ui.unmount()
+  })
+
+  test('an error is one red line and g: retry; g runs it again', async ($, on) => {
+    let isBroken = true
+    engineSites(on)
+    const { ui, clock } = await openPane($, on, DOCK, argv => (isBroken && argv[1] === 'dialogs' ? failure(1, 'error: the fake is down') : happy(argv)))
+    const line = await ui.find({ type: 'Text', text: 'tg: the fake is down' })
+    expect(line?.props.color).toBe('red')
+    // Nothing is on its way: no `…` in the header, and the footer says it failed.
+    expect((await ui.find({ key: 'header' }))?.text).not.toContain('…')
+    expect(await siteText($, FOOTER)).toBe('focus & tg ⚠')
+    expect((await ui.find({ key: 'reload' }))?.text).toBe('retry')
+    expect((await ui.find({ key: 'reload' }))?.props.hotkey).toBe('g')
+    isBroken = false
+    // Inside the 60 s since the failed pass, g queues the next one (§8 T9); it lands when they are up.
+    await ui.press({ key: 'reload' })
+    await clock.advance(60_000)
+    await clock.settle()
+    expect(await findChat(ui, 1001)).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a flood wait is yellow and counts down; it retries by itself, so no g', async ($, on) => {
+    engineSites(on)
+    const { ui } = await openPane($, on, DOCK, argv => (argv[1] === 'dialogs' ? failure(5, 'error: FLOOD_WAIT 23s: Telegram asks to wait before retrying') : happy(argv)))
+    // Telegram's 23 s fall inside the 60 s a pass waits after the last one: the count is to the retry.
+    const line = await ui.find({ type: 'Text', text: 'Telegram asks to wait 23 s · retrying in 60 s' })
+    expect(line?.props.color).toBe('yellow')
+    expect(await ui.find({ key: 'reload' })).toBeUndefined()
+    // Said once: the list says it, so the notice row does not; a wait is not a failure, so the footer waits too.
+    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('asks to wait')
+    expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('refreshing in')
+    expect(await siteText($, FOOTER)).toBe('focus & tg …')
     await ui.unmount()
   })
 

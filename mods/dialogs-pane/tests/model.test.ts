@@ -3,6 +3,8 @@ import { describe, expect, test } from 'claude-code/testing'
 import { failureOf, settle, tg } from '../hooks/tg/tg'
 import {
   NO_SELECTION,
+  failureColor,
+  failureText,
   grownDialog,
   peerArg,
   rangeSelect,
@@ -63,6 +65,18 @@ describe('tg adapter', () => {
     expect(settle(tg.dialogs(), undefined)).toEqual({ ok: false, failure: { kind: 'missing' } })
     expect(settle(tg.dialogs(), ok('not json')).ok).toBe(false)
     expect(settle(tg.dialogs(), ok('{"id": 1}')).ok).toBe(false)
+  })
+})
+
+describe('§7.4 states: one sentence each; the key after it is the caller\'s', () => {
+  test('not logged in, tg missing, a flood wait counting down, an error', () => {
+    expect(failureText({ kind: 'auth' }, 0)).toBe('Not logged in: type ! tg login in your prompt')
+    expect(failureText({ kind: 'missing' }, 0)).toBe('tg is not on PATH, or did not answer in time. README → Install')
+    expect(failureText({ kind: 'flood', seconds: 23 }, 0)).toBe('Telegram asks to wait 23 s · retrying')
+    expect(failureText({ kind: 'flood', seconds: 23 }, 10_000, 23_000)).toBe('Telegram asks to wait 23 s · retrying in 13 s')
+    expect(failureText({ kind: 'flood', seconds: 40 }, 0, 60_000)).toBe('Telegram asks to wait 40 s · retrying in 60 s')
+    expect(failureText({ kind: 'error', message: 'boom' }, 0)).toBe('tg: boom')
+    expect([failureColor({ kind: 'flood', seconds: 1 }), failureColor({ kind: 'error', message: '' })]).toEqual(['yellow', 'red'])
   })
 })
 

@@ -210,7 +210,11 @@ export function MessageCard(
   )
 }
 
-/** Loading, flood wait, not logged in, tg missing, an error: one place draws them. */
+/**
+ * Loading, flood wait, not logged in, tg missing, an error: one place draws
+ * them (§7.4), each one sentence and one key. A flood wait retries by itself,
+ * counting down in the warn token; the rest end in `g: retry`, an error's line red.
+ */
 export function LoadState<T>(
   { Box, Text, Button }: Els,
   props: { load: Load<T>; now: number; rows: number; onReload: () => void },
@@ -231,12 +235,11 @@ export function LoadState<T>(
   return (
     <Box key="failure" flexDirection="column">
       <Text color={failureColor(load.failure)} wrap="wrap">
-        {load.failure.kind === 'flood' ? `${GLYPH.error} ` : ''}
         {failureText(load.failure, props.now, load.retryAt)}
       </Text>
       {load.failure.kind === 'flood' ? null : (
         <Button key="reload" plain hotkey="g" dimColor onPress={props.onReload}>
-          reload
+          retry
         </Button>
       )}
     </Box>

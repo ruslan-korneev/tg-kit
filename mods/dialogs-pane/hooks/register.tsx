@@ -990,7 +990,8 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   // ── folders ── the strip shows while Chats do: not over the Folders list or For you (§5.0, §5.3).
   const isChatsOnTop = await chatsOnTop($)
   const summary = await summaryOf($)
-  const stripWidth = seat === 'inline' ? inlineStripRoom(width, summary, seating.isFocused) : width
+  const isLoading = !isMenu && (await isLoadingShown($, seat, where))
+  const stripWidth = seat === 'inline' ? inlineStripRoom(width, summary, seating.isFocused) - (isLoading ? 2 : 0) : width
   const strip = isMenu || !isChatsOnTop || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search, width: stripWidth })
   // ── running ── the dock's strip comes and goes as things start and stop, mostly while the cursor
   // stays: it draws no ring stop, and its row is kept whether it shows or not, so neither the stops
@@ -1040,6 +1041,7 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
     strip: isInlineChats ? strip : null,
     summary,
     chips: await chipsOf($),
+    isLoading,
     isFocused: seating.isFocused,
   })
   const barRow = sheetBar ?? fieldBar ?? recordedBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey })
@@ -1049,6 +1051,23 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const taken = hotkeysIn([header, running, strip, slot, notice, barRow, hidden, digits])
   const stray = StrayKeys(els, { keys: STRAY_KEYS.filter(key => !taken.has(key)), onKey: key => say($, 'info', strayText(key, barContext)) })
   return Frame(els, { rows, header, running, strip: isInlineChats ? null : strip, slot, notice, bar: barRow, hidden, digits, stray })
+}
+
+/**
+ * `…` in the header (§7.4): the folder list or a pass on its way, or the list
+ * or the chat on screen loading. The dock shows the list over the chat; inline
+ * shows one of them.
+ */
+async function isLoadingShown($: $, seat: Seat, where: Where): Promise<boolean> {
+  const state = await read($, folders)
+  const list = await read($, dialogs)
+  if (state.pass.isRunning) return true
+  // A first open whose pass failed has no folder list yet, and nothing on its way: the list says why (§7.4).
+  if (state.list === null && list.status !== 'error') return true
+  const isListShown = seat === 'dock' || where === 'chats' || where === 'foryou' || where === 'folders'
+  if (isListShown && list.status === 'loading') return true
+  const open = await read($, thread)
+  return open !== null && open.load.status === 'loading' && (seat === 'dock' || where === 'chat')
 }
 
 async function hasReloadRow($: $, isListShown: boolean, isThreadShown: boolean): Promise<boolean> {
@@ -4597,7 +4616,8 @@ async function drawGrant($: $, els: Els, dialog: ApDialog, allow: AllowView, isG
     skipped,
     noStops: (await dgNoStopsOf($))(id),
     isGuardUp,
-    guardText: `the ${GUARD} plugin is not loaded or not answering: it holds the Worker's hard stops`,
+    // §7.4: the row says how to put it right, as the install line in README has it.
+    guardText: `the ${GUARD} plugin is not loaded or not answering: it holds the Worker's hard stops · claude plugin install ${GUARD}@tg-kit`,
     allow,
     notice,
     onRepos: text => dgEditGrant($, id, grant => ({ ...grant, repos: parseRepos(text) })),
@@ -5428,6 +5448,9 @@ async function openFolders($: $): Promise<void> {
 
 /** What the last session left: the folder list with its counts, the view, and its rows when it is a folder. */
 async function paintStored($: $, stored: StoredFolders): Promise<void> {
+  // The rows' times read `now`, which only a tg answer has set so far: without it a stored row dated yesterday reads as a time of today.
+  const at = await $.clock.now()
+  await update($, now, () => at)
   const isListed = stored.view.kind !== 'folder' || stored.list.some(folder => sameView({ kind: 'folder', id: folder.id }, stored.view))
   const first = stored.list[0]
   const view: ListView = isListed || first === undefined ? stored.view : { kind: 'folder', id: first.id }
@@ -5805,8 +5828,14 @@ async function digitsLabel($: $): Promise<string | null> {
   return count === 0 ? null : count === 1 ? '1: folder' : `1-${count}: folder`
 }
 
+/** The strip's entries; none while the folder list is on its way, so a first open draws no tab it would take back (§7.4). */
+async function shownEntries($: $) {
+  const list = (await read($, folders)).list
+  return list === null ? [] : stripEntries(list)
+}
+
 async function drawDigitKeys($: $, els: Els): Promise<RenderElement> {
-  const entries = stripEntries((await read($, folders)).list ?? [])
+  const entries = await shownEntries($)
   return DigitKeys(els, {
     digits: entries.flatMap(entry => (entry.digit === null ? [] : [{ digit: entry.digit, title: entry.title, onPress: () => switchView($, entry.view) }])),
   })
@@ -5820,9 +5849,8 @@ function inlineStripRoom(width: number, summary: { levels: string; watched: stri
 }
 
 async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key' | 'click' | 'none'; width: number }): Promise<RenderElement> {
-  const state = await read($, folders)
   const where = await read($, nav)
-  const entries = stripEntries(state.list ?? [])
+  const entries = await shownEntries($)
   const current = entries.findIndex(entry => sameView(entry.view, where.list))
   const texts = entries.map((entry, index) => tabText(entry, index === current, props.isLive))
   const waiting = props.search === 'none' ? 0 : await movedCount($)
@@ -5834,7 +5862,6 @@ async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key'
     after: Math.max(0, entries.length - shown.end),
     query: where.query,
     waiting,
-    isLoading: state.list === null || state.pass.isRunning,
     search: props.search,
     onSearch: () => startSearch($),
   })
@@ -6059,17 +6086,25 @@ async function passNotice($: $): Promise<PaneNotice | null> {
   const pass = (await read($, folders)).pass
   const at = Math.max(await read($, now), await $.clock.now())
   const seconds = (until: number) => Math.max(0, Math.ceil((until - at) / 1000))
+  const list = await read($, dialogs)
+  // A list with no rows shows a flood wait itself (LoadState), the retry with it: the notice would say it twice.
+  if (list.status === 'error' && list.failure.kind === 'flood') return null
   if (pass.floodUntil !== null && pass.floodUntil > at) return { tone: 'warn', text: `Telegram asks to wait ${seconds(pass.floodUntil)} s · retrying` }
-  if (pass.error !== null && (await read($, dialogs)).status === 'ok') return { tone: 'danger', text: `${pass.error} · g: retry` }
+  if (pass.error !== null && list.status === 'ok') return { tone: 'danger', text: `${pass.error} · g: retry` }
   if (pass.queuedFor !== null && pass.queuedFor > at) return { tone: 'info', text: `refreshing in ${seconds(pass.queuedFor)} s` }
   if (await isRefreshShown($)) return { tone: 'info', text: `refreshing in ${seconds(nextAllowed(pass))} s` }
   return null
 }
 
-/** After a hot reload, a view the module no longer holds shows `…` rows until the next pass (§8 T9 c). */
+/**
+ * After a hot reload, a view the module no longer holds shows `…` rows until
+ * the next pass (§8 T9 c). Not while a pass runs: the first open's pass is the
+ * one on its way, and the header's `…` says so (§7.4).
+ */
 async function isRefreshShown($: $): Promise<boolean> {
   const where = await read($, nav)
-  return passHeld === null && (await read($, folders)).pass.hasOpened && (await read($, dialogs)).status === 'loading' && where.list.kind !== 'archive' && where.query === ''
+  const state = await read($, folders)
+  return passHeld === null && state.pass.hasOpened && !state.pass.isRunning && (await read($, dialogs)).status === 'loading' && where.list.kind !== 'archive' && where.query === ''
 }
 
 /** One sentence and one key (§7.4). */
@@ -6128,7 +6163,11 @@ async function unreadHead($: $): Promise<UnreadHead> {
   if (all !== undefined && all.unread !== null) return { kind: 'count', unread: all.unread }
   const load = await read($, dialogs)
   // Once the pane opened, the list on screen is a folder's, not the latest chats: wait for the pass.
-  if (state.pass.hasOpened) return passHeld === null ? { kind: 'loading' } : { kind: 'count', unread: unreadChats([...passHeld.rows.values()]) }
+  if (state.pass.hasOpened) {
+    if (passHeld !== null) return { kind: 'count', unread: unreadChats([...passHeld.rows.values()]) }
+    // No pass held: one on its way is `tg …`; one that failed with nothing on screen is `tg ⚠`, as the list says.
+    return load.status === 'error' && load.failure.kind !== 'flood' && !state.pass.isRunning ? { kind: 'failed', isLoggedOut: false } : { kind: 'loading' }
+  }
   if (load.status === 'ok') return { kind: 'count', unread: unreadChats(load.value) }
   return load.status === 'error' ? { kind: 'failed', isLoggedOut: false } : { kind: 'loading' }
 }

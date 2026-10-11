@@ -465,6 +465,8 @@ describe('the handshake with the guard plugin', () => {
     await ui.press({ key: 'ap:level:delegate' })
     await ui.press({ key: 'key:start:warning' })
     expect(await ui.find({ type: 'Text', text: /^✗ the dialogs-pane-guard plugin is not loaded or not answering/ })).toBeDefined()
+    // §7.4: with how to install it (T7).
+    expect(await ui.find({ type: 'Text', text: /claude plugin install dialogs-pane-guard@tg-kit$/ })).toBeDefined()
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
     expect(await ui.find({ type: 'Text', text: /Not started: delegate needs the dialogs-pane-guard plugin/ })).toBeDefined()

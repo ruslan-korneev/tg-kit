@@ -23,6 +23,8 @@ export function Header(
     summary: SummaryParts
     /** `● rec 3` while recording: state of the open chat, not of the pane. */
     chips: readonly { text: string; color?: string }[]
+    /** `…` while what the pane shows is on its way: the folder list, a pass, the list or the chat (§7.4). */
+    isLoading: boolean
     isFocused: boolean
   },
 ): RenderElement {
@@ -44,6 +46,7 @@ export function Header(
         {summary.levels === '' ? null : <Text dimColor>{summary.levels}</Text>}
         {summary.watched === '' ? null : <Text dimColor>{`${summary.levels === '' ? '' : '· '}${summary.watched}`}</Text>}
         {summary.forYou === '' ? null : <Text color={TOKEN.warn}>{`${summary.levels === '' && summary.watched === '' ? '' : '· '}${summary.forYou}`}</Text>}
+        {props.isLoading ? <Text dimColor>{GLYPH.working}</Text> : null}
         <Text> </Text>
         {props.isFocused ? <Text color={TOKEN.accent}>{FOCUS_HELD}</Text> : <Text dimColor>{FOCUS_ELSEWHERE}</Text>}
       </Box>
@@ -71,8 +74,6 @@ export function Strip(
     query: string
     /** Chats waiting to move (§8 T9); drawn dim in the dock, where the strip has its own row. */
     waiting: number
-    /** `…` while the folder list or the pass is on its way (§7.4). */
-    isLoading: boolean
     /** The dock draws `s: search` here (`key`), or the Button alone over a layer (`click`); inline has it in the action bar. */
     search: 'key' | 'click' | 'none'
     onSearch: () => void
@@ -94,7 +95,6 @@ export function Strip(
           ),
         )}
         {props.after > 0 ? <Text dimColor>{`+${props.after}`}</Text> : null}
-        {props.isLoading ? <Text dimColor>{GLYPH.working}</Text> : null}
       </Box>
       <Box flexDirection="row" columnGap={1} flexShrink={0}>
         {props.query === '' ? null : <Text dimColor>{`"${props.query}"`}</Text>}
