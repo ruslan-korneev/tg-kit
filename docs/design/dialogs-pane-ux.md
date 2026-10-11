@@ -2587,8 +2587,8 @@ location. Its parts:
 
 - `TG`;
 - `N UNREAD` (chats that are not muted, as §4.5 counts them);
-- `@N` (unread mentions), when no FOR YOU part shows them;
-- `N FOR YOU`;
+- `@N` (unread mentions), only while `N FOR YOU` is 0;
+- `N FOR YOU`, the one For you number (below);
 - `AUTOPILOT N CHATS`, in `held` when an agent holds something: autopilot and delegate chats,
   the same chats as the AUTOPILOT card's lanes;
 - `⌁ N`, dim and without a word: chats that follow into main (`p`). Appendix A's check still
@@ -2625,11 +2625,26 @@ the card's own key or count: `y: all`, `1-9 folders`, `0: stop all`, `l: all`, `
 
 | Section | Shows | Rows (content) | Ring stops |
 | --- | --- | --- | --- |
-| FOR YOU | §5.3's items, agents' first, in the chat row's format; preview `draft: …` (`held`), `asks you: …` | 1–3; `y: all` opens the full view (§5.3) | none: text. ⏎ on an item works in `y`'s view and in the band, as built |
+| FOR YOU | the For you items (below), in the chat row's format: a draft `draft: …` and a hard stop `stop: …` (both `held`, symbol ✎), a person `asks you: …` or their last text | 1–3; `y: all` opens the full view (§5.3) | none: text. ⏎ on an item works in `y`'s view and in the band, as built |
 | CHATS | the current folder; tabs in the title (`CHATS  Personal  Work 15  Bots  ›`), the current one `accent` and bold, `›` past the edge, counts as today | the rest, at least 5 (3 while a chat is open) | the rows, as today |
 | AUTOPILOT | §10.6 | 2 + one lane per chat on, at most 3 lanes | none |
 | LOG | §10.6 | what is left, at least 2; it grows to the bottom, so the pane is never half empty | none |
 | START HERE | the first open only, until `d` (§4.4); in `accent` with `d: got it` in the corner, three lines (the fourth, `keys work while ● keys shows`, goes with `● keys`) | 3 | none |
+
+**For you, one definition and one number** (T13, asked by tg-kit-25, 2026-10-11). The items, in
+this order:
+1. the agents' drafts, autopilot's and routing's drafted reply;
+2. hard stops waiting;
+3. people who wait on the owner: mentions, and `asks you`.
+
+`fyi` stays in `y`'s view only. The number is the distinct chats among those items, and it is the
+same everywhere it shows:
+- the FOR YOU card's title (`FOR YOU · N`);
+- the header (`N FOR YOU`);
+- the compact card (`● N chats waiting`);
+- the footer label and Hidden line (`N for you`, §10.8);
+- the band's hint tail (`tg: N for you · ctrl+x tab`). The tail used to count drafts and holds
+  only; one word with two numbers would misread, so it follows too.
 
 A section with nothing to show takes no room: FOR YOU with no items, AUTOPILOT with no agent on,
 LOG with no entry. CHATS always shows; an empty folder holds §7.4's one sentence.
@@ -2777,9 +2792,9 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
 - **Lines**: the title `tg` in the top border, in `accent`. Then a status line. Then the top two
   chats in the row format: For you's first two, else the current folder's first two unread, else
   none. The status line shows two things:
-  - `● 3 chats waiting`, `●` in `mention`: the distinct chats in For you, its people rows (from
-    the last pass, or the latest dialogs before the first pass) and its drafts and hard stops. A
-    chat with both a draft and a mention counts once;
+  - `● 3 chats waiting`, `●` in `mention`: the For you number (§10.5), distinct chats among its
+    drafts, hard stops and people waiting (from the last pass, or the latest dialogs before the
+    first pass). A chat with both a draft and a mention counts once;
   - with For you empty: `● 15 unread`, `●` in `unread`; with nothing unread and no agent on: `all
     read`, dim;
   - the gauge pair `⚡ ▰▰▱▱▱ 12/50`, while an agent is on; `⚡ autopilot on` when no chat on has a
@@ -2809,7 +2824,10 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
 
 ### 10.8 Hidden
 
-The owner's line: `● tg: 15 unread · @2 · autopilot 12/50`. Zero parts are left out. In the
+The line: `● tg: 15 unread · 2 for you · autopilot 12/50`. `N for you` is §10.5's For you
+number, and it stands in for `@N` exactly as in the header: `@N` shows only while it is 0. The
+owner's first line was `● tg: 15 unread · @2 · autopilot 12/50`; tg-kit-25 asked for the one
+number on 2026-10-11, since mentions are part of For you. Zero parts are left out. In the
 footer label `●` cannot take a role (`SessionMode`'s `modes` is `string[]`), so the whole label is
 dim. The label shows this line in every state, not only Hidden, in place of v1's
 `tg 22 · ⌁1 ⟳1 · ◎ 3 new · 2 for you`: `tg …` while loading, `tg ⚠` or `tg ⚠ not logged in` on a
