@@ -5,6 +5,7 @@
 import type { AgentInfo, On, ProcessRunResult, RenderPropsOf, SessionSendInput } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
+import { hotkeyTable } from '../hooks/ui/keys'
 import { DIALOGS, MESSAGES, MORE_DIALOGS, PERSON_MESSAGES, chatKey, findChat, folderRun, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
@@ -773,6 +774,19 @@ describe('drafted reply', () => {
     await ui.press({ key: 'key:edit' })
     return { ui, seen }
   }
+
+  test('the draft layer: no two Buttons share a hotkey, and each is the table’s', async ($, on) => {
+    const { ui } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
+    expect(await ui.find({ key: 'draft' })).toBeDefined()
+    const owners = hotkeyTable()
+    for (const step of ['open', 'planned'] as const) {
+      if (step === 'planned') await ui.press({ key: 'draft:check' })
+      const drawn = (await ui.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : []))
+      expect(drawn.filter((key, index) => drawn.indexOf(key) !== index)).toEqual([])
+      for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
+    }
+    await ui.unmount()
+  })
 
   test('the agent answer is drafted; check shows the plan; send runs the same tg send', async ($, on) => {
     const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
