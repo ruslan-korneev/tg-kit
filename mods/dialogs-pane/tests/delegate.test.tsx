@@ -487,7 +487,12 @@ describe('the handshake with the guard plugin', () => {
   test('a guard gone silent stops every Worker; the Worker’s next call is refused here too', WITH_GUARD, async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    await startTask($, clock, seen)
+    const { ui, child } = await handOver($, clock, seen)
+    // No pane while the clock runs (startTask's 20 s and the guard's 60 s): every state change would redraw it, and nothing here reads it.
+    await ui.unmount()
+    child?.line({ event: 'message', ...message(500, 'please add a /health endpoint to the app') })
+    await clock.advance(20_000)
+    await clock.settle()
     expect((await worker($, 'uv run pytest')).deny).toBeUndefined()
     await guardMode($, 'silent')
     await clock.advance(60_000)
