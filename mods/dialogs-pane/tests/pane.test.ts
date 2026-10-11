@@ -689,6 +689,36 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
     await $.turn.complete({ answer: 'Sure, 10 works.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
   }
 
+  /**
+   * Terminal rows a drawn tree takes, as the frame lays it out: a column Box
+   * stacks its children, a row Box, a Button, a Text or an Input is one row, a
+   * Box drawn `display: none` none. The kit lays nothing out, so this stands in
+   * for the engine's fit of an inline frame to its tree (§7.3).
+   */
+  function rowsOf(node: unknown): number {
+    if (typeof node !== 'object' || node === null) return 0
+    const { type, props, children } = node as { type?: unknown; props?: { display?: unknown; flexDirection?: unknown }; children?: unknown }
+    if (props?.display === 'none') return 0
+    if (type === 'Box' && props?.flexDirection === 'column') return Array.isArray(children) ? children.reduce((sum: number, child) => sum + rowsOf(child), 0) : 0
+    return 1
+  }
+
+  for (const bodyRows of [11, 12, 13]) {
+    test(`inline ${bodyRows} rows, 60 chats: a notice shows and the frame still fits the room (the chrome counts its row)`, async ($, on) => {
+      const { ui } = await openStable($, on, { ...INLINE, scroll: { offset: 0, bodyRows } })
+      // No notice: its row is left free, and the engine fits the frame to what it holds.
+      expect(rowsOf(await ui.drawn())).toBe(bodyRows - 1)
+      await openChat(ui, 1004)
+      await ui.press({ key: 'key:follow' })
+      await ui.press({ key: 'key:back' })
+      await $.command.run(runTg('stop'))
+      expect((await ui.find({ key: 'notice' }))?.text).toBe('■ stopped: Contact A')
+      // The list fills its room, so a notice the chrome did not count would push the bar past it.
+      expect(rowsOf(await ui.drawn())).toBe(bodyRows)
+      await ui.unmount()
+    })
+  }
+
   for (const seat of SEATS) {
     const inline = seat.props.placement === 'inline'
     test(`${seat.name}, the cursor on the newest of 40 messages: x, n (send, empty), s, t, a draft; nothing above the cursor moves`, async ($, on) => {

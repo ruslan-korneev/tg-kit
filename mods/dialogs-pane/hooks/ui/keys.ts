@@ -367,9 +367,14 @@ function verbs(c: KeyContext): readonly KeyId[] {
       // The dock draws `s: search` on the strip; inline has no strip row to spare.
       return c.seat === 'inline' ? ['open', 'search', 'summary', 'watch', 'agent'] : ['open', 'summary', 'watch', 'agent']
     case 'chat': {
-      // Inline shows one view: the way back to the chats is a verb there. An open range shows its end.
-      const base: readonly KeyId[] = c.kind === null ? ['send'] : KIND_BAR[c.kind]
-      return [...base.slice(0, 1), ...(c.facts.isRangeOpen ? (['range'] as const) : []), ...base.slice(1), ...(c.seat === 'inline' ? ['back' as const] : [])]
+      // Inline shows one view: the way back to the chats is a verb there. An open range shows its end;
+      // marks show how to clear them (`h: clear`), docked too, where h is otherwise only a hidden key.
+      // While marking, x and f come right after ⏎: they act on the marks, so the other verbs leave first.
+      const kindBar: readonly KeyId[] = c.kind === null ? ['send'] : KIND_BAR[c.kind]
+      const isMarking = c.facts.marks > 0 || c.facts.isRangeOpen
+      const marking: readonly KeyId[] = ['mark', 'diff']
+      const base = isMarking ? [...kindBar.slice(0, 1), ...kindBar.filter(id => marking.includes(id)), ...kindBar.slice(1).filter(id => !marking.includes(id))] : kindBar
+      return [...base.slice(0, 1), ...(c.facts.isRangeOpen ? (['range'] as const) : []), ...base.slice(1), ...(c.seat === 'inline' || isMarking ? ['back' as const] : [])]
     }
     case 'sheet':
       return ['back']
