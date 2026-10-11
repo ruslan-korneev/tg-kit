@@ -10,8 +10,8 @@ goes through `tg raw`, which covers the whole MTProto API.
 ## Install
 
 ```bash
-uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.1.0'                # puts `tg` on PATH
-uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.1.0'   # + QR-code login
+uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'                # puts `tg` on PATH
+uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'   # + QR-code login
 ```
 
 From a local checkout, for development:
@@ -53,9 +53,8 @@ claude plugin install dialogs-pane@tg-kit
 claude plugin install dialogs-pane-guard@tg-kit
 ```
 
-The pane needs `tg` on PATH with `tg watch` and `tg folders`, and a logged-in account (see Log
-in). The v0.1.0 release has neither command; until the next one, install `tg` from a checkout of
-this repository (`uv tool install --editable .`). `tg folders --help` tells you which you have.
+The pane needs `tg` v0.2.0 or later on PATH (it uses `tg watch` and `tg folders`) and a
+logged-in account (see Log in). `tg folders --help` tells you whether yours has them.
 
 ### First run
 
