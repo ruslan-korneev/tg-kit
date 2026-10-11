@@ -2642,9 +2642,11 @@ same everywhere it shows:
 - the FOR YOU card's title (`FOR YOU · N`);
 - the header (`N FOR YOU`);
 - the compact card (`● N chats waiting`);
-- the footer label and Hidden line (`N for you`, §10.8);
 - the band's hint tail (`tg: N for you · ctrl+x tab`). The tail used to count drafts and holds
   only; one word with two numbers would misread, so it follows too.
+
+The footer label and Hidden line are the exception: they keep the owner's `@N`, unread mentions
+(§10.8).
 
 A section with nothing to show takes no room: FOR YOU with no items, AUTOPILOT with no agent on,
 LOG with no entry. CHATS always shows; an empty folder holds §7.4's one sentence.
@@ -2824,12 +2826,11 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
 
 ### 10.8 Hidden
 
-The line: `● tg: 15 unread · 2 for you · autopilot 12/50`. `N for you` is §10.5's For you
-number, and it stands in for `@N` exactly as in the header: `@N` shows only while it is 0. The
-owner's first line was `● tg: 15 unread · @2 · autopilot 12/50`; tg-kit-25 asked for the one
-number on 2026-10-11, since mentions are part of For you. Zero parts are left out. In the
-footer label `●` cannot take a role (`SessionMode`'s `modes` is `string[]`), so the whole label is
-dim. The label shows this line in every state, not only Hidden, in place of v1's
+The owner's line: `● tg: 15 unread · @2 · autopilot 12/50`. `@N` is unread mentions, not
+§10.5's For you number: the owner's decision stands (tg-kit-25, 2026-10-11), so the one number
+shows in the pane, the compact card and the hint tail, and this line keeps `@N`. Zero parts are
+left out. In the footer label `●` cannot take a role (`SessionMode`'s `modes` is `string[]`), so
+the whole label is dim. The label shows this line in every state, not only Hidden, in place of v1's
 `tg 22 · ⌁1 ⟳1 · ◎ 3 new · 2 for you`: `tg …` while loading, `tg ⚠` or `tg ⚠ not logged in` on a
 failure, `tg` when every part is zero, and `autopilot on` when agents run with no limit.
 
