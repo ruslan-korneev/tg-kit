@@ -26,6 +26,10 @@ Compact, one line per message, buttons on indented lines under it:
 
     12 Releases 📌 [5 unread, 1 mention] — v2.3 is out
     1 General 🔒 — welcome
+
+Every line function takes a `style` (default `PLAIN`, the identity). It only
+wraps whole tokens in colour, so stripping the colour gives the plain line:
+same characters, same order, same truncation.
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ from tg_kit.model import (
     TypingEvent,
     WatchEvent,
 )
+from tg_kit.style import PLAIN, Style
 
 __all__ = [
     "LIST_TRUNCATE",
@@ -88,79 +93,98 @@ def compact(  # noqa: C901, PLR0912 — one branch per case keeps the contract r
     tz: tzinfo | None = None,
     truncate: int | None = None,
     peer_hint: str | None = None,
+    style: Style = PLAIN,
 ) -> list[str]:
     """The message's lines. `peer_hint` names the chat in the "+N chars" pointer."""
+    st = style
     tz = tz or now.tzinfo or UTC
     local = view.date.astimezone(tz)
-    stamp = local.strftime("%m-%d %H:%M" if local.year == now.year else "%Y-%m-%d %H:%M")
-    head = f"#{view.id} {stamp} "
+    head = f"{st('dim', f'#{view.id}')} {st('dim', _stamp(local, now))} "
     if view.chat_title:
-        head += f"[{view.chat_title}] "
+        head += st("group", f"[{view.chat_title}]") + " "
     if view.topic_id is not None:
-        head += f"[topic:{view.topic_id}] "
-    head += sender_label(view)
+        head += st("accent", f"[topic:{view.topic_id}]") + " "
+    head += st.sender(view.sender.id, view.sender.kind, sender_label(view))
     if view.via_bot:
-        head += f" via @{view.via_bot}"
+        head += " " + st("dim", "via") + " " + st("bot", f"@{view.via_bot}")
     # A message posted straight into a topic "replies" to the topic's id: not a reply.
     if view.reply_to and view.reply_to != view.topic_id:
-        head += f" ↩{view.reply_to}"
+        head += " " + st("dim", f"↩{view.reply_to}")
     if view.forward:
-        head += f" ⤳{view.forward.from_name or view.forward.from_id or 'hidden'}"
+        head += " " + st("dim", f"⤳{view.forward.from_name or view.forward.from_id or 'hidden'}")
     if view.edits > 1:
-        head += f" ✎×{view.edits}"
+        head += " " + st("dim", f"✎×{view.edits}")
     elif view.edits == 1 or view.edited:
-        head += " ✎"
+        head += " " + st("dim", "✎")
     if view.pinned:
         head += " 📌"
 
     body_parts = []
     if view.service:
-        body_parts.append(f"[service {view.service}]")
-    tag = _media_tag(view.media)
+        body_parts.append(st("dim", f"[service {view.service}]"))
+    tag = _media_tag(view.media, st)
     if tag:
         body_parts.append(tag)
     text = view.text.replace("\r\n", "\n").replace("\n", " ⏎ ")
+    more = ""
     if truncate is not None and len(text) > truncate:
         rest = len(text) - truncate
         where = f"tg msg {peer_hint} {view.id}" if peer_hint else "tg msg"
-        text = f"{text[:truncate]}… (+{rest} chars, {where})"
-    if text:
-        body_parts.append(text)
+        text, more = text[:truncate], f"… (+{rest} chars, {where})"
+    elif not view.reactions:
+        text = text.rstrip()  # the line never ends in whitespace
+    if text or more:
+        # ⏎ is chrome: dim it, but only between whole pieces of the (already cut) text.
+        body_parts.append(st("dim", " ⏎ ").join(text.split(" ⏎ ")) + st("dim", more))
     if view.reactions:
-        body_parts.append("{" + " ".join(f"{r.emoji}{r.count}" for r in view.reactions) + "}")
+        reactions = " ".join(f"{r.emoji}{r.count}" for r in view.reactions)
+        body_parts.append(st("subtext", "{" + reactions + "}"))
 
-    lines = [f"{head}: {' '.join(body_parts)}".rstrip()]
+    body = " ".join(body_parts)
+    lines = [f"{head}: {body}" if body else f"{head}:"]
     if view.links:
-        lines.append("  " + " ".join(f'[link "{text}" → {url}]' for text, url in view.links))
-    lines.extend(format_grid(view.buttons))
+        links = " ".join(f'[link "{text}" → {url}]' for text, url in view.links)
+        lines.append("  " + st("subtext", links))
+    lines.extend(row[:2] + st("accent", row[2:]) for row in format_grid(view.buttons))
     return lines
 
 
-def _media_tag(media: Media | None) -> str | None:  # noqa: PLR0911 — one return per kind reads best
+def _stamp(local: datetime, now: datetime) -> str:
+    return local.strftime("%m-%d %H:%M" if local.year == now.year else "%Y-%m-%d %H:%M")
+
+
+def _media_tag(media: Media | None, st: Style = PLAIN) -> str | None:
+    """The tag in the group colour, its size dim: `[document NAME 2.5MB]`."""
     if media is None or media.type == "webpage":
         return None  # link previews repeat the URL already in the text
+    tag, size = _media_parts(media)
+    return st("group", tag) + st("dim", size) + st("group", "]")
+
+
+def _media_parts(media: Media) -> tuple[str, str]:  # noqa: PLR0911 — one return per kind reads best
+    """The tag up to its size, and the size (" 2.5MB" or ""); the closing "]" follows."""
     t = media.type
     if t == "photo":
         dims = f" {media.width}×{media.height}" if media.width else ""
-        return f"[photo{dims}{_size(media.size)}]"
+        return f"[photo{dims}", _size(media.size)
     if t in {"voice", "audio", "videonote"}:
         name = f" {media.name}" if t == "audio" and media.name else ""
-        return f"[{t}{name} {_clock(media.duration)}]"
+        return f"[{t}{name} {_clock(media.duration)}", ""
     if t in {"video", "gif"}:
         dims = f" {media.width}×{media.height}" if media.width else ""
         dur = f" {_clock(media.duration)}" if media.duration else ""
-        return f"[{t}{dims}{dur}{_size(media.size)}]"
+        return f"[{t}{dims}{dur}", _size(media.size)
     if t == "sticker":
-        return f"[sticker {media.emoji or ''}]".replace(" ]", "]")
+        return f"[sticker {media.emoji or ''}]".replace(" ]", "]")[:-1], ""
     if t == "document":
-        return f"[document {media.name or media.mime or '?'}{_size(media.size)}]"
+        return f"[document {media.name or media.mime or '?'}", _size(media.size)
     if t == "poll":
-        return f'[poll "{media.title}"]'
+        return f'[poll "{media.title}"', ""
     if t == "dice":
-        return f"[dice {media.emoji}]"
+        return f"[dice {media.emoji}", ""
     if media.title or media.name:
-        return f'[{t} "{media.title or media.name}"]'
-    return f"[{t}]"
+        return f'[{t} "{media.title or media.name}"', ""
+    return f"[{t}", ""
 
 
 def _size(n: int | None) -> str:
@@ -262,28 +286,35 @@ def dialog_json(view: DialogView) -> dict[str, object]:
     }
 
 
-def dialog_line(view: DialogView) -> str:
+def dialog_line(view: DialogView, style: Style = PLAIN) -> str:
+    st = style
     name = f"@{view.username}" if view.username else view.title
-    forum = " (forum)" if view.forum else ""
+    forum = " " + st("dim", "(forum)") if view.forum else ""
     marks = (" 📌" if view.pinned else "") + (" 🔕" if view.muted else "")
-    unread = _counts(view.unread, view.mentions)
-    return f"{view.id} {view.kind} {name}{forum}{marks}{unread} — {_preview(view.last_text)}"
+    unread = _counts(view.unread, view.mentions, st)
+    return (
+        f"{st('dim', str(view.id))} {st.kind(view.kind, view.kind)} {st('text', name, bold=True)}"
+        f"{forum}{marks}{unread} {_preview(view.last_text, st)}"
+    )
 
 
-def _counts(unread: int, mentions: int) -> str:
+def _counts(unread: int, mentions: int, st: Style = PLAIN) -> str:
     counts = []
     if unread:
-        counts.append(f"{unread} unread")
+        counts.append(st("unread", f"{unread} unread"))
     if mentions:
-        counts.append(f"{mentions} mention{'s' if mentions > 1 else ''}")
-    return f" [{', '.join(counts)}]" if counts else ""
+        counts.append(st("mention", f"{mentions} mention{'s' if mentions > 1 else ''}"))
+    if not counts:
+        return ""
+    return " " + st("dim", "[") + st("dim", ", ").join(counts) + st("dim", "]")
 
 
-def _preview(text: str) -> str:
+def _preview(text: str, st: Style = PLAIN) -> str:
+    """`— last message`, cut at DIALOG_PREVIEW, all dim."""
     preview = text.replace("\n", " ⏎ ")
     if len(preview) > DIALOG_PREVIEW:
         preview = preview[:DIALOG_PREVIEW] + "…"
-    return preview
+    return st("dim", f"— {preview}")
 
 
 def topic_json(view: TopicView) -> dict[str, object]:
@@ -303,14 +334,16 @@ def topic_json(view: TopicView) -> dict[str, object]:
     }
 
 
-def topic_line(view: TopicView) -> str:
+def topic_line(view: TopicView, style: Style = PLAIN) -> str:
+    st = style
     marks = (
         (" 📌" if view.pinned else "")
         + (" 🔒" if view.closed else "")
-        + (" (hidden)" if view.hidden else "")
+        + (" " + st("dim", "(hidden)") if view.hidden else "")
     )
-    unread = _counts(view.unread, view.mentions)
-    return f"{view.id} {view.title}{marks}{unread} — {_preview(view.last_text)}"
+    unread = _counts(view.unread, view.mentions, st)
+    title = st.topic(view.icon_color, view.title, bold=True)
+    return f"{st('dim', str(view.id))} {title}{marks}{unread} {_preview(view.last_text, st)}"
 
 
 def folder_json(folder: Folder, unread: int | None = None) -> dict[str, object]:
@@ -321,11 +354,17 @@ def folder_json(folder: Folder, unread: int | None = None) -> dict[str, object]:
     return doc
 
 
-def folder_line(folder: Folder, unread: int | None = None, chats: int | None = None) -> str:
-    shared = " (shared)" if folder.kind == "shared" else ""
-    count = f" [{unread} unread]" if unread else ""
-    members = f" · {chats} chat{'' if chats == 1 else 's'}" if chats is not None else ""
-    return f"{folder.id} {folder.title}{shared}{count}{members}"
+def folder_line(
+    folder: Folder, unread: int | None = None, chats: int | None = None, style: Style = PLAIN
+) -> str:
+    st = style
+    shared = " " + st("dim", "(shared)") if folder.kind == "shared" else ""
+    count = _counts(unread or 0, 0, st)
+    members = ""
+    if chats is not None:
+        members = " " + st("dim", f"· {chats} chat{'' if chats == 1 else 's'}")
+    title = st("text", folder.title, bold=True)
+    return f"{st('dim', str(folder.id))} {title}{shared}{count}{members}"
 
 
 def folders_pass_json(
@@ -376,16 +415,25 @@ def ready_json(peers: list[dict[str, object]], date: datetime) -> dict[str, obje
 
 
 def event_lines(
-    event: WatchEvent, *, now: datetime, tz: tzinfo | None = None, chat: str | None = None
+    event: WatchEvent,
+    *,
+    now: datetime,
+    tz: tzinfo | None = None,
+    chat: str | None = None,
+    style: Style = PLAIN,
 ) -> list[str]:
     """Compact `tg watch` lines. `chat` names the chat when several are watched."""
+    st = style
     if isinstance(event, MessageEvent):
         view = replace(event.view, chat_title=chat) if chat else event.view
-        return compact(view, now=now, tz=tz, peer_hint=str(view.chat_id), truncate=LIST_TRUNCATE)
+        return compact(
+            view, now=now, tz=tz, peer_hint=str(view.chat_id), truncate=LIST_TRUNCATE, style=st
+        )
     tz = tz or now.tzinfo or UTC
-    local = event.date.astimezone(tz)
-    head = local.strftime("%m-%d %H:%M" if local.year == now.year else "%Y-%m-%d %H:%M")
-    where = f"[{chat}] " if chat else ""
+    head = st("dim", _stamp(event.date.astimezone(tz), now))
+    where = st("group", f"[{chat}]") + " " if chat else ""
     if isinstance(event, TypingEvent):
-        return [f"~ {head} {where}{_who(event.sender)}: {event.action}"]
-    return [f"✗ {head} {where}deleted " + " ".join(f"#{i}" for i in event.ids)]
+        who = st.sender(event.sender.id, event.sender.kind, _who(event.sender))
+        return [f"{st('dim', '~')} {head} {where}{who}: {st('dim', event.action)}"]
+    ids = " ".join(f"#{i}" for i in event.ids)
+    return [f"{st('unread', '✗')} {head} {where}{st('dim', 'deleted')} {ids}"]

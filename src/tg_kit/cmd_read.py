@@ -168,7 +168,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                 emit_json([dialog_json(r) for r in rows])
             else:
                 for r in rows:
-                    out(dialog_line(r))
+                    out(dialog_line(r, rt.style), color=rt.style.on)
             return 0
 
         run(g, body)
@@ -206,14 +206,17 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                     emit_json(folders_pass_json(rt.now, SCAN, entries, rows))
                 else:
                     for e in entries:
-                        out(folder_line(e.folder, e.unread, len(e.chats)))
+                        out(
+                            folder_line(e.folder, e.unread, len(e.chats), rt.style),
+                            color=rt.style.on,
+                        )
                 return 0
             unread = {e.folder.id: e.unread for e in entries}
             if rt.json:
                 emit_json([folder_json(f, unread.get(f.id)) for f in found])
             else:
                 for f in found:
-                    out(folder_line(f, unread.get(f.id)))
+                    out(folder_line(f, unread.get(f.id), style=rt.style), color=rt.style.on)
             return 0
 
         run(g, body)
@@ -244,7 +247,7 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
                 emit_json([topic_json(r) for r in rows])
             else:
                 for r in rows:
-                    out(topic_line(r))
+                    out(topic_line(r, rt.style), color=rt.style.on)
             return 0
 
         run(g, body)
@@ -459,15 +462,17 @@ def register(app: typer.Typer) -> None:  # noqa: C901, PLR0915 — one branch pe
             if rt.json:
                 emit_json(doc)
             else:
+                st = rt.style
                 for key, value in doc.items():
                     if value in (None, "", False, []):
                         continue
                     if isinstance(value, list):
-                        out(f"{key}:")
+                        out(st("dim", f"{key}:"), color=st.on)
                         for item in value:
-                            out(f"  {item}")
+                            out(f"  {item}", color=st.on)
                     else:
-                        out(f"{key}: {str(value).replace(chr(10), ' ⏎ ')}")
+                        text = str(value).replace(chr(10), " ⏎ ")
+                        out(f"{st('dim', f'{key}:')} {text}", color=st.on)
             return 0
 
         run(g, body)

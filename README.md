@@ -213,11 +213,14 @@ tg allow add PEER… --yes   ·   tg allow list   ·   tg allow remove ID|PEER�
 
 # anything else
 tg raw METHOD [PARAMS_JSON|-]
+tg themes [NAME]                          # preview the colour themes (piped: their names)
 ```
 
 Global options work before or after the command: `--account/-a NAME`, `--json`,
 `--timeout SECONDS` (default 30, plus any `--wait`, plus `flood_sleep_threshold` so that an
-allowed flood-wait sleep is never cut short), `-v` (debug logs and tracebacks).
+allowed flood-wait sleep is never cut short), `-v` (debug logs and tracebacks). `--color
+auto|always|never` and `--theme NAME` go before the command only (`tg --color never read …`);
+see Colour.
 
 For multi-line text, use `-` with stdin instead of shell escaping:
 
@@ -274,6 +277,53 @@ JSON is the last edit time, and `edits` counts only the edits seen during a `--w
 
 Listings cut text at 300 characters and append `… (+N chars, tg msg PEER ID)`. `--full` and
 `tg msg` never cut. Each call prints at most 200 messages.
+
+### Colour
+
+On a terminal the text output has colour; it is presentation only. Ids, times and markers are
+dim, `[topic:N]` and `me` are the accent, bots pink, other senders a colour by id (like Telegram's
+name colours), media tags teal, unread counts red and mentions orange, `error:` red, `fix:` green.
+Stripping the colour gives the exact plain line, and the plain line is what a pipe, a file,
+`--json` and `--jsonl` always get. Colour is on when the stream (stdout or stderr, each on its
+own) is a terminal, `NO_COLOR` is unset and `TERM` is not `dumb`. `FORCE_COLOR=1` turns it on
+anyway, and `--color never|always` or `TG_COLOR=never|always` overrides all of these.
+`COLORTERM=truecolor` gives the colours of a named theme (see Themes); otherwise it uses the 16
+ANSI colours, the same for every theme.
+
+### Themes
+
+The theme is `--theme NAME`, else `TG_THEME=NAME`, else `theme = "NAME"` in `config.toml`, else
+`tokyo-night`. An unknown name exits 2 and lists the themes (from `config.toml`, the message
+names the file). `tg themes` shows every theme on a terminal, and `tg themes NAME` shows one: the
+same sample of messages, dialogs, a topic and an error, on the theme's own background, in
+truecolor even without `COLORTERM`. Piped, it prints only the names; `--json` gives each name,
+`appearance` (dark or light), and which is the default and which is current.
+
+| | |
+|---|---|
+| <img src="docs/media/themes/catppuccin-mocha.svg" alt="Catppuccin Mocha preview" width="380"><br>`catppuccin-mocha` · dark | <img src="docs/media/themes/catppuccin-latte.svg" alt="Catppuccin Latte preview" width="380"><br>`catppuccin-latte` · light |
+| <img src="docs/media/themes/tokyo-night.svg" alt="Tokyo Night preview" width="380"><br>`tokyo-night` · dark | <img src="docs/media/themes/rose-pine-moon.svg" alt="Rosé Pine Moon preview" width="380"><br>`rose-pine-moon` · dark |
+| <img src="docs/media/themes/gruvbox-dark.svg" alt="Gruvbox Dark preview" width="380"><br>`gruvbox-dark` · dark | <img src="docs/media/themes/nord.svg" alt="Nord preview" width="380"><br>`nord` · dark |
+| <img src="docs/media/themes/dracula.svg" alt="Dracula preview" width="380"><br>`dracula` · dark | <img src="docs/media/themes/kanagawa.svg" alt="Kanagawa Wave preview" width="380"><br>`kanagawa` · dark |
+
+Seven themes also come as `NAME256` (all but `tokyo-night`): the same colours, with the few
+moved that would land on one cell where tmux draws 256 colours. Use one of those when your tmux
+does not pass truecolor through.
+
+The colours are each upstream's published values, mapped onto tg's roles. Where a colour was too
+faint on its own background (below 3:1), or would read as an unread count, a mention or `me`,
+it was moved by lightness or hue; `palettes/themes.json` records every such change (`adjusted`).
+The pictures are rendered from `tg themes NAME` by `dev/theme_previews.py`. The themes, with
+thanks:
+
+- Catppuccin Mocha (`catppuccin-mocha`): [catppuccin/palette](https://github.com/catppuccin/palette/blob/main/palette.json), MIT
+- Catppuccin Latte (`catppuccin-latte`): [catppuccin/palette](https://github.com/catppuccin/palette/blob/main/palette.json), MIT
+- Tokyo Night (`tokyo-night`): [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim/blob/main/lua/tokyonight/colors/storm.lua), Apache-2.0
+- Rosé Pine Moon (`rose-pine-moon`): [rose-pine/palette](https://github.com/rose-pine/palette/blob/main/palette.json), MIT
+- Gruvbox Dark (`gruvbox-dark`): [morhetz/gruvbox](https://github.com/morhetz/gruvbox/blob/master/colors/gruvbox.vim), MIT
+- Nord (`nord`): [nordtheme/nord](https://github.com/nordtheme/nord/blob/develop/src/nord.css), MIT
+- Dracula (`dracula`): [dracula/dracula-theme](https://github.com/dracula/dracula-theme/blob/main/README.md), MIT
+- Kanagawa Wave (`kanagawa`): [rebelot/kanagawa.nvim](https://github.com/rebelot/kanagawa.nvim/blob/master/lua/kanagawa/colors.lua), MIT
 
 ### JSON (`--json`)
 
@@ -521,6 +571,7 @@ unless you pass `-v`. Ctrl-C exits 130 and SIGTERM exits 143, both after a clean
 default_account = "main"          # needed only with several accounts
 readonly = false                  # true → every write exits 7 (allowlist changes and logout too)
 flood_sleep_threshold = 30        # sleep through FLOOD_WAITs up to this many seconds
+theme = "tokyo-night"             # the colour theme (tg themes); --theme and TG_THEME beat it
 ```
 
 The write allowlist lives in `~/.config/tg-kit/allow.toml`, and `tg allow` is its only writer:

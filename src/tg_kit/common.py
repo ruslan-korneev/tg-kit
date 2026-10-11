@@ -94,6 +94,7 @@ class MessagePrinter:
         self._rt = rt
         self._truncate = truncate
         self._peer_hint = peer_hint
+        self._style = rt.style
 
     def lines(self, view: MessageView) -> list[str]:
         return compact(
@@ -101,6 +102,7 @@ class MessagePrinter:
             now=self._rt.now,
             truncate=self._truncate,
             peer_hint=self._peer_hint or str(view.chat_id),
+            style=self._style,
         )
 
 
@@ -111,9 +113,10 @@ def print_views(
         emit_json([message_json(v) for v in views])
         return
     printer = MessagePrinter(rt, truncate=truncate, peer_hint=peer_hint)
+    color = rt.style.on
     for view in views:
         for line in printer.lines(view):
-            out(line)
+            out(line, color=color)
 
 
 def make_plan(
@@ -145,7 +148,7 @@ def authorize(plan: WritePlan, *, dry_run: bool) -> bool:
 
     if plan.target is not None:
         topic = f", topic {plan.topic.id} {plan.topic.title!r}" if plan.topic else ""
-        note(plan.target.target_line() + topic)
+        note(plan.target.target_line() + topic, role="accent")
     if dry_run:
         emit_json(plan.to_json())
         verdict = "would send" if plan.verdict.allowed else "would be REFUSED (exit 7)"

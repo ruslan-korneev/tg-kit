@@ -1,0 +1,119 @@
+#677791 09-29 11:02 @example_bot: Choose a bot ⏎ second line
+  [0:0 cb "My bot"] [0:1 url "Docs" → https://example.com/docs]
+  [1:0 switch "Share" → pick chat: 'q']
+#677791 09-29 11:02 @example_bot: Choose a bot ⏎ secon… (+6 chars, tg msg)
+  [0:0 cb "My bot"] [0:1 url "Docs" → https://example.com/docs]
+  [1:0 switch "Share" → pick chat: 'q']
+#677791 09-29 11:02 @example_bot: Choose a bot ⏎ secon… (+6 chars, tg msg @example_bot 677791)
+  [0:0 cb "My bot"] [0:1 url "Docs" → https://example.com/docs]
+  [1:0 switch "Share" → pick chat: 'q']
+#677792 09-29 11:02 me ↩677791: /start
+#677792 09-29 11:02 me ↩677791: /start
+#677792 09-29 11:02 me ↩677791: /start
+#677793 2025-03-01 08:05 Ivan Petrov: [photo 1280×720 214KB] caption text
+#677793 2025-03-01 08:05 Ivan Petrov: [photo 1280×720 214KB] caption text
+#677793 2025-03-01 08:05 Ivan Petrov: [photo 1280×720 214KB] caption text
+#677794 09-29 11:02 @example_bot ✎×2: updated text {👍3 ❤️1}
+#677794 09-29 11:02 @example_bot ✎×2: updated text {👍3 ❤️1}
+#677794 09-29 11:02 @example_bot ✎×2: updated text {👍3 ❤️1}
+#812 09-29 11:02 [topic:12] @example_bot ↩809: a reply inside forum topic 12
+#812 09-29 11:02 [topic:12] @example_bot ↩809: a reply inside forum… (+9 chars, tg msg)
+#812 09-29 11:02 [topic:12] @example_bot ↩809: a reply inside forum… (+9 chars, tg msg @example_bot 812)
+#2985 09-29 11:02 [topic:2] me: [document mastering-behavioral-interview.epub 2.5MB] 36. Mastering … ⏎ Austen ⏎ McDonald
+#2985 09-29 11:02 [topic:2] me: [document mastering-behavioral-interview.epub 2.5MB] 36. Mastering … ⏎ Au… (+15 chars, tg msg)
+#2985 09-29 11:02 [topic:2] me: [document mastering-behavioral-interview.epub 2.5MB] 36. Mastering … ⏎ Au… (+15 chars, tg msg @example_bot 2985)
+#10 09-29 11:02 [Example News] @example_news via @example_bot ⤳@example_news ✎ 📌: fwd
+#10 09-29 11:02 [Example News] @example_news via @example_bot ⤳@example_news ✎ 📌: fwd
+#10 09-29 11:02 [Example News] @example_news via @example_bot ⤳@example_news ✎ 📌: fwd
+#11 09-29 11:02 Hidden: [service pin_message]
+#11 09-29 11:02 Hidden: [service pin_message]
+#11 09-29 11:02 Hidden: [service pin_message]
+#12 09-29 11:02 Ivan Petrov: see docs
+  [link "Privacy policy" → https://example.com/privacy]
+#12 09-29 11:02 Ivan Petrov: see docs
+  [link "Privacy policy" → https://example.com/privacy]
+#12 09-29 11:02 Ivan Petrov: see docs
+  [link "Privacy policy" → https://example.com/privacy]
+#13 09-29 11:02 Ivan Petrov: [voice 0:12] xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#13 09-29 11:02 Ivan Petrov: [voice 0:12] xxxxxxxxxxxxxxxxxxxx… (+30 chars, tg msg)
+#13 09-29 11:02 Ivan Petrov: [voice 0:12] xxxxxxxxxxxxxxxxxxxx… (+30 chars, tg msg @example_bot 13)
+#14 09-29 11:02 Ivan Petrov: [sticker 😀]
+#14 09-29 11:02 Ivan Petrov: [sticker 😀]
+#14 09-29 11:02 Ivan Petrov: [sticker 😀]
+#15 09-29 11:02 Ivan Petrov: [audio song.mp3 3:05]
+#15 09-29 11:02 Ivan Petrov: [audio song.mp3 3:05]
+#15 09-29 11:02 Ivan Petrov: [audio song.mp3 3:05]
+#16 09-29 11:02 Ivan Petrov: [video 640×360 0:09 500B]
+#16 09-29 11:02 Ivan Petrov: [video 640×360 0:09 500B]
+#16 09-29 11:02 Ivan Petrov: [video 640×360 0:09 500B]
+#17 09-29 11:02 Ivan Petrov: [poll "Lunch?"]
+#17 09-29 11:02 Ivan Petrov: [poll "Lunch?"]
+#17 09-29 11:02 Ivan Petrov: [poll "Lunch?"]
+#18 09-29 11:02 Ivan Petrov: [dice 🎲=4]
+#18 09-29 11:02 Ivan Petrov: [dice 🎲=4]
+#18 09-29 11:02 Ivan Petrov: [dice 🎲=4]
+#19 09-29 11:02 Ivan Petrov: [contact "Ivan Petrov"]
+#19 09-29 11:02 Ivan Petrov: [contact "Ivan Petrov"]
+#19 09-29 11:02 Ivan Petrov: [contact "Ivan Petrov"]
+#20 09-29 11:02 Ivan Petrov: [geo]
+#20 09-29 11:02 Ivan Petrov: [geo]
+#20 09-29 11:02 Ivan Petrov: [geo]
+#21 09-29 11:02 Ivan Petrov: [document application/pdf 2KB]
+#21 09-29 11:02 Ivan Petrov: [document application/pdf 2KB]
+#21 09-29 11:02 Ivan Petrov: [document application/pdf 2KB]
+#22 09-29 11:02 Ivan Petrov: hi
+#22 09-29 11:02 Ivan Petrov: hi
+#22 09-29 11:02 Ivan Petrov: hi
+#23 09-29 11:02 [topic:12] Ivan Petrov: hi
+#23 09-29 11:02 [topic:12] Ivan Petrov: hi
+#23 09-29 11:02 [topic:12] Ivan Petrov: hi
+#24 09-29 11:02 @example_bot ✎: edited once
+#24 09-29 11:02 @example_bot ✎: edited once
+#24 09-29 11:02 @example_bot ✎: edited once
+#25 09-29 11:02 @example_bot:
+  [0:0 reply "Yes"]
+#25 09-29 11:02 @example_bot:
+  [0:0 reply "Yes"]
+#25 09-29 11:02 @example_bot:
+  [0:0 reply "Yes"]
+#26 09-29 11:02 Ivan Petrov: trailing space
+#26 09-29 11:02 Ivan Petrov: trailing space
+#26 09-29 11:02 Ivan Petrov: trailing space
+#27 09-29 11:02 Ivan Petrov:    {👍1}
+#27 09-29 11:02 Ivan Petrov:    {👍1}
+#27 09-29 11:02 Ivan Petrov:    {👍1}
+#28 09-29 11:02 Ivan Petrov: [sticker]
+#28 09-29 11:02 Ivan Petrov: [sticker]
+#28 09-29 11:02 Ivan Petrov: [sticker]
+123456 bot @example_bot 📌 [2 unread] — Choose
+-1000000000777 channel Example News 🔕 [5 unread, 1 mention] — 
+-1002 supergroup Dev Chat (forum) [3 mentions] — yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy…
+1 self Saved Messages — 
+555 user Ivan Petrov [1 unread, 2 mentions] — a ⏎ b
+-3 group Family — ok
+-4 unknown Odd — 
+12 Releases 📌 [5 unread, 1 mention] — v2.3
+1 General 🔒 (hidden) — welcome
+3 Ideas [2 mentions] — zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz…
+4 Odd — 
+0 All chats
+2 Work [3 unread]
+5 Team Projects (shared)
+2 Work [3 unread] · 14 chats
+6 Solo · 1 chat
+#677791 09-29 11:02 @example_bot: Choose a bot ⏎ second line
+  [0:0 cb "My bot"] [0:1 url "Docs" → https://example.com/docs]
+  [1:0 switch "Share" → pick chat: 'q']
+#677791 09-29 11:02 [@example_bot] @example_bot: Choose a bot ⏎ second line
+  [0:0 cb "My bot"] [0:1 url "Docs" → https://example.com/docs]
+  [1:0 switch "Share" → pick chat: 'q']
+#677794 09-29 11:02 @example_bot ✎×2: updated text {👍3 ❤️1}
+#677794 09-29 11:02 [@example_bot] @example_bot ✎×2: updated text {👍3 ❤️1}
+~ 09-29 11:02 @example_bot: typing
+~ 09-29 11:02 [@example_bot] @example_bot: typing
+~ 2025-03-01 08:05 Ivan Petrov: record_audio
+~ 2025-03-01 08:05 [@example_bot] Ivan Petrov: record_audio
+✗ 09-29 11:02 deleted #677792 #677793
+✗ 09-29 11:02 [@example_bot] deleted #677792 #677793
+✗ 09-29 11:02 deleted #5
+✗ 09-29 11:02 [@example_bot] deleted #5
