@@ -75,6 +75,8 @@ type World = {
   toasts: string[]
   commands: CommandSpec[]
   store: Map<string, unknown>
+  /** The engine dialog's questions, with their options in order. */
+  questions: { question: string; options: string[] }[]
   /** What `tg read` on the group answers (oldest first); tests append to it. */
   history: TgMessage[]
 }
@@ -86,12 +88,18 @@ function world(
     allow?: number[]
     /** What a dry run answers, when it is not the plain allow (it may wait on something meanwhile). */
     dryRun?: (ran: Ran) => Promise<ProcessRunResult>
+    /** What the engine's dialog answers the card's allow.toml question: a label, a dismissal, or `-p` (ask rejects). */
+    ask?: 'Yes, add it' | 'No' | 'dismiss'
+    /** Runs while the dialog is up, before it is answered. */
+    whileAsked?: () => Promise<void>
+    /** What `tg allow add` answers in place of adding (a refusal, or an add the list then lacks). */
+    allowAdd?: () => ProcessRunResult
     /** What `tg allow list` answers instead of the list (a failed read). */
     allowRun?: () => ProcessRunResult | null
     send?: (ran: Ran) => ProcessRunResult
   } = {},
 ): World {
-  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], store: new Map(), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
+  const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], store: new Map(), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
@@ -111,6 +119,12 @@ function world(
     if (cmd === 'dialogs') return { value: json(DIALOGS) }
     if (cmd === 'folders') return { value: folderRun(e.argv, json(DIALOGS)) }
     if (cmd === 'read') return { value: json(seen.history) }
+    if (cmd === 'allow' && e.argv[2] === 'add') {
+      if (options.allowAdd !== undefined) return { value: options.allowAdd() }
+      // tg's own writer of allow.toml: the next list has the chat.
+      options.allow?.push(Number(e.argv[3]))
+      return { value: json([{ id: Number(e.argv[3]) }]) }
+    }
     if (cmd === 'allow') return { value: options.allowRun?.() ?? json((options.allow ?? [GROUP]).map(id => ({ id }))) }
     // The guard's dry run, as a draft lands (§8 T3): the owner's own write passes --yes (decision 9).
     if (cmd === 'send' && e.argv.includes('--dry-run') && options.dryRun !== undefined) return { value: await options.dryRun(ran) }
@@ -167,6 +181,14 @@ function world(
   on('ui.status', (_$, e) => {
     seen.status.push(e.text)
     return { value: undefined }
+  })
+  // The engine's dialog ($.ui.ask): the card's allow.toml question, answered as the test says.
+  on('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
+    await options.whileAsked?.()
+    const question = e.tool === 'AskUserQuestion' ? (e.questions[0]?.question ?? '') : ''
+    seen.questions.push({ question, options: e.tool === 'AskUserQuestion' ? (e.questions[0]?.options ?? []).map(one => one.label) : [] })
+    if (options.ask === undefined || options.ask === 'dismiss') return { deny: 'dismissed' }
+    return { result: { questions: [], answers: { [question]: options.ask } } as never }
   })
   on('ui.toast', (_$, e) => {
     seen.toasts.push(e.text)
@@ -350,43 +372,143 @@ describe('auto', () => {
     await band.unmount()
   })
 
-  /** /tg wide, the cursor on Dev Team, a: its card; what the prompt box was filled with. */
+  /** /tg wide, the cursor on Dev Team, a: its card. */
   async function openCard($: Engine, on: On, clock: MockClock, isStarted = false) {
-    const filled: string[] = []
-    if (!isStarted) {
-      on('prompt.fill', (_$, e) => {
-        filled.push(e.text)
-        return { isFilled: true }
-      })
-      await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    }
+    if (!isStarted) await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await $.command.run(tgCommand('wide'))
     await clock.settle()
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: 'key:down' })
     await ui.press({ key: 'key:agent' })
     await clock.settle()
-    return { ui, filled }
+    return { ui }
   }
 
   const allowReads = (seen: World) => seen.runs.filter(one => one.argv[1] === 'allow').length
 
-  test('a 4 on a chat outside allow.toml: the card says why; ⏎ fills `! tg allow add` in the prompt and starts nothing; it never runs it', async ($, on) => {
+  const adds = (seen: World) => seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add').map(one => one.argv)
+
+  test('a 4 ⏎ outside allow.toml asks in the engine\'s dialog, No first, naming the exact command; Yes runs that argv once, logs it in Activity, and auto starts (§9 decision 1, amended)', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const seen = world(on, { allow: [] })
-    const { ui, filled } = await openCard($, on, clock)
+    const seen = world(on, { allow: [], ask: 'Yes, add it' })
+    const { ui } = await openCard($, on, clock)
     expect((await ui.find({ key: 'ap:level:auto' }))?.text).toContain('needs allow.toml · ')
     await ui.press({ key: 'ap:level:auto' })
     expect(await ui.find({ type: 'Text', text: '✗ Dev Team is not in allow.toml, and auto sends alone' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '⏎ puts  tg allow add 1002 --yes  in your prompt' })).toBeDefined()
-    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ allow in the prompt…')
+    expect(await ui.find({ type: 'Text', text: '⏎ asks you, and your Yes adds 1002 with tg allow add' })).toBeDefined()
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ add to allow.toml…')
     await ui.press({ key: 'key:start' })
     await clock.settle()
-    expect(filled).toEqual(['tg allow add 1002 --yes'])
-    expect(await ui.find({ type: 'Text', text: 'tg allow add 1002 --yes is in your prompt: Esc, ctrl+a, then ! and Enter run it in the shell; this card notices.' })).toBeDefined()
+    // The argv is built once: the dialog shows it verbatim, and it is what runs.
+    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ?', options: ['No', 'Yes, add it'] }])
+    expect(adds(seen)).toEqual([['tg', 'allow', 'add', '1002', '--yes']])
+    // Read again after the add, then straight on into the level: the card closes and the watch starts.
+    expect(seen.runs.at(seen.runs.findIndex(one => one.argv[2] === 'add') + 1)?.argv).toEqual(['tg', 'allow', 'list', '--json'])
+    expect(await ui.find({ key: 'ap:card' })).toBeUndefined()
+    expect(seen.children).toHaveLength(1)
+    expect(seen.toasts.at(-1)).toBe('tg: ⟳ auto on for Dev Team. 0 or /tg stop stops every chat.')
+    // The audit trail, now that no `!` row shows the add.
+    await ui.press({ key: 'key:activity' })
+    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⟳ Dev Team · allow.toml \+ Dev Team \(1002\), your Yes$/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a Yes for a chat the card no longer shows runs nothing: the answer was for the chat captured at ⏎', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    let ui: Awaited<ReturnType<typeof openCard>>['ui'] | null = null
+    const seen = world(on, {
+      allow: [],
+      ask: 'Yes, add it',
+      whileAsked: async () => {
+        // While the dialog is up, the card goes to another chat (@example_bot's).
+        await ui?.press({ key: 'key:back' })
+        await ui?.press({ key: 'key:up' })
+        await ui?.press({ key: 'key:agent' })
+      },
+    })
+    ui = (await openCard($, on, clock)).ui
+    await ui.press({ key: 'ap:level:auto' })
+    await ui.press({ key: 'key:start' })
+    await clock.settle()
+    expect(seen.questions).toHaveLength(1)
+    expect((await ui.find({ key: 'header' }))?.text).toContain('agent for @example_bot')
+    expect(adds(seen)).toEqual([])
     expect(seen.children).toHaveLength(0)
-    // allow.toml stays the human's: tg allow add never runs from the pane.
-    expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add')).toEqual([])
+    await ui.unmount()
+  })
+
+  test('tg refuses the add (readonly = true): its refusal shows and nothing starts', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [], ask: 'Yes, add it', allowAdd: () => run(1, '', 'error: readonly = true in config.toml: every write is refused\n') })
+    const { ui } = await openCard($, on, clock)
+    await ui.press({ key: 'ap:level:auto' })
+    await ui.press({ key: 'key:start' })
+    await clock.settle()
+    expect(adds(seen)).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: /readonly = true in config.toml: every write is refused/ })).toBeDefined()
+    expect(seen.children).toHaveLength(0)
+    await ui.unmount()
+  })
+
+  test('the add ran but the list still lacks the chat: nothing starts, and the card says so', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [], ask: 'Yes, add it', allowAdd: () => run(0, '+ Dev Team') })
+    const { ui } = await openCard($, on, clock)
+    await ui.press({ key: 'ap:level:auto' })
+    await ui.press({ key: 'key:start' })
+    await clock.settle()
+    expect(adds(seen)).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: 'tg allow add ran, but tg allow list does not show 1002: nothing started.' })).toBeDefined()
+    expect(seen.children).toHaveLength(0)
+    // One question only: the card does not ask again by itself.
+    expect(seen.questions).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test("only the card's ⏎ raises the dialog: an auto reply outside allow.toml, a draft sent from the band and /tg stop never ask, and never add", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [GROUP], ask: 'Yes, add it', send: ran => (ran.argv.includes('--yes') ? json({ sent: [message(950, ran.stdin ?? '', { out: true })], replies: [] }) : run(7, '', 'error: 1002 is not in the allowlist; pass --yes\n')) })
+    const { child } = await handOver($, clock, seen, '3')
+    // allow.toml loses Dev Team behind the card's back: auto's send is refused and becomes a draft.
+    seen.history.length = 0
+    watchMessage(child, message(500, 'is it merged?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    await band.press({ key: 'ap:draft:send' })
+    await $.command.run(tgCommand('stop'))
+    expect(seen.questions).toEqual([])
+    expect(adds(seen)).toEqual([])
+    await band.unmount()
+  })
+
+  for (const ask of ['No', 'dismiss'] as const) {
+    test(`a 4 ⏎ outside allow.toml, the dialog ${ask === 'No' ? 'answered No' : 'dismissed (as under -p, where ask rejects)'}: nothing runs, nothing starts`, async ($, on) => {
+      const clock = mock.clock(on, { now: NOW })
+      const seen = world(on, { allow: [], ask })
+      const { ui } = await openCard($, on, clock)
+      await ui.press({ key: 'ap:level:auto' })
+      await ui.press({ key: 'key:start' })
+      await clock.settle()
+      expect(seen.questions).toHaveLength(1)
+      expect(adds(seen)).toEqual([])
+      expect(seen.children).toHaveLength(0)
+      expect((await ui.find({ key: 'ap:card' }))).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^Not added: .*Dev Team stays out of allow.toml\.$/ })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+
+  test('allow.toml grows only on the dialog\'s Yes: draft never asks, and an allowed chat is never asked', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [], ask: 'Yes, add it' })
+    const { ui } = await openCard($, on, clock)
+    await ui.press({ key: 'ap:level:draft' })
+    await ui.press({ key: 'key:start' })
+    await clock.settle()
+    expect(seen.questions).toEqual([])
+    expect(adds(seen)).toEqual([])
+    expect(seen.children).toHaveLength(1)
     await ui.unmount()
   })
 
@@ -398,7 +520,7 @@ describe('auto', () => {
     const { ui } = await openCard($, on, clock)
     // The card opens on the stored level, and its read says no.
     expect((await ui.find({ key: 'ap:rung:auto' }))?.text).toMatch(/^▸ ⟳ auto/)
-    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ allow in the prompt…')
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ add to allow.toml…')
     allow.push(GROUP) // the owner runs `! tg allow add 1002 --yes` where the card cannot see it
     const reads = allowReads(seen)
     await ui.press({ key: 'key:start' })

@@ -86,7 +86,7 @@ export type CardAction =
   | { kind: 'stop' }
   /** Another rung runs here: ⏎ stops it and starts the picked one (one rung per chat, decision 2). */
   | { kind: 'switch'; from: ApRung }
-  /** auto or delegate on a chat outside allow.toml: ⏎ fills `! tg allow add PEER --yes` in the prompt (decision 1). */
+  /** auto or delegate on a chat outside allow.toml: ⏎ asks the owner in the engine's dialog, and their Yes adds it (decision 1, amended). */
   | { kind: 'allow' }
   /** The allowlist could not be read: ⏎, as `g`, reads it again. */
   | { kind: 'retry' }
@@ -135,7 +135,7 @@ export function cardAction(input: CardInput): CardAction {
   return running === null ? { kind: 'start' } : { kind: 'switch', from: running }
 }
 
-/** The bar's `⏎ …` for the action: `⏎ start draft`, `⏎ stop auto`, `⏎ allow in the prompt…`. */
+/** The bar's `⏎ …` for the action: `⏎ start draft`, `⏎ stop auto`, `⏎ add to allow.toml…`. */
 export function actionLabel(action: CardAction, pick: ApRung, step: CardStep): string {
   const name = RUNG_NAME[pick]
   switch (action.kind) {
@@ -147,7 +147,7 @@ export function actionLabel(action: CardAction, pick: ApRung, step: CardStep): s
     case 'switch':
       return `switch to ${name}`
     case 'allow':
-      return 'allow in the prompt…'
+      return 'add to allow.toml…'
     case 'retry':
       return 'read allow.toml again'
     case 'reading':
@@ -162,17 +162,28 @@ export function actionLabel(action: CardAction, pick: ApRung, step: CardStep): s
 }
 
 /**
- * What ⏎ puts in the prompt: the human runs it, and allow.toml stays theirs
- * (decision 1). Without its `!`: a plugin's fill cannot turn the box to shell
- * mode, and a filled `! tg …` goes to the model as a prompt (seen live on
- * 2.1.296); `!` typed at the start of the box does turn it (ctrl+a, then !).
+ * §9 decision 1 as amended by the owner: ⏎ asks in the engine's own dialog,
+ * No listed first (a stray Enter is a no), and only the owner's Yes there runs
+ * `tg allow add PEER --yes`. A dismissal, any other answer and a `-p` run,
+ * where nobody can be asked, are a no: nothing runs.
  */
-export function allowCommand(arg: string): string {
-  return `tg allow add ${arg} --yes`
+export const ALLOW_NO = 'No'
+export const ALLOW_YES = 'Yes, add it'
+
+/** What a Yes runs: tg's own command, the only writer of allow.toml. Built once; the dialog shows this very argv. */
+export function allowArgv(arg: string): readonly string[] {
+  return ['tg', 'allow', 'add', arg, '--yes']
 }
 
-/** How the owner runs what ⏎ put in the prompt. */
-export const ALLOW_KEYS = 'Esc, ctrl+a, then ! and Enter run it'
+/** The dialog's question: the exact command a Yes runs, verbatim (§9 decision 1). */
+export function allowQuestion(label: string, rung: ApRung, argv: readonly string[]): string {
+  return `${RUNG_NAME[rung]} sends in ${label} without you, so ${label} must be in allow.toml. Run  ${argv.join(' ')}  ?`
+}
+
+/** Activity's line for the add: the audit trail of who changed allow.toml. */
+export function allowedLine(label: string, arg: string): string {
+  return `allow.toml + ${label} (${arg}), your Yes`
+}
 
 /** The rung a chat runs: a follow (pin) or the autopilot's level; one at most (decision 2). */
 export function runningRung(isFollowed: boolean, level: ApRung | null): ApRung | null {

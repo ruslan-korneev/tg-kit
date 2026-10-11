@@ -72,7 +72,7 @@ export type ForYouRow = 'chat' | 'draft' | 'reply' | 'undo'
 /** The agent card while it is up (§5.4, §5.5): its step, and what ⏎ does now. */
 export type CardFacts = {
   step: CardStep
-  /** The bar's `⏎ …` (`start draft`, `stop auto`, `allow in the prompt…`, `done`); null where ⏎ has nothing to do. */
+  /** The bar's `⏎ …` (`start draft`, `stop auto`, `add to allow.toml…`, `done`); null where ⏎ has nothing to do. */
   enter: string | null
   /** delegate is picked: `o` opens limits and the safety settings (the danger zone). */
   isDelegate: boolean

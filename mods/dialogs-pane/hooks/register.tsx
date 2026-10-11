@@ -2849,14 +2849,17 @@ async function drawBottestDiff($: $, els: Els, width: number, rows: number): Pro
 // off`), "stop all" (0).
 import type { PluginOptions } from 'claude-code'
 
-import type { ApDialog, ApDraft, ApOutcome, ApPhase, ApRung, ApTopic, ApUndo, ApView, Autopilot, CardStep, DraftCheck } from '../types'
+import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApRung, ApTopic, ApUndo, ApView, Autopilot, CardStep, DraftCheck } from '../types'
 import { CardLadder, CardOptions, cardChip } from './autopilot/components'
 import { AP_LEVELS, LEVEL_GLYPH, defaultDialog, parseDialogs as parseApDialogs, parseQuiet, rateText, toggleTopic } from './autopilot/config'
 import {
-  ALLOW_KEYS,
+  ALLOW_NO,
+  ALLOW_YES,
   RUNG_GLYPH,
   RUNG_NAME,
-  allowCommand,
+  allowArgv,
+  allowQuestion,
+  allowedLine,
   actionLabel,
   cardAction,
   firstPick,
@@ -2894,16 +2897,15 @@ let speakerModel = SPEAKER_MODEL
 
 /**
  * The allowlist is read again after each `!` command the owner runs (§5.4, T3):
- * the card's `allow in the prompt…` puts `! tg allow add` there, and the card
- * shows the chat in allow.toml as soon as it ran. Only once the pane has read
- * it at all, so a session that never opens the pane runs no tg for it.
+ * one who adds a chat by hand (`! tg allow add PEER`) sees it in the card at
+ * once. Only once the pane has read it at all, so a session that never opens
+ * the pane runs no tg for it.
  */
 function registerAutopilot(on: On): void {
   on('session.append', async ($, e, next) => {
     const done = await next(e)
     if (isShellOutput(e.message) && (await read($, bottest)).allow.status !== 'idle') {
-      // The card's "is in your prompt" notice has done its job once the command ran.
-      Promise.all([loadAllow($), apNotice($, null)]).catch(() => {
+      loadAllow($).catch(() => {
         // loadAllow records its own failure, and the card shows it (§7.4).
       })
     }
@@ -3734,10 +3736,11 @@ async function apCardEnter($: $): Promise<void> {
       if (view.step === 'warning') await dgEdit($, peer.id, dg => ({ ...dg, isWarned: true })) // ── delegate ── the owner read the warning
       return apStep($, 'grant')
     case 'allow': {
-      // allow.toml stays the human's (decision 1): the command waits in the prompt for them to run.
-      const command = allowCommand(peer.arg)
-      const filled = await $.prompt.fill({ text: command })
-      return apNotice($, filled.isFilled ? `${command} is in your prompt: ${ALLOW_KEYS} in the shell; this card notices.` : `Run ! ${command} in the prompt; this card notices.`)
+      if (!(await apAskAllow($, peer, view.pick))) return
+      // The chat is in allow.toml now: ⏎ goes straight on to the level (start, switch, or delegate's guard).
+      const next = await apCardActionNow($, view, peer)
+      if (next.kind === 'allow') return apNotice($, `tg allow add ran, but tg allow list does not show ${peer.arg}: nothing started.`)
+      return apCardEnter($)
     }
     case 'guard':
       return apNotice($, `Not started: ${await dgGuardText($)}`)
@@ -3755,6 +3758,51 @@ async function apCardEnter($: $): Promise<void> {
       return refreshStatus($)
     }
   }
+}
+
+/**
+ * §9 decision 1 as amended by the owner: the chat goes into allow.toml only
+ * on the owner's explicit Yes in the engine's dialog, raised by the card's ⏎
+ * alone (No listed first). The argv is built once, shown verbatim and run as
+ * shown. A dismissal, a timeout, any other answer and a `-p` run (ask rejects:
+ * nobody to ask) run nothing, and so does a Yes once the card shows another
+ * chat (the answer was for the chat captured at ⏎). After the add the list
+ * is read again; the level starts only if the chat is listed then. Answers
+ * whether the chat was added.
+ */
+async function apAskAllow($: $, peer: PeerRef, rung: ApRung): Promise<boolean> {
+  const argv = allowArgv(peer.arg)
+  let answer: string
+  try {
+    answer = await $.ui.ask(allowQuestion(peer.label, rung, argv), { options: [ALLOW_NO, ALLOW_YES], header: 'allow.toml' })
+  } catch {
+    // Dismissed, timed out, or a -p run: no answer is a no.
+    await apNotice($, `Not added: nobody said yes, so ${peer.label} stays out of allow.toml.`)
+    return false
+  }
+  const view = (await read($, autopilot)).view
+  if (view.kind !== 'card' || view.dialogId !== peer.id) return false
+  if (answer !== ALLOW_YES) {
+    await apNotice($, `Not added: ${peer.label} stays out of allow.toml.`)
+    return false
+  }
+  let ran: ProcessRunResult
+  try {
+    ran = await $.process.run(argv, { timeoutMs: TG_TIMEOUT_MS })
+  } catch (error) {
+    await apNotice($, `${GLYPH.error} tg allow add did not run: ${reasonOf(error)}`)
+    return false
+  }
+  if (ran.exitCode !== 0) {
+    // tg's own refusal (`readonly = true` among them), as it says it.
+    await apNotice($, `${GLYPH.error} ${failureText(failureOf(ran.exitCode, ran.stderr), await $.clock.now())}`)
+    return false
+  }
+  const level: ApLevel = rung === 'follow' ? 'auto' : rung
+  await apLog($, { at: await $.clock.now(), peer, level, incoming: [], reply: argv.join(' '), confidence: null, topics: [], checks: [], outcome: { kind: 'allowed', line: allowedLine(peer.label, peer.arg) }, undo: null })
+  await apNotice($, null)
+  await loadAllow($)
+  return true
 }
 
 /** Stops whatever rung runs in the chat: its follow, or its autopilot (and with it its Worker, apUnlisten → dgStopTasksOf). */

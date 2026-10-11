@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { ApRung } from '../../types'
 import { CHAT_KINDS, KEYS, exists, keyDef, NO_FACTS } from '../ui/keys'
-import { actionLabel, allowCommand, cardAction, firstPick, ladderFor, rungBlock, runningRung, sendsAlone, type AllowView, type CardInput } from './ladder'
+import { actionLabel, allowArgv, allowQuestion, cardAction, firstPick, ladderFor, rungBlock, runningRung, sendsAlone, type AllowView, type CardInput } from './ladder'
 
 const ALLOWED: AllowView = { kind: 'ok', isAllowed: true }
 const OUTSIDE: AllowView = { kind: 'ok', isAllowed: false }
@@ -39,7 +39,8 @@ describe('what ⏎ does on the card', () => {
     expect(cardAction(input({ pick: 'auto', allow: OUTSIDE }))).toEqual({ kind: 'allow' })
     expect(cardAction(input({ step: 'grant', pick: 'delegate', allow: OUTSIDE }))).toEqual({ kind: 'allow' })
     expect(cardAction(input({ pick: 'auto' }))).toEqual({ kind: 'start' })
-    expect(allowCommand('1004')).toBe('tg allow add 1004 --yes')
+    expect(allowArgv('1004')).toEqual(['tg', 'allow', 'add', '1004', '--yes'])
+    expect(allowQuestion('Contact A', 'auto', allowArgv('1004'))).toContain('Run  tg allow add 1004 --yes  ?')
   })
 
   test('a read of allow.toml that failed is a retry, never "not in allow.toml" (§7.4); one on its way waits', () => {

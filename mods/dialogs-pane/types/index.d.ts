@@ -456,6 +456,8 @@ export type ApOutcome =
   | { kind: 'listened' }
   | { kind: 'skipped'; reason: string }
   | { kind: 'failed'; reason: string }
+  // The owner said Yes in the card's dialog, and `tg allow add` put the chat in allow.toml (§9 decision 1, amended).
+  | { kind: 'allowed'; line: string }
   // ── delegate ── a hard stop met: asked (yes / no, and who said it) or skipped.
   | { kind: 'stop'; stops: DgStop[]; what: string; answer: 'yes' | 'no' | 'skipped'; why: string }
 

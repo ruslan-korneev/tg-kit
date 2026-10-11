@@ -13,7 +13,7 @@ import type { Els } from '../ui/components'
 import type { ChatKind } from '../ui/keys'
 import { GLYPH, TOKEN, oneLine } from '../ui/model'
 import { AP_TOPICS, TOPIC_LABEL, clockText, quietText, rateText } from './config'
-import { ALLOW_KEYS, RUNG_GLYPH, RUNG_NAME, allowCommand, readOnlyKindText, rungBlock, rungDigit, rungWhat, type AllowView } from './ladder'
+import { RUNG_GLYPH, RUNG_NAME, readOnlyKindText, rungBlock, rungDigit, rungWhat, type AllowView } from './ladder'
 
 /** §7.3: cards align their labels in a 7-column left column (brief, limits, asks, writes, grant, stops, guard). */
 export const LABEL_COLUMN = 7
@@ -68,8 +68,7 @@ export function writesRows(els: Els, props: { label: string; arg: string; rung: 
         ? [Row(els, 'writes', `${GLYPH.done} in allow.toml`, TOKEN.ok)]
         : [
             Row(els, 'writes', `✗ ${props.label} is not in allow.toml, and ${RUNG_NAME[rung]} sends alone`, TOKEN.warn),
-            Row(els, '', `⏎ puts  ${allowCommand(props.arg)}  in your prompt`),
-            Row(els, '', `(${ALLOW_KEYS} in the shell; this card notices)`),
+            Row(els, '', `⏎ asks you, and your Yes adds ${props.arg} with tg allow add`),
           ]
   }
 }

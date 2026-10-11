@@ -85,7 +85,7 @@ function message(id: number, text: string, over: Partial<TgMessage> = {}): TgMes
 type Child = { argv: readonly string[]; line: (value: unknown) => void; isKilled: boolean }
 type Ran = { argv: readonly string[]; stdin?: string }
 /** What the engine's dialog answers: a label, or a dismissal. */
-type Dialog = 'Yes, allow it' | 'No' | 'dismiss'
+type Dialog = 'Yes, allow it' | 'Yes, add it' | 'No' | 'dismiss'
 
 type World = {
   runs: Ran[]
@@ -174,6 +174,10 @@ function world(
     if (cmd === 'dialogs') return { value: json(CHATS) }
     if (cmd === 'folders') return { value: folderRun(e.argv, json(CHATS)) }
     if (cmd === 'read') return { value: json(seen.history) }
+    if (cmd === 'allow' && e.argv[2] === 'add') {
+      options.allow?.push(Number(e.argv[3]))
+      return { value: json([{ id: Number(e.argv[3]) }]) }
+    }
     if (cmd === 'allow') return { value: json((options.allow ?? [PERSON]).map(id => ({ id }))) }
     // The guard's dry run, as a draft lands (§8 T3): the owner's own write passes --yes (decision 9).
     if (cmd === 'send' && e.argv.includes('--dry-run')) return { value: json({ action: 'send', target: { id: Number(e.argv[2]) }, steps: [], guard: { allowed: true, reason: e.argv.includes('--yes') ? 'confirmed with --yes' : 'allowlisted' } }) }
@@ -385,14 +389,10 @@ async function openCard($: Engine, clock: MockClock) {
 }
 
 describe('the card', () => {
-  test('5 is listed in a person chat; outside allow.toml it is dim with why, and ⏎ on the grant puts the allow in the prompt, starting nothing', WITH_GUARD, async ($, on) => {
+  test('5 is listed in a person chat; outside allow.toml it is dim with why; ⏎ on the grant asks, and the owner\'s Yes adds the chat and starts delegate', WITH_GUARD, async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [] })
-    const filled: string[] = []
-    on('prompt.fill', (_$, e) => {
-      filled.push(e.text)
-      return { isFilled: true }
-    })
+    seen.dialog = 'Yes, add it'
     const ui = await openCard($, clock)
     expect((await ui.find({ key: 'ap:level:delegate' }))?.text).toContain('↯ delegate')
     expect((await ui.find({ key: 'ap:level:delegate' }))?.props.hotkey).toBe('5')
@@ -400,10 +400,26 @@ describe('the card', () => {
     await ui.press({ key: 'ap:level:delegate' })
     await ui.press({ key: 'key:start:warning' })
     expect(await ui.find({ type: 'Text', text: '✗ Contact B is not in allow.toml, and delegate sends alone' })).toBeDefined()
-    expect((await ui.find({ key: 'key:start:grant' }))?.text).toBe('⏎ allow in the prompt…')
+    expect((await ui.find({ key: 'key:start:grant' }))?.text).toBe('⏎ add to allow.toml…')
     await ui.press({ key: 'key:start:grant' })
     await clock.settle()
-    expect(filled).toEqual(['tg allow add 1007 --yes'])
+    expect(seen.questions).toEqual(['delegate sends in Contact B without you, so Contact B must be in allow.toml. Run  tg allow add 1007 --yes  ?'])
+    expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add').map(one => one.argv)).toEqual([['tg', 'allow', 'add', '1007', '--yes']])
+    expect(seen.children).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('the grant\'s question answered No runs nothing and starts nothing', WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [] })
+    seen.dialog = 'No'
+    const ui = await openCard($, clock)
+    await ui.press({ key: 'ap:level:delegate' })
+    await ui.press({ key: 'key:start:warning' })
+    await ui.press({ key: 'key:start:grant' })
+    await clock.settle()
+    expect(seen.questions).toHaveLength(1)
+    expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add')).toEqual([])
     expect(seen.children).toHaveLength(0)
     await ui.unmount()
   })
