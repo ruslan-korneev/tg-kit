@@ -454,13 +454,18 @@ function runsTg(simple: Simple): boolean {
 
 // --- links: the grant reads paths without following them (paths.ts), so none may lead out ---
 
+/** A cp that makes links instead of copies: `-s`/`--symbolic-link`, `-l`/`--link`. */
+function isLinkingCp(simple: Simple): boolean {
+  return simple.slice(1).some(word => word === '--symbolic-link' || word === '--link' || /^-[A-Za-z]*[sl]/.test(word))
+}
+
 /**
- * The first place an `ln` puts a link or points one that is outside the
+ * The first place an `ln` (or a linking cp) puts a link or points one that is outside the
  * worktrees, or cannot be told; null when every one is inside. A symbolic
  * link's target is read from where the link lies; a hard link's from the cwd.
  */
 function linkOutside(simple: Simple, cwds: readonly string[], scope: Scope, reading: Reading): string | null {
-  const isSymbolic = simple.some(word => word === '--symbolic' || /^-[A-Za-z]*s/.test(word))
+  const isSymbolic = simple.some(word => word === '--symbolic' || word === '--symbolic-link' || /^-[A-Za-z]*s/.test(word))
   // `-t DIR`, `-stDIR`, `--target-directory[=]DIR`: the directory the links go in.
   const dirs = simple.flatMap((word, i) => {
     if (/^-[A-Za-z]*t$/.test(word) || word === '--target-directory') return [simple[i + 1] ?? '']
@@ -554,7 +559,7 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
       }
     }
     // Links in either mode: a link inside the worktree that leads out would pass every later check.
-    if (name === 'ln' || name === 'link') {
+    if (name === 'ln' || name === 'link' || (name === 'cp' && isLinkingCp(simple))) {
       const outside = linkOutside(simple, cwds[index] ?? [start], scope, reading)
       if (outside !== null) return refuse(`${name} ${outside}: a link that lies or points outside your worktree, or one the grant cannot resolve; the grant does not follow links`)
     }

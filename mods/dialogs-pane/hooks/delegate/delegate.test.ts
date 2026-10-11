@@ -275,6 +275,19 @@ describe('the grant', () => {
     }
   })
 
+  // The review's LOW, e0ece2b: cp that makes links falls under the link rule, in both modes.
+  test('links: a linking cp outside the worktree is refused in both modes; inside it, and a plain cp, are as before', () => {
+    for (const command of ['cp -s ~/.zshrc x', 'cp -l ~/.zshrc x', 'cp --symbolic-link /etc/hosts x', 'cp --link /home/me/.ssh/id_ed25519 key', 'cp -s ./a /tmp/x', 'cp -sft /tmp ./a', 'cp -rs ../../../../code/app src']) {
+      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, false])
+    }
+    for (const command of ['cp -s ./a ./b', 'cp -l a b', 'cp --link a sub/b', 'cp a b', 'cp -r src dst']) {
+      for (const g of both) expect([command, g.commands, ok('Bash', { command }, g)]).toEqual([command, g.commands, true])
+    }
+    // A plain cp is the copy it was: outside the worktree, refused under checks and the permission rules' call under any.
+    expect(ok('Bash', { command: 'cp /etc/hosts x' })).toBe(false)
+    expect(ok('Bash', { command: 'cp /etc/hosts x' }, grant({ commands: 'any' }))).toBe(true)
+  })
+
   test("decision 11: the Worker's own worktree under tg-kit's config still passes, in both modes; tg named as data is no run", () => {
     for (const command of [
       `cat ${WT}/README.md`, `echo x > ${WT}/out.txt`, `ls ~/.config/tg-kit/worktrees/app-task-1/src`, `uv run pytest > ${WT}/log.txt 2>&1`,
