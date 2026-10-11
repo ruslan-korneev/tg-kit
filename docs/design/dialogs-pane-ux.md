@@ -1085,7 +1085,10 @@ refuses both, as it refuses a path into the owner's checkout. It finds a path wh
 names one, with or without a space after `>`, and reads what `sh -c`, `eval`, `find -exec`,
 `git rebase -x`, `xargs` and a launcher (`uv run`, `uvx`, `pipx run`) run. It lets awk and sed run
 only when it can read that their program neither writes nor runs, and refuses what it cannot read
-(an unknown command, an expansion, a here-doc) rather than guess.
+(an unknown command, an expansion, a here-doc) rather than guess. An explicit shell or `eval`
+(`sh -c`, `bash -c`, `eval …`) is itself refused — a check is run directly, never wrapped — so its
+own redirects cannot slip a write past the path rules; its contents are still read for tg and the
+fences. A shell as a `find -exec` action is refused the same way (fail closed).
 
 ```text
 Flow 5 · Wide · 5: delegate asks once per chat
@@ -1899,11 +1902,15 @@ Decided by the owner during the build (2026-10-11):
     script, an encoded command or a program it writes, and four escapes in a row (tg and the
     config directory reached under `any` through launchers, `cd`, `--directory`, unknown
     variables) showed the reader will always trail the shell. Under `checks` the reader instead
-    fails closed: what it cannot read is refused, so the same analysis holds tight. The cost is
-    that a task needing a command outside the repo's checks cannot run it; the owner adds it to
-    the repo's checks, or does that step themselves. Rejected: keeping `any` with more patches, or
-    a `--dangerously-any` escape hatch — the kill switch and the hard stops already assume the
-    Worker cannot reach tg, and an escape hatch would quietly undo decision 11.
+    fails closed: what it cannot read is refused, so the same analysis holds tight. In that spirit,
+    an explicit shell or `eval` (`sh -c`, `bash -c`, `eval …`, and a shell as a `find -exec`
+    action) is itself refused — the Worker runs a check directly, never wrapped — so a shell's own
+    outer redirect cannot write past the path rules (the review's X6); the shell's contents are
+    still read for tg and the fences. The cost is that a task needing a command outside the repo's
+    checks cannot run it; the owner adds it to the repo's checks, or does that step themselves.
+    Rejected: keeping `any` with more patches, or a `--dangerously-any` escape hatch — the kill
+    switch and the hard stops already assume the Worker cannot reach tg, and an escape hatch would
+    quietly undo decision 11.
 
 ## 10. Rejected
 
