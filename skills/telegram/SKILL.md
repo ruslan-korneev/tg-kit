@@ -152,7 +152,8 @@ from X, `via @bot`, `✎` edited at some point (while waiting: `✎×N` = N edit
 pinned. `⏎` is tg's marker for a newline in the text, not a character the sender typed. Long
 text is cut at 300 characters with `(+N chars, tg msg PEER ID)`, so run `tg msg` for the full
 text. Output is plain whenever it is piped or captured, so an agent never sees colour codes; colour
-appears only on a human's terminal.
+appears only on a human's terminal. `tg themes` previews the colour themes for a human; pick
+one with `--theme NAME`, `TG_THEME` or `theme = "NAME"` in config.toml.
 
 ## Writing, and staying safe
 

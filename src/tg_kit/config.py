@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tg_kit.errors import UsageError
+from tg_kit.style import themes
 
 __all__ = ["Config", "config_dir", "load_config"]
 
@@ -28,6 +29,7 @@ class Config:
     default_account: str | None = None
     readonly: bool = False
     flood_sleep_threshold: int = DEFAULT_FLOOD_SLEEP_THRESHOLD
+    theme: str | None = None  # a name from themes.json; --theme and TG_THEME beat it
 
 
 def config_dir() -> Path:
@@ -37,7 +39,7 @@ def config_dir() -> Path:
     return Path.home() / ".config" / "tg-kit"
 
 
-_TOP_KEYS = {"default_account", "readonly", "write", "flood_sleep_threshold"}
+_TOP_KEYS = {"default_account", "readonly", "write", "flood_sleep_threshold", "theme"}
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -74,8 +76,20 @@ def _parse(raw: dict[str, object], path: Path) -> Config:
     if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 0:
         msg = f"{path}: flood_sleep_threshold must be a non-negative integer (seconds)"
         raise UsageError(msg)
+    theme = _theme(raw.get("theme"), path)
     return Config(
         default_account=default_account,
         readonly=readonly,
         flood_sleep_threshold=threshold,
+        theme=theme,
     )
+
+
+def _theme(value: object, path: Path) -> str | None:
+    if value is None:
+        return None
+    name = value.strip().lower() if isinstance(value, str) else None
+    if name not in themes():
+        msg = f"{path}: theme {value!r} is not a theme"
+        raise UsageError(msg, hint=f"use one of: {', '.join(themes())}")
+    return name

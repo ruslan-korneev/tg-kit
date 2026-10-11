@@ -184,7 +184,9 @@ def test_owner_example_line_colours_each_token() -> None:
 
 
 def test_truecolor_uses_the_mocha_hex() -> None:
-    assert Style("truecolor")("accent", "me") == "\x1b[38;2;203;166;247mme\x1b[0m"
+    assert (
+        Style("truecolor", "catppuccin-mocha")("accent", "me") == "\x1b[38;2;203;166;247mme\x1b[0m"
+    )
 
 
 @pytest.mark.parametrize(
@@ -258,7 +260,7 @@ def tg(tmp_path: Path, *args: str, **env: str) -> subprocess.CompletedProcess[st
     base = {
         k: v
         for k, v in os.environ.items()
-        if k not in {"NO_COLOR", "FORCE_COLOR", "TG_COLOR", "COLORTERM"}
+        if k not in {"NO_COLOR", "FORCE_COLOR", "TG_COLOR", "TG_THEME", "COLORTERM"}
     }
     return subprocess.run(  # noqa: S603 — fixed argv: this interpreter + the test's own args
         [sys.executable, "-c", "from tg_kit.cli import main; main()", *args],
