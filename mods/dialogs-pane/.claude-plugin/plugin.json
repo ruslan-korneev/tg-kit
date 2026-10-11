@@ -16,6 +16,18 @@
       "type": "string",
       "multiple": true,
       "default": []
+    },
+    "palette": {
+      "title": "Palette",
+      "description": "The pane's colours: theme follows your Claude Code theme; mocha is Catppuccin Mocha for a dark terminal; mocha256 is mocha for tmux (256 colours); ansi is for a terminal with 16 colours",
+      "type": "string",
+      "options": [
+        "theme",
+        "mocha",
+        "mocha256",
+        "ansi"
+      ],
+      "default": "theme"
     }
   }
 }

@@ -81,6 +81,7 @@ import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, thr
 import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, chipsColumn, chipsTail, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
+import { PALETTES, readPalette, type Colors } from './ui/palette'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
@@ -177,7 +178,14 @@ const band = atom({ plugin: 'dialogs-pane', key: 'band' } as const, null)
 const queue = atom({ plugin: 'dialogs-pane', key: 'queue' } as const, { at: null, dismissed: [], notified: [] })
 const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
 
+/**
+ * The mod option `palette` (§10.2), read at each load: what each role draws. A
+ * component takes it as an argument, beside the element table.
+ */
+let colors: Colors = PALETTES.theme
+
 export const register: Register = (on, options) => {
+  colors = PALETTES[readPalette(options.palette)]
   configureAutopilot(options) // ── autopilot ──
   registerAutopilot(on) // ── autopilot ──
   configureDelegate(options) // ── delegate ──
