@@ -2511,8 +2511,15 @@ location. Its parts:
 - `N UNREAD` (chats that are not muted, as §4.5 counts them);
 - `@N` (unread mentions), when no FOR YOU part shows them;
 - `N FOR YOU`;
-- `AUTOPILOT N CHATS`, in `held` when an agent holds something;
+- `AUTOPILOT N CHATS`, in `held` when an agent holds something: autopilot and delegate chats,
+  the same chats as the AUTOPILOT card's lanes;
+- `⌁ N`, dim and without a word: chats that follow into main (`p`). Appendix A's check still
+  reads `⌁1` here;
 - `◎ N NEW` (watched).
+
+v1's header chips move to the card they describe: `● rec 3` goes to the CHAT card's corner in
+`unread`, before `◎ watched`, and the agent card's `○ off` or `● draft · listening` goes to the
+AGENT card's corner.
 
 Zero parts are left out, and `…` ends the row while something loads. On an error the header reads
 `TG ⚠` in `unread`. Where the pane is now goes to the card titles (`CHATS  Work 15`, `○ Ivan
@@ -2557,10 +2564,24 @@ takes the lower part:
 - Its border is in the chat's kind role.
 - Message rows are §7.3's.
 
+Search and moves. With no strip there is no `s: search` Button above the list. `s` joins the
+dock's key line in Chats, as it already does inline, and a query shows in the CHATS title
+(`CHATS  "anna"`). `↑N` (moves that wait, §8 T9) leads the CHATS corner (`↑3 · 1-9 folders`).
+Over the Folders list or the For you view it rides the legend row's notice slot, as it does today.
+
+The top card. Chats draws CHATS. `y` draws `FOR YOU` (`mention`, no tabs), and the FOR YOU
+section is not drawn while that view is on top. `h` draws `FOLDERS` (`person`, no tabs).
+
 FOR YOU, AUTOPILOT and LOG fold while a chat is open. Their counts stay in the header, and what
 runs shows in the legend row. The card, the send sheet, Folders, the menu and Activity each take
-the same lower part as a card titled after them (`AGENT · Ivan Petrov`, `SEND · 1 message`,
-`FOLDERS`, `MENU`, `ACTIVITY`). Activity is the AUTOPILOT and LOG cards at full height, with the
+the same lower part as a card titled after them:
+
+- the agent card: `AGENT · Ivan Petrov`, with ` · options` or ` · ↯ delegate` on its steps;
+- the send sheet: `SEND · Ivan Petrov`;
+- its targets: `SEND TO · …`;
+- the rest: `INSPECT · …`, `DIFF · …`, `SUMMARY · …`, `ACTIVITY`, `MENU`.
+
+Inline, the one card carries the same titles, and Chats is `CHATS` with its tabs. Activity is the AUTOPILOT and LOG cards at full height, with the
 running rows as Buttons, as built.
 
 **Inline** (the main screen, up to 12 rows): the header, the view's one card, and the key line.
@@ -2595,8 +2616,10 @@ draws no ring stop, and the stops above the cursor keep their count (§4.3 rule 
 
 **The grey fill.** The owner saw the Pane's grey background run the full height, with the content
 stopping halfway. In flightdeck's screenshot the docked pane shows the same lighter fill, so the
-fill is most likely the engine's. P4 checks whether the mod can drop it. Either way, LOG grows to
-the bottom, so the fill never shows as an empty half.
+fill is most likely the engine's. P4 checks whether the mod can drop it. Either way, the last card
+drawn grows to the bottom: LOG when it shows, else AUTOPILOT, else CHATS. So the fill never shows
+as an empty half below a closed border. With no chat open, v1's "⏎ on a chat opens it here." line
+goes, and the sections take the lower part.
 
 ### 10.6 The AUTOPILOT card and the log
 
