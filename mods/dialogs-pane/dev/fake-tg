@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""A fake `tg` for live runs of the dialogs pane (docs/design/dialogs-pane-ux.md §8 T0a).
+
+Put this folder first on PATH, under the name `tg`:
+
+    mkdir -p "$LAB/bin" && ln -sf "$PWD/mods/dialogs-pane/dev/fake-tg" "$LAB/bin/tg"
+    PATH="$LAB/bin:$PATH" FAKE_TG_DIR="$LAB/state" claude --plugin-dir mods/dialogs-pane ...
+
+Placeholder chats and folders only (repo rule): nothing leaves the machine. It
+answers the calls the pane makes, with tg's JSON shapes (README "Output"):
+dialogs, read, msg, whoami, allow list, send (--dry-run too), press, delete,
+watch, folders [--counts | --chats], dialogs --folder. Its guard honours
+--yes as tg's does: a write to a chat outside ALLOW needs --yes (exit 7). A
+write that reaches BotFather exits 1 and is logged: the pane must refuse it
+before tg runs, as tg itself has no such rule.
+
+State lives in $FAKE_TG_DIR (default: $TMPDIR/fake-tg): calls.log has one line
+per call, and `tg watch` prints the lines appended to watch.jsonl, so a live
+event is `echo '{"event": "message", ...}' >> "$FAKE_TG_DIR/watch.jsonl"`.
+"""
+
+import json
+import os
+import sys
+import tempfile
+import time
+
+STATE = os.environ.get("FAKE_TG_DIR") or os.path.join(tempfile.gettempdir(), "fake-tg")
+os.makedirs(STATE, exist_ok=True)
+
+ME = {"id": 1003, "kind": "self", "username": None, "name": "Me"}
+BOT = {"id": 1001, "kind": "bot", "username": "example_bot", "name": "Example Bot"}
+MEMBER_1 = {"id": 2001, "kind": "user", "username": None, "name": "Member 1"}
+MEMBER_2 = {"id": 2002, "kind": "user", "username": None, "name": "Member 2"}
+CONTACT_A = {"id": 1004, "kind": "user", "username": None, "name": "Contact A"}
+CONTACT_B = {"id": 1005, "kind": "user", "username": None, "name": "Contact B"}
+CHANNEL = {"id": 1006, "kind": "channel", "username": None, "name": "Announcements"}
+FATHER = {"id": 1007, "kind": "bot", "username": "BotFather", "name": "BotFather"}
+
+DIALOGS = [
+    {"id": 1001, "kind": "bot", "title": "Example Bot", "username": "example_bot", "unread": 2,
+     "last_id": 677792, "last_date": "2026-10-10T21:03:00Z", "last_text": "Main menu"},
+    {"id": 1002, "kind": "supergroup", "title": "Dev Team", "username": None, "unread": 5,
+     "last_id": 500, "last_date": "2026-10-10T20:59:00Z", "last_text": "deploy is green"},
+    {"id": 1004, "kind": "user", "title": "Contact A", "username": None, "unread": 1,
+     "last_id": 92, "last_date": "2026-10-10T20:49:00Z", "last_text": "Can we call tomorrow at 10?"},
+    {"id": 1005, "kind": "user", "title": "Contact B", "username": None, "unread": 0,
+     "last_id": 41, "last_date": "2026-10-10T16:34:00Z", "last_text": "thanks!"},
+    {"id": 1007, "kind": "bot", "title": "BotFather", "username": "BotFather", "unread": 0,
+     "last_id": 3, "last_date": "2026-10-08T10:00:00Z", "last_text": "Done! Congratulations"},
+    {"id": 1006, "kind": "channel", "title": "Announcements", "username": None, "unread": 14,
+     "last_id": 7, "last_date": "2026-10-10T19:19:00Z", "last_text": "release 2.0 is out"},
+    {"id": 1003, "kind": "self", "title": "Saved Messages", "username": None, "unread": 0,
+     "last_id": 42, "last_date": "2026-10-09T08:20:00Z", "last_text": "note to self"},
+]
+EXTRA = {"pinned": False, "muted": False, "mentions": 0}
+FOLDERS = [
+    {"id": 2, "title": "Work", "kind": "folder", "chats": [1002, 1001, 1004]},
+    {"id": 3, "title": "Bots", "kind": "folder", "chats": [1001, 1007]},
+    {"id": 0, "title": "All chats", "kind": "all", "chats": [d["id"] for d in DIALOGS]},
+    {"id": 11, "title": "News", "kind": "shared", "chats": [1006]},
+]
+ALLOW = [1002]
+
+BUTTONS = [[{"row": 0, "col": 0, "type": "cb", "text": "Settings", "data_b64": "c2V0"},
+            {"row": 0, "col": 1, "type": "cb", "text": "Help", "data_b64": "aGVscA=="}]]
+RETRY = [[{"row": 0, "col": 0, "type": "cb", "text": "Retry", "data_b64": "cmV0cnk="},
+          {"row": 0, "col": 1, "type": "cb", "text": "Back", "data_b64": "YmFjaw=="}]]
+
+
+def msg(i, text, sender, chat, out=False, date="2026-10-10T21:00:00Z", buttons=(), reply_to=None):
+    return {"id": i, "chat_id": chat, "date": date, "sender": sender, "out": out, "text": text,
+            "reply_to": reply_to, "forward": None, "edited": None, "edits": 0, "pinned": False,
+            "service": None, "via_bot": None, "media": None, "keyboard": "inline" if buttons else None,
+            "buttons": list(buttons), "reactions": [], "links": []}
+
+
+THREADS = {
+    1001: [
+        msg(677788, "/start", ME, 1001, True, "2026-10-10T20:11:00Z"),
+        msg(677789, "Hi! I am Example Bot. Pick an option:", BOT, 1001, False, "2026-10-10T20:11:06Z", BUTTONS, 677788),
+        msg(677790, "/settings", ME, 1001, True, "2026-10-10T21:02:00Z"),
+        msg(677791, "⚠ Something went wrong", BOT, 1001, False, "2026-10-10T21:02:06Z", RETRY, 677790),
+        msg(677792, "Main menu", BOT, 1001, False, "2026-10-10T21:03:00Z", BUTTONS),
+    ],
+    1002: [
+        msg(495, "anyone looked at the flaky checkout test?", MEMBER_1, 1002, False, "2026-10-10T20:20:00Z"),
+        msg(496, "on it, will post a PR", MEMBER_2, 1002, False, "2026-10-10T20:22:00Z"),
+        msg(497, "thanks", ME, 1002, True, "2026-10-10T20:30:00Z"),
+        msg(498, "PR is up, needs one review", MEMBER_2, 1002, False, "2026-10-10T20:40:00Z"),
+        msg(499, "reviewing now", MEMBER_1, 1002, False, "2026-10-10T20:44:00Z"),
+        msg(500, "deploy is green", MEMBER_1, 1002, False, "2026-10-10T20:59:00Z"),
+    ],
+    1004: [
+        msg(90, "the draft is in the shared folder", ME, 1004, True, "2026-10-10T18:40:00Z"),
+        msg(91, "got it, reading", CONTACT_A, 1004, False, "2026-10-10T19:40:00Z"),
+        msg(92, "Can we call tomorrow at 10?", CONTACT_A, 1004, False, "2026-10-10T20:49:00Z"),
+    ],
+    1005: [msg(41, "thanks!", CONTACT_B, 1005, False, "2026-10-10T16:34:00Z")],
+    1006: [msg(7, "release 2.0 is out", CHANNEL, 1006, False, "2026-10-10T19:19:00Z")],
+    1007: [msg(3, "Done! Congratulations on your new bot.", FATHER, 1007, False, "2026-10-08T10:00:00Z", BUTTONS)],
+    1003: [msg(42, "note to self", ME, 1003, True, "2026-10-09T08:20:00Z")],
+}
+
+
+def peer_id(arg):
+    if arg == "me":
+        return 1003
+    for d in DIALOGS:
+        if arg.lstrip("@").lower() == (d["username"] or "").lower() or arg == str(d["id"]):
+            return d["id"]
+    return None
+
+
+def out(value, code=0):
+    print(json.dumps(value))
+    sys.exit(code)
+
+
+def fail(text, code):
+    print(f"error: {text}", file=sys.stderr)
+    sys.exit(code)
+
+
+def guard(argv, pid):
+    """tg's guard, as far as the pane meets it: allow.toml unless --yes.
+
+    tg has no BotFather rule: the pane refuses BotFather before tg runs. A write
+    that gets here is a pane bug, so the fake fails loudly instead of covering it.
+    """
+    if pid == 1007:
+        loud = "fake tg: a write reached BotFather; the pane must refuse it before tg runs"
+        with open(os.path.join(STATE, "calls.log"), "a") as log:
+            log.write(f"!! {loud}\n")
+        fail(loud, 1)
+    if pid not in ALLOW and "--yes" not in argv:
+        return {"allowed": False, "reason": "target is not in the allowlist"}
+    return {"allowed": True, "reason": "allowlisted" if pid in ALLOW else "confirmed with --yes"}
+
+
+def flag(argv, name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+def main(argv):
+    with open(os.path.join(STATE, "calls.log"), "a") as log:
+        log.write(" ".join(argv) + "\n")
+    cmd = argv[0] if argv else ""
+    if cmd == "whoami":
+        out(ME)
+    if cmd == "allow":
+        out([{"id": i} for i in ALLOW])
+    if cmd == "dialogs":
+        rows = [{**d, **EXTRA} for d in DIALOGS]
+        folder = flag(argv, "--folder")
+        if folder is not None:
+            match = [f for f in FOLDERS if str(f["id"]) == folder or f["title"] == folder]
+            if not match:
+                fail(f"no folder {folder}\n  fix: tg folders", 4)
+            rows = [r for i in match[0]["chats"] for r in rows if r["id"] == i]
+        out(rows[: int(flag(argv, "--limit", "50"))])
+    if cmd == "folders":
+        unread = lambda f: sum(1 for d in DIALOGS if d["id"] in f["chats"] and d["unread"] > 0)
+        listed = [{"id": f["id"], "title": f["title"], "kind": f["kind"]} for f in FOLDERS]
+        if "--chats" in argv:
+            out({"at": "2026-10-10T21:05:00+00:00", "scan": 500,
+                 "folders": [{**l, "unread": unread(f), "pinned": [], "chats": f["chats"]} for l, f in zip(listed, FOLDERS)],
+                 "dialogs": [{**d, **EXTRA} for d in DIALOGS]})
+        if "--counts" in argv:
+            out([{**l, "unread": unread(f)} for l, f in zip(listed, FOLDERS)])
+        out(listed)
+    pid = peer_id(argv[1]) if len(argv) > 1 else None
+    if cmd in ("read", "msg", "send", "press", "delete", "watch") and pid is None:
+        fail(f"no chat {argv[1] if len(argv) > 1 else ''}\n  fix: tg dialogs", 4)
+    if cmd == "read":
+        out(THREADS[pid][-int(flag(argv, "--limit", "30")):])
+    if cmd == "msg":
+        wanted = {int(a) for a in argv[2:] if a.isdigit()}
+        found = [m for m in THREADS[pid] if m["id"] in wanted]
+        if not found:
+            fail("message not found", 4)
+        out(found)
+    if cmd == "send":
+        verdict = guard(argv, pid)
+        if "--dry-run" in argv:
+            out({"action": "send", "target": {"id": pid}, "steps": [], "guard": verdict})
+        if not verdict["allowed"]:
+            fail(f"{verdict['reason']}; rerun with --yes only if the owner agreed\n  fix: tg allow add", 7)
+        text = sys.stdin.read()
+        sent = msg(int(time.time()) % 100000 + 700000, text, ME, pid, True)
+        replies = [msg(sent["id"] + 1, f"got: {text}", BOT, pid)] if pid == 1001 and "--wait" in argv else []
+        out({"sent": [sent], "replies": replies})
+    if cmd == "press":
+        verdict = guard(argv, pid)
+        if not verdict["allowed"]:
+            fail(f"{verdict['reason']}\n  fix: tg allow add", 7)
+        target = int(argv[2])
+        edited = msg(target, "Settings saved", BOT, pid, buttons=[[RETRY[0][1]]])
+        out({"button": BUTTONS[0][0], "answer": {"alert": None, "toast": "Saved", "url": None}, "replies": [edited]})
+    if cmd == "delete":
+        out({"deleted": [int(a) for a in argv[2:] if a.isdigit()]})
+    if cmd == "watch":
+        spool = os.path.join(STATE, "watch.jsonl")
+        open(spool, "a").close()
+        print(json.dumps({"event": "ready", "date": "2026-10-10T21:05:00Z", "peers": [pid]}), flush=True)
+        with open(spool) as lines:
+            lines.seek(0, os.SEEK_END)
+            while True:
+                line = lines.readline()
+                if line:
+                    event = json.loads(line)
+                    if event.get("chat_id", pid) == pid:
+                        print(line.strip(), flush=True)
+                else:
+                    time.sleep(0.2)
+    fail(f"fake tg does not answer: {' '.join(argv)}", 1)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

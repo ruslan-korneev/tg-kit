@@ -118,19 +118,24 @@ export type Load<T> =
   | { status: 'ok'; value: T }
   | { status: 'error'; failure: TgFailure; retryAt?: number }
 
-export type Mode = 'wide' | 'compact' | 'hidden'
+/** Open: the pane is up, laid out for where the engine seats it (dock or inline). Hidden: closed. */
+export type Mode = 'open' | 'hidden'
 export type Lens = 'all' | 'bots' | 'unread'
 
 /** The peer a thread is open on: `arg` is what tg is given (`@name` or the id). */
 export type PeerRef = { id: number; arg: string; label: string; kind: TgPeerKind }
 
 export type Nav = {
-  /** Compact shows one column: the dialogs or the open thread. */
+  /** The column the cursor is in; inline shows only that one. */
   view: 'dialogs' | 'thread'
   lens: Lens
   query: string
   dialogCursor: number
   messageCursor: number
+  /** `m`: the menu over the view. */
+  isMenuOpen: boolean
+  /** `s`: the search field is up. */
+  isSearching: boolean
 }
 
 export type Thread = { peer: PeerRef; load: Load<TgMessage[]> }
@@ -218,7 +223,7 @@ export type Recipient = { kind: 'main' } | ({ kind: 'agent' } & AgentRef) | { ki
 /** One recipient of a broadcast, with an intent of its own. */
 export type Leg = { to: Recipient; intent: RouteIntent }
 
-/** Where the tray's send goes: one recipient under the tray's intent, or a broadcast. */
+/** Where the picker's send goes: one recipient under the picker's intent, or a broadcast. */
 export type Route = { kind: 'one'; to: Recipient } | { kind: 'broadcast'; legs: Leg[] }
 
 /** `$.agent.list()` statuses folded into the radar's three. */
@@ -231,8 +236,9 @@ export type BroadcastRow = Leg & { isOn: boolean }
 /** What the pane draws over the dialogs and thread. */
 export type Overlay =
   | { kind: 'none' }
-  | { kind: 'picker' }
-  | { kind: 'broadcast'; rows: BroadcastRow[] }
+  /** ⏎ on a message: where to send `ids` (the marked set, or the cursor's message). */
+  | { kind: 'picker'; ids: number[] }
+  | { kind: 'broadcast'; rows: BroadcastRow[]; ids: number[] }
   | { kind: 'ledger'; cursor: number }
 
 /** Who a ledger entry went to; a spawned agent is known once it started. */
@@ -567,8 +573,6 @@ declare module 'claude-code' {
       route: Route
       intent: RouteIntent
       isRedacted: boolean
-      /** The tray lists what redaction masked. */
-      isMaskShown: boolean
       overlay: Overlay
       radar: RadarEntry[]
       /** Whether the main loop is in a turn: main's AgentChip in the route picker. */

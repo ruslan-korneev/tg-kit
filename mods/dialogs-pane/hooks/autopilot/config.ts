@@ -16,9 +16,6 @@ export const TOPIC_LABEL = {
   personal: 'personal data',
 } as const satisfies Record<ApTopic, string>
 
-/** The card's toggle key per topic: inside the card every letter is free. */
-export const TOPIC_KEY = { money: 'm', dates: 'd', promises: 'p', opinions: 'n', personal: 'i' } as const satisfies Record<ApTopic, string>
-
 /** Replies per hour, `-`/`+` in the card; Infinity stands for ∞ (stored as null). */
 const RATE_STEPS: readonly number[] = [1, 2, 3, 5, 10, 20, 30, 50, 100, 200, Infinity]
 /** The burst gap, in seconds. */

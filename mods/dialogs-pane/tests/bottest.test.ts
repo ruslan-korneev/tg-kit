@@ -97,7 +97,7 @@ describe('pressable buttons', () => {
     ])
     expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('Settings saved')
     expect(await ui.find({ key: 'btn:677791:0:0' })).toBeUndefined()
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toBe('toast: Saved')
+    expect((await ui.find({ key: 'notice' }))?.text).toBe('toast: Saved')
     await ui.unmount()
   })
 
@@ -108,7 +108,7 @@ describe('pressable buttons', () => {
     expect((await ui.find({ key: 'chips:677791' }))?.text).not.toContain('ro')
     await ui.press({ key: 'btn:677791:0:0' })
     await clock.settle()
-    const composing = ui.press({ key: 'bt:compose' })
+    const composing = ui.press({ key: 'key:write' })
     await clock.advance(50)
     await composing
     await ui.input({ key: 'bt:send', text: '/start' })
@@ -120,7 +120,7 @@ describe('pressable buttons', () => {
     await ui.unmount()
   })
 
-  test('BotFather is read-only even when allowlisted: chips dim with ro, a press and n run nothing', async ($, on) => {
+  test('BotFather is read-only even when allowlisted: chips dim with ro, a press runs nothing, n is not there', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const dialogs = DIALOGS.map(one => (one.id === BOT_ID ? { ...one, username: 'BotFather', title: 'BotFather' } : one))
     const { runs } = world(on, { dialogs })
@@ -128,14 +128,10 @@ describe('pressable buttons', () => {
     expect((await ui.find({ key: 'chips:677791' }))?.text).toContain('ro')
     await ui.press({ key: 'btn:677791:0:0' })
     await clock.settle()
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('BotFather is read-only')
-    const composing = ui.press({ key: 'bt:compose' })
-    await clock.advance(50)
-    await composing
-    await ui.input({ key: 'bt:send', text: '/newbot' })
-    await clock.settle()
+    expect((await ui.find({ key: 'notice' }))?.text).toContain('BotFather is read-only')
+    // Nothing to write to BotFather (design §4.6): no n, drawn or kept as a hotkey.
+    expect(await ui.find({ key: 'key:write' })).toBeUndefined()
     expect(writes(runs)).toEqual([])
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('BotFather is read-only')
     await ui.unmount()
   })
 
@@ -150,9 +146,9 @@ describe('pressable buttons', () => {
     const ui = await openBot($, clock)
     expect((await ui.find({ key: 'btn:677792:0:0' }))?.text).toContain('Docs → https://example.com/docs')
     await ui.press({ key: 'btn:677792:0:0' })
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toBe('url "Docs" → https://example.com/docs (not opened)')
+    expect((await ui.find({ key: 'notice' }))?.text).toBe('url "Docs" → https://example.com/docs (not opened)')
     await ui.press({ key: 'btn:677792:1:0' })
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('tg does not press phone buttons')
+    expect((await ui.find({ key: 'notice' }))?.text).toContain('tg does not press phone buttons')
     expect(writes(runs)).toEqual([])
     await ui.unmount()
   })
@@ -163,7 +159,7 @@ describe('pressable buttons', () => {
     const ui = await openBot($, clock)
     // The cursor starts on the newest message, which has no buttons.
     expect((await ui.find({ key: 'msg:677792' }))?.text).toContain('▸')
-    await ui.press({ key: 'bt:buttons' })
+    await ui.press({ key: 'key:buttons' })
     expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('▸')
     await ui.unmount()
   })
@@ -181,9 +177,9 @@ describe('recorder', () => {
           : out(6, { button: {}, answer: null, replies: [] }, 'error: no reply within 5s'),
     })
     const ui = await openBot($, clock)
-    await ui.press({ key: 'bt:record' })
+    await ui.press({ key: 'key:record' })
     // n gives the box a frame to draw before it moves the ring into it.
-    const composing = ui.press({ key: 'bt:compose' })
+    const composing = ui.press({ key: 'key:write' })
     await clock.advance(50)
     await composing
     await ui.input({ key: 'bt:send', text: '/settings' })
@@ -191,9 +187,9 @@ describe('recorder', () => {
     expect(writes(runs)[0]).toEqual({ argv: ['tg', 'send', '@example_bot', '-', '--plain', '--wait', '10s', '--json', '--yes'], stdin: '/settings' })
     await ui.press({ key: 'btn:677801:0:0' })
     await clock.settle()
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toContain('no reply within 5s')
-    expect((await ui.find({ key: 'bt:bar' }))?.text).toContain('rec 2')
-    await ui.press({ key: 'bt:record' })
+    expect((await ui.find({ key: 'notice' }))?.text).toContain('no reply within 5s')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('rec 2')
+    await ui.press({ key: 'key:record' })
     await clock.settle()
 
     const path = [...files.keys()].find(one => one.endsWith('.sh'))
@@ -209,7 +205,7 @@ describe('recorder', () => {
 
     expect(saved.bottest?.recorded?.steps.map(step => step.kind)).toEqual(['send', 'press'])
     expect(saved.bottest?.recorded?.path).toBe(path)
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toContain(`2 steps → .tg-recordings/`)
+    expect((await ui.find({ key: 'notice' }))?.text).toContain(`2 steps → .tg-recordings/`)
     await ui.unmount()
   })
 })
@@ -219,27 +215,29 @@ describe('reply diff', () => {
     const clock = mock.clock(on, { now: NOW })
     world(on)
     const ui = await openBot($, clock)
-    await ui.press({ key: 'msg:677791' })
-    await ui.press({ key: 'msg:677792' })
-    await ui.press({ key: 'bt:diff' })
+    await ui.press({ key: 'key:mark' })
+    await ui.press({ key: 'key:up' })
+    await ui.press({ key: 'key:mark' })
+    await ui.press({ key: 'key:diff' })
     const view = (await ui.find({ key: 'bt:diff-view' }))?.text ?? ''
     expect(view).toContain('diff #677791 → #677792')
     expect(view).toContain('- ⚠ Something went wrong')
     expect(view).toContain('+ Main menu')
     expect(view).toContain('keyboard: 1 → 0 rows (2 → none)')
     expect(view).toContain('- 0:0 "Retry" cb retry')
-    await ui.press({ key: 'bt:diff' })
+    await ui.press({ key: 'key:diff' })
     expect(await ui.find({ key: 'bt:diff-view' })).toBeUndefined()
     await ui.unmount()
   })
 
-  test('f with one message selected says what to select', async ($, on) => {
+  test('with one reply marked f is not drawn; the menu says the step it needs', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     world(on)
     const ui = await openBot($, clock)
-    await ui.press({ key: 'msg:677791' })
-    await ui.press({ key: 'bt:diff' })
-    expect((await ui.find({ key: 'bt:notice' }))?.text).toBe('Diff: select exactly two bot replies with x (now 1).')
+    await ui.press({ key: 'key:mark' })
+    expect(await ui.find({ key: 'key:diff' })).toBeUndefined()
+    await ui.press({ key: 'key:menu' })
+    expect((await ui.find({ key: 'menu:diff' }))?.text).toBe('f: diff · needs two replies marked (x)')
     await ui.unmount()
   })
 })
@@ -297,7 +295,7 @@ describe('latency stamps', () => {
       return { value: { code: 0, signal: null } }
     })
     const ui = await openBot($, clock)
-    const composing = ui.press({ key: 'bt:compose' })
+    const composing = ui.press({ key: 'key:write' })
     await clock.advance(50)
     await composing
     await ui.input({ key: 'bt:send', text: '/ping' })

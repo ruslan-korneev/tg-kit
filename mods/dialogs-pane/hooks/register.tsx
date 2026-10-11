@@ -1,6 +1,8 @@
-// Dialogs Pane, phase 1: Telegram dialogs and threads in a pane, read through
-// the `tg` CLI. Wide (dock), Compact (inline) and Hidden (status line + band).
-// Design: docs/design/dialogs-pane.md §1, §2, §4.
+// Dialogs Pane: Telegram chats and threads in a pane, read through the `tg`
+// CLI. The pane lays itself out for where the engine seats it (dock or
+// inline); Hidden is the pane closed (status line + band).
+// Design: docs/design/dialogs-pane.md, and docs/design/dialogs-pane-ux.md §3,
+// §4 and §7 for the frame, the keys (./ui/keys) and the menu.
 //
 // Every function that takes `$` lives in this file: the engine follows `$`
 // only into functions declared beside the hook. ./ui and ./tg stay pure.
@@ -21,8 +23,8 @@ import type {
   TgFailure,
   WatchHealth,
 } from '../types'
-import { EmptySavedLens, LensEditor, LensTabs, SummaryBlock, WatchRow, summaryRows, watchMark } from './triage/components'
-import { MAX_LENSES, draftFrom, parseLenses, toggleGroup, togglePicked, upsertLens } from './triage/lenses'
+import { EmptySavedLens, LensEditor, SummaryBlock, summaryRows, watchMark } from './triage/components'
+import { FIRST_LENS_DIGIT, MAX_LENSES, draftFrom, parseLenses, toggleGroup, togglePicked, upsertLens } from './triage/lenses'
 import { EMPTY_TRIAGE, RECENT, applyToDialogs, applyToMessages, hiddenStatus, latencyText, repliesToYou, reportReply } from './triage/live'
 import { RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, toAsk, verdictKey, type Me } from './triage/needs'
 import { SUMMARY_LIMIT, SUMMARY_MAX_TOKENS, SUMMARY_SYSTEM, SUMMARY_TIMEOUT_MS, TRIAGE_MODEL, summaryPrompt } from './triage/summary'
@@ -33,7 +35,7 @@ import type { AgentInfo, HookStream, ProcessSpawnChunk, ProcessSpawnResult } fro
 import type { BroadcastRow, LedgerEntry, Leg, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, TgMessage } from '../types'
 import { buildPacket, type Packet } from './packet/build'
 import { expandReplyChain } from './packet/expand'
-import { BroadcastPicker, Ledger, RoutePicker, RoutedTray } from './routing/components'
+import { BroadcastPicker, DraftRow, Ledger, RoutePicker } from './routing/components'
 import {
   addEntry,
   addNewLeg,
@@ -63,34 +65,32 @@ import {
 import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
+import { DialogRow, Divider, EmptyLens, LoadState, MessageCard, windowAround, type Els } from './ui/components'
+import { ActionBar, Frame, Header, HiddenKeys, MarksLine, Menu, NoticeRow, Strip } from './ui/frame'
 import {
-  DialogRow,
-  Divider,
-  EmptyLens,
-  Header,
-  HintsRow,
-  LensBar,
-  LoadState,
-  MessageCard,
-  windowAround,
-  type Els,
-} from './ui/components'
+  CHAT_KIND_LABEL,
+  actionBar,
+  chatKind,
+  hiddenKeys,
+  menu as menuSections,
+  type KeyContext,
+  type RunKey,
+  type Seat,
+  type Where,
+} from './ui/keys'
 import {
   GLYPH,
   NO_SELECTION,
   TOKEN,
   clamp,
-  defaultMode,
   dialogLabel,
   grownDialog,
-  hintsFor,
-  isMode,
   loaded,
-  nextMode,
   oneLine,
   peerArg,
   rangeSelect,
   selectWhole,
+  stateSummary,
   toggleSelected,
 } from './ui/model'
 
@@ -102,15 +102,22 @@ const STORE_MODE = 'mode'
 // this slow poll keeps the unread counts of everything else.
 const POLL_MS = 300_000
 const THREAD_LIMIT = 30
-const MODE_ARGS: readonly Mode[] = ['wide', 'compact', 'hidden']
+/** What the pane asks for: the dock's width, the inline block's rows. Each seat ignores the other. */
+const DOCK_COLUMNS = 64
+const INLINE_ROWS = 12
+const MODES: readonly Mode[] = ['open', 'hidden']
 
-const mode = atom({ plugin: 'dialogs-pane', key: 'mode' } as const, 'compact')
+const isMode = (value: unknown): value is Mode => MODES.some(one => one === value)
+
+const mode = atom({ plugin: 'dialogs-pane', key: 'mode' } as const, 'open')
 const nav = atom({ plugin: 'dialogs-pane', key: 'nav' } as const, {
   view: 'dialogs',
   lens: 'all',
   query: '',
   dialogCursor: 0,
   messageCursor: 0,
+  isMenuOpen: false,
+  isSearching: false,
 })
 const dialogs = atom({ plugin: 'dialogs-pane', key: 'dialogs' } as const, { status: 'idle' })
 const thread = atom({ plugin: 'dialogs-pane', key: 'thread' } as const, null)
@@ -127,8 +134,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'tg',
-      description: 'Open or focus the Telegram dialogs pane · /tg stop stops every agent',
-      argumentHint: '[wide|compact|hidden|stop|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
+      description: 'Telegram pane: chats, send to Claude, bots, agents · /tg stop stops every agent',
+      argumentHint: '[hide|stop|autopilot [off|--dangerously-skip-hard-stops[=stops]]]',
       // The kill switch must not wait for main's turn to end, so every /tg runs
       // at once: opening the pane touches no turn state either.
       immediate: true,
@@ -162,22 +169,22 @@ export const register: Register = (on, options) => {
     const asked = e.args.trim()
     if (asked === 'autopilot' || asked.startsWith('autopilot ')) return autopilotCommand($, asked.slice('autopilot'.length).trim()) // ── autopilot ──
     if (asked === 'stop') return autopilotCommand($, 'off') // ── autopilot ── the kill switch
-    const named = MODE_ARGS.find(one => one === asked)
-    if (asked !== '' && named === undefined) return { text: 'Usage: /tg [wide|compact|hidden|stop]' }
-    // Never chosen, or Hidden: open as the terminal suits; else as last left.
-    const kept = await $.store.get(STORE_MODE)
-    const target = named ?? (isMode(kept) && kept !== 'hidden' ? kept : defaultMode(e.presentation))
-    await setMode($, target)
+    // The layout follows the seat (design decision 4): `wide` and `compact` stay as
+    // aliases of `/tg`, `hidden` of `/tg hide`.
+    const isHide = asked === 'hide' || asked === 'hidden'
+    if (!isHide && asked !== '' && asked !== 'wide' && asked !== 'compact') return { text: 'Usage: /tg [hide|stop|autopilot]' }
+    await setMode($, isHide ? 'hidden' : 'open')
+    if (!isHide) await ringCursor($)
     // Hidden needs the list too: its status line counts the unread.
     if ((await read($, dialogs)).status !== 'ok') {
       loadDialogs($).catch(() => {
         // loadDialogs records its own failures in state; nothing is left to report.
       })
     }
-    return { text: target === 'hidden' ? 'tg pane hidden: status line only.' : `tg pane open (${target}).` }
+    return { text: isHide ? 'tg pane hidden: status line only. /tg opens it.' : 'tg pane open. m lists every key.' }
   })
 
-  // The person closing the pane by hand leaves the status line: Hidden.
+  // The person closing the pane by hand (✕, ctrl+x x) leaves the status line: Hidden.
   on('ui.close', { id: PANE }, async ($, e, next) => {
     const done = await next(e)
     if (e.origin.kind === 'person') {
@@ -196,18 +203,14 @@ export const register: Register = (on, options) => {
     return done
   }).catch(($, e, next) => next(e))
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const els = $.ui.resolve(e)
-    const width = e.props.bodyColumns
-    const rows = e.props.scroll.bodyRows
-    const card = await drawAutopilotView($, els, width, rows) // ── autopilot ──
-    if (card !== null) return card
-    const over = await drawOverlay($, els, width, rows)
-    if (over !== null) return over
-    return (await read($, mode)) === 'wide'
-      ? await drawWide($, els, width, rows)
-      : await drawCompact($, els, width, rows)
-  })
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) =>
+    drawPane($, $.ui.resolve(e), {
+      seat: e.props.placement,
+      width: e.props.bodyColumns,
+      rows: e.props.scroll.bodyRows,
+      isFocused: e.props.isFocused,
+    }),
+  )
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     // ── autopilot ── drafts, undo and summaries show in every mode.
@@ -234,7 +237,7 @@ export const register: Register = (on, options) => {
         <Button key="band:open" plain hotkey="o" onPress={() => openFromBand($)}>
           open
         </Button>
-        <Button key="band:dismiss" plain hotkey="x" dimColor onPress={() => dismissBand($)}>
+        <Button key="band:dismiss" plain hotkey="d" dimColor onPress={() => dismissBand($)}>
           dismiss
         </Button>
       </Box>
@@ -289,11 +292,12 @@ async function runTg<T>($: $, req: TgRequest<T>): Promise<TgResult<T>> {
   }
 }
 
-// --- mode: Wide / Compact / Hidden, kept in $.store across sessions ---
+// --- open or hidden, kept in $.store across sessions ---
 
 /**
- * Seats the pane for `next`: Wide asks the dock for width, Compact asks for
- * 12 rows inline, Hidden closes it and leaves the status line and band.
+ * Open asks for the dock's width and the inline block's rows at once: the
+ * engine seats the pane and each seat ignores the other's size. Hidden closes
+ * it and leaves the status line and band.
  */
 async function setMode($: $, next: Mode): Promise<void> {
   await update($, mode, () => next)
@@ -301,15 +305,10 @@ async function setMode($: $, next: Mode): Promise<void> {
   if (next === 'hidden') {
     await $.ui.close({ id: PANE })
   } else {
-    const seat = next === 'wide' ? { columns: 64 } : { rows: 12 }
-    await $.ui.open({ id: PANE, title: 'tg · dialogs', focus: true, ...seat })
+    await $.ui.open({ id: PANE, title: 'tg · dialogs', focus: true, columns: DOCK_COLUMNS, rows: INLINE_ROWS })
   }
   await refreshStatus($)
   await syncWatches($)
-}
-
-async function cycleMode($: $): Promise<void> {
-  await setMode($, nextMode(await read($, mode)))
 }
 
 async function refreshStatus($: $): Promise<void> {
@@ -391,6 +390,7 @@ async function openThread($: $, dialog: TgDialog): Promise<void> {
   await bottestThreadOpened($, peer)
   await loadThread($, peer)
   await syncWatches($)
+  await ringCursor($)
 }
 
 async function loadThread($: $, peer: PeerRef): Promise<void> {
@@ -419,7 +419,7 @@ async function reload($: $): Promise<void> {
   await loadDialogs($)
 }
 
-// --- keys: one action per hint or hotkey ---
+// --- the cursor and the ring ---
 
 async function shownDialogs($: $): Promise<TgDialog[]> {
   return visibleTriaged($, loaded(await read($, dialogs)) ?? [], await read($, nav))
@@ -428,6 +428,16 @@ async function shownDialogs($: $): Promise<TgDialog[]> {
 async function threadMessages($: $) {
   const open = await read($, thread)
   return open === null ? [] : (loaded(open.load) ?? [])
+}
+
+async function cursorDialog($: $): Promise<TgDialog | undefined> {
+  const list = await shownDialogs($)
+  return list[clamp((await read($, nav)).dialogCursor, list.length)]
+}
+
+async function cursorMessage($: $): Promise<TgMessage | undefined> {
+  const messages = await threadMessages($)
+  return messages[clamp((await read($, nav)).messageCursor, messages.length)]
 }
 
 /** Moves the cursor in the active list; answers the key of the row it lands on. */
@@ -456,9 +466,30 @@ async function followRing($: $, element: string): Promise<void> {
   }
 }
 
+async function moveRing($: $, key: string): Promise<void> {
+  try {
+    await $.ui.focus({ requestId: PANE, key })
+  } catch {
+    // The ring is a convenience: the cursor already moved, and the keys act on
+    // the cursor, so a ring that cannot move (the pane does not hold the keys,
+    // a surface without one) degrades only ⏎, which acts where the ring is.
+  }
+}
+
+/** The ring back on the cursor row (design §3.3), after any action that drew rows over it. */
+async function ringCursor($: $): Promise<void> {
+  const where = await underWhere($)
+  if (where === 'chat') {
+    const message = await cursorMessage($)
+    if (message !== undefined) await moveRing($, `msg:${message.id}`)
+  } else if (where === 'chats') {
+    const dialog = await cursorDialog($)
+    if (dialog !== undefined) await moveRing($, `dialog:${dialog.id}`)
+  }
+}
+
 async function openAtCursor($: $): Promise<void> {
-  const list = await shownDialogs($)
-  const dialog = list[clamp((await read($, nav)).dialogCursor, list.length)]
+  const dialog = await cursorDialog($)
   if (dialog !== undefined) await openThread($, dialog)
 }
 
@@ -472,54 +503,221 @@ async function selectAtCursor($: $, how: 'toggle' | 'range'): Promise<void> {
   )
 }
 
-/** `Esc`'s job, on `h`: clear the selection first, then go back to the dialogs. */
-async function back($: $): Promise<void> {
+// --- keys: what each one does (./ui/keys says where it exists and when it works) ---
+
+/**
+ * The view the keys act on, under the menu: a layer (card, its ledger, the
+ * route picker, the packet ledger, a diff, the lens editor) or the column the
+ * cursor is in.
+ */
+async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
+  const view = (await read($, autopilot)).view // ── autopilot ──
+  if (view.kind === 'card') return 'card'
+  if (view.kind === 'ledger') return 'activity'
+  const shown = (await read($, overlay)).kind // ── routing ──
+  if (shown === 'picker' || shown === 'broadcast') return 'sheet'
+  if (shown === 'ledger') return 'activity'
+  if ((await read($, bottest)).diff !== null) return 'diff'
+  if ((await read($, triage)).editor !== null) return 'editor'
+  return (await read($, nav)).view === 'thread' && (await read($, thread)) !== null ? 'chat' : 'chats'
+}
+
+/** The chat the keys of `where` act on: the card's, the cursor row's in Chats, else the open one. */
+async function keyPeer($: $, where: Where): Promise<PeerRef | undefined> {
+  const view = (await read($, autopilot)).view
+  if (where === 'card' && view.kind === 'card') return (await apDialog($, view.dialogId))?.peer
+  if (where === 'chats') {
+    const dialog = await cursorDialog($)
+    return dialog === undefined ? undefined : peerRefOf(dialog)
+  }
+  return (await read($, thread))?.peer
+}
+
+async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band'>): Promise<KeyContext> {
+  const peer = await keyPeer($, where)
+  const messages = await threadMessages($)
   const chosen = await read($, selection)
-  if (chosen.ids.length > 0 || chosen.anchor !== null) {
-    await update($, selection, () => NO_SELECTION)
-    return
+  const bt = await read($, bottest)
+  const tri = await read($, triage)
+  const pilot = await read($, autopilot)
+  const view = pilot.view
+  return {
+    where,
+    seat,
+    kind: peer === undefined ? null : chatKind(peer.kind, isBotFather(peer.arg)),
+    facts: {
+      rows: where === 'chats' ? (await shownDialogs($)).length : messages.length,
+      isRunning: pilot.running.length > 0 || (await read($, delegate)).tasks.some(isLive),
+      undoLeft: undoLeft(pilot.undo, Math.max(pilot.now, await $.clock.now())),
+      hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null,
+      marks: chosen.ids.length,
+      isRangeOpen: chosen.anchor !== null,
+      hasPair: diffPair(chosen.ids, messages).ok,
+      hasButtons: messages.some(message => message.buttons.length > 0),
+      isRecording: bt.recording !== null,
+      isWatched: peer !== undefined && tri.watched.some(one => one.id === peer.id),
+      isFollowed: peer !== undefined && (await read($, pins)).some(pin => pin.peer.id === peer.id),
+      isRanked: tri.isRanked,
+      summary: peer !== undefined && tri.summary?.peerId === peer.id ? tri.summary.status : 'none',
+      isSavedLens: tri.lens !== null,
+      isAgentOn: view.kind === 'card' && pilot.running.includes(view.dialogId),
+      isPicker: (await read($, overlay)).kind === 'picker',
+    },
   }
-  await update($, nav, value => ({ ...value, view: 'dialogs' }))
 }
 
-async function moveRing($: $, key: string): Promise<void> {
-  try {
-    await $.ui.focus({ requestId: PANE, key })
-  } catch {
-    // The ring is a convenience: the cursor already moved, and j/k/o act on
-    // the cursor, so a ring that cannot move (a surface without one) degrades
-    // only Enter, which then acts where the person last put the ring.
-  }
-}
-
-async function onHint($: $, key: string): Promise<void> {
-  switch (key) {
+/** One key, pressed from the bar, a hidden hotkey or the menu. */
+async function runKey($: $, id: RunKey): Promise<void> {
+  const where = await underWhere($)
+  switch (id) {
     case 'down':
     case 'up': {
-      const row = await moveCursor($, key === 'down' ? 1 : -1)
-      // The ring follows the cursor so Enter acts on it.
+      const row = await moveCursor($, id === 'down' ? 1 : -1)
       if (row !== undefined) await moveRing($, row)
       return
     }
     case 'open':
       return openAtCursor($)
-    case 'search':
-      return moveRing($, 'search')
-    case 'mode':
-      return cycleMode($)
-    case 'select':
-      return selectAtCursor($, 'toggle')
+    case 'send':
+      return openSheet($)
+    case 'start': {
+      const view = (await read($, autopilot)).view
+      const dialog = view.kind === 'card' ? await apDialog($, view.dialogId) : null
+      if (dialog !== null) await apToggleRun($, dialog)
+      return ringCursor($)
+    }
+    case 'mark':
+      await selectAtCursor($, 'toggle')
+      return ringCursor($)
     case 'range':
-      return selectAtCursor($, 'range')
+      await selectAtCursor($, 'range')
+      return ringCursor($)
+    case 'whole': {
+      const order = (await threadMessages($)).map(one => one.id)
+      await update($, selection, () => selectWhole(order))
+      return ringCursor($)
+    }
+    case 'buttons':
+      return focusButtons($)
+    case 'agent':
+      return apToggleCard($)
+    case 'watch':
+      await toggleWatch($, await watchTarget($))
+      return ringCursor($)
+    case 'follow':
+      await togglePin($)
+      return ringCursor($)
+    case 'summary':
+    case 'write': {
+      // From a row in Chats: that chat opens, with its summary on top or the send box under it.
+      const dialog = where === 'chats' ? await cursorDialog($) : undefined
+      if (where === 'chats' && dialog === undefined) return
+      if (dialog !== undefined) await openThread($, dialog)
+      return id === 'summary' ? toggleSummary($) : toggleCompose($)
+    }
+    case 'record':
+      await toggleRecord($)
+      return ringCursor($)
+    case 'diff':
+      await toggleDiff($)
+      return ringCursor($)
+    case 'intent':
+      await update($, intent, nextIntent)
+      return
+    case 'foryou':
+      await toggleRanking($)
+      return ringCursor($)
+    case 'search':
+      return startSearch($)
+    case 'lenses':
+      return where === 'editor' ? saveLens($) : openLensEditor($)
+    case 'edit':
+      return moveRing($, 'ap:tone')
+    case 'dismiss':
+      if (where === 'card') return apNotice($, null)
+      await update($, bottest, value => ({ ...value, notice: null }))
+      return
+    case 'undo':
+      await apUndo($)
+      return ringCursor($)
+    case 'activity':
+      if (where === 'card') {
+        await update($, autopilot, value => ({ ...value, view: { kind: 'ledger' } }))
+        return
+      }
+      return openLedger($)
+    case 'reload':
+      return reload($)
     case 'back':
       return back($)
+    case 'menu':
+      await update($, nav, value => ({ ...value, isMenuOpen: !value.isMenuOpen }))
+      return ringCursor($)
+    case 'hide':
+      return setMode($, 'hidden')
+    case 'stop': {
+      const stopped = await apStopAll($) // ── autopilot ── the kill switch
+      $.ui.toast(`tg: stopped ${stopped} dialog${stopped === 1 ? '' : 's'} and every task. Settings are kept.`)
+      return ringCursor($)
+    }
   }
+}
+
+/** A key pressed in the menu: the menu closes, then the key acts on the view under it. */
+async function runMenuKey($: $, id: RunKey): Promise<void> {
+  await update($, nav, value => ({ ...value, isMenuOpen: false }))
+  await runKey($, id)
+}
+
+/** `h`: one level up (design §4.2): the menu, a layer, the search, the send box, the marks, the chat. */
+async function back($: $): Promise<void> {
+  const where = await underWhere($)
+  if ((await read($, nav)).isMenuOpen) {
+    await update($, nav, value => ({ ...value, isMenuOpen: false }))
+  } else if (where === 'card' || (where === 'activity' && (await read($, autopilot)).view.kind === 'ledger')) {
+    await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
+  } else if (where === 'sheet') {
+    const shown = await read($, overlay)
+    // Broadcast came from the picker: back to it, with the same messages.
+    if (shown.kind === 'broadcast') {
+      await update($, overlay, () => ({ kind: 'picker', ids: shown.ids }))
+      return moveRing($, 'route:main')
+    }
+    await closeOverlay($)
+  } else if (where === 'activity') {
+    await closeOverlay($)
+  } else if (where === 'diff') {
+    await update($, bottest, value => ({ ...value, diff: null }))
+  } else if (where === 'editor') {
+    await update($, triage, value => ({ ...value, editor: null }))
+  } else if ((await read($, nav)).isSearching) {
+    await update($, nav, value => ({ ...value, isSearching: false }))
+  } else if ((await read($, bottest)).composing) {
+    await update($, bottest, value => ({ ...value, composing: false }))
+  } else {
+    const chosen = await read($, selection)
+    if (chosen.ids.length > 0 || chosen.anchor !== null) await update($, selection, () => NO_SELECTION)
+    else if (where === 'chat') await update($, nav, value => ({ ...value, view: 'dialogs' }))
+  }
+  await ringCursor($)
+}
+
+/** `s`: the search field, ringed so the letters type into it. */
+async function startSearch($: $): Promise<void> {
+  await update($, nav, value => ({ ...value, view: 'dialogs', isSearching: true, isMenuOpen: false }))
+  // $.ui.focus waits, bounded, for the field to be drawn.
+  await moveRing($, 'search')
+}
+
+async function submitSearch($: $, query: string): Promise<void> {
+  await update($, nav, value => ({ ...value, view: 'dialogs', query: query.trim(), dialogCursor: 0, isSearching: false }))
+  await ringCursor($)
 }
 
 async function openFromBand($: $): Promise<void> {
   const event = await read($, band)
   await update($, band, () => null)
-  await setMode($, defaultMode(undefined))
+  await setMode($, 'open')
   const dialog = (loaded(await read($, dialogs)) ?? []).find(one => one.id === event?.dialogId)
   if (dialog !== undefined) await openThread($, dialog)
 }
@@ -529,15 +727,264 @@ async function dismissBand($: $): Promise<void> {
   await refreshStatus($)
 }
 
-// --- layouts ---
+// --- the frame: header, strip, the view's slot, temporary rows, the bar ---
 
-async function drawDialogList($: $, els: Els, width: number, rows: number): Promise<RenderElement[]> {
+type Seating = { seat: Seat; width: number; rows: number; isFocused: boolean }
+
+/**
+ * The pane for where the engine seated it (design §4.1, §7.3). The dock keeps
+ * Chats on top and the open chat (or a card, the picker, a diff, the ledger)
+ * below; inline shows one view at a time. Both end in the action bar.
+ */
+async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement> {
+  const { seat, width, rows } = seating
+  const where = await underWhere($)
+  const isMenu = (await read($, nav)).isMenuOpen
+  const context = await keyContext($, seat, where)
+  const barContext: KeyContext = isMenu ? { ...context, where: 'menu' } : context
+  const onKey = (id: RunKey) => runKey($, id)
+  const bar = actionBar(barContext, width)
+  const isBase = where === 'chats' || where === 'chat'
+  // Inline Chats: the strip shares the header row; the dock gives it a row of its own.
+  const isInlineChats = seat === 'inline' && where === 'chats' && !isMenu
+  // The dock's strip draws `s: search` while the keys are Chats' or the chat's (s exists there only).
+  const hasSearchKey = seat === 'dock' && isBase
+  const strip = isMenu || where === 'editor' || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', hasSearchKey })
+  const none = { elements: [], rows: 0 }
+  const top = isMenu || !isBase ? none : await drawTop($, els, seat, width)
+  const temps = isMenu || !isBase ? none : await drawTemps($, els, where, width)
+  const chrome = 2 + (strip !== null && !isInlineChats ? 1 : 0) + top.rows + temps.rows
+  const room = Math.max(3, rows - chrome)
+  const slot = isMenu
+    ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
+    : seat === 'dock'
+      ? await drawDock($, els, where, width, room)
+      : await drawInline($, els, where, width, room)
+  const drawn = new Set(bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])))
+  if (strip !== null && hasSearchKey) drawn.add('s')
+  // Views that draw a key of the table themselves: the lens editor's save, the picker's intent chip.
+  if (!isMenu && where === 'editor') drawn.add('z')
+  if (!isMenu && context.facts.isPicker) drawn.add('i')
+  // A failed load draws its own `g: reload` (LoadState): the list's, or the chat's, where they show.
+  const isListShown = !isMenu && (seat === 'dock' ? where !== 'editor' : where === 'chats')
+  const isThreadShown = !isMenu && isBase && (seat === 'dock' || where === 'chat')
+  if (await hasReloadRow($, isListShown, isThreadShown)) drawn.add('g')
+  // The menu's own Buttons carry the keys of the view under it.
+  if (isMenu) for (const section of menuSections(context)) for (const entry of section.entries) if (entry.def.hotkey !== null) drawn.add(entry.def.hotkey)
+  return Frame(els, {
+    rows,
+    header: Header(els, {
+      location: await locationOf($, where, isMenu, isInlineChats),
+      strip: isInlineChats ? strip : null,
+      summary: await summaryOf($),
+      chips: await chipsOf($),
+      isFocused: seating.isFocused,
+    }),
+    strip: isInlineChats ? null : strip,
+    top: top.elements,
+    slot,
+    temps: temps.elements,
+    bar: ActionBar(els, { keys: bar, isFocused: seating.isFocused, onKey }),
+    hidden: HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey }),
+  })
+}
+
+async function hasReloadRow($: $, isListShown: boolean, isThreadShown: boolean): Promise<boolean> {
+  const hasRow = (load: Load<unknown> | undefined) => load?.status === 'error' && load.failure.kind !== 'flood'
+  return (isListShown && hasRow(await read($, dialogs))) || (isThreadShown && hasRow((await read($, thread))?.load))
+}
+
+async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: boolean): Promise<string> {
+  const peer = await keyPeer($, where)
+  const label = peer?.label ?? 'chats'
+  if (isMenu) return `tg › menu · ${where === 'chats' || where === 'chat' ? label : where}`
+  if (isInlineChats) return 'tg'
+  switch (where) {
+    case 'chats':
+      return 'tg › chats'
+    case 'chat':
+      return `tg › ${label}`
+    case 'card':
+      return `tg › agent for ${label}`
+    case 'sheet':
+      return `tg › send · ${label}`
+    case 'diff':
+      return `tg › diff · ${label}`
+    case 'activity':
+      return 'tg › activity'
+    case 'editor':
+      return 'tg › lens'
+    case 'menu':
+    case 'band':
+      return 'tg'
+  }
+}
+
+/** §4.5: agents by level, new messages in watched chats, what waits for the owner. */
+async function summaryOf($: $) {
+  const pilot = await read($, autopilot)
+  const levels = pilot.running.map(id => pilot.dialogs[String(id)]?.level)
+  const count = (level: string) => levels.filter(one => one === level).length
+  const watched = new Set((await read($, triage)).watched.map(peer => peer.id))
+  const listed = loaded(await read($, dialogs)) ?? []
+  const replyDraft = await read($, draft)
+  return stateSummary({
+    levels: [
+      { glyph: GLYPH.pinned, count: (await read($, pins)).length },
+      ...AP_LEVELS.map(level => ({ glyph: LEVEL_GLYPH[level], count: count(level) })),
+    ],
+    watched: listed.filter(dialog => watched.has(dialog.id)).reduce((sum, dialog) => sum + dialog.unread, 0),
+    forYou: pilot.drafts.length + (replyDraft !== null && replyDraft.step.kind !== 'sent' ? 1 : 0) + (await dgHoldCount($)),
+  })
+}
+
+async function chipsOf($: $): Promise<{ text: string; color?: string }[]> {
+  const recording = (await read($, bottest)).recording
+  return recording === null ? [] : [{ text: `${GLYPH.unread} rec ${recording.steps.length}`, color: TOKEN.danger }]
+}
+
+async function drawStrip($: $, els: Els, props: { isLive: boolean; hasSearchKey: boolean }): Promise<RenderElement> {
+  const where = await read($, nav)
+  const state = await read($, triage)
+  return Strip(els, {
+    lens: where.lens,
+    lenses: state.lenses,
+    active: state.lens,
+    firstSavedDigit: FIRST_LENS_DIGIT,
+    isRanked: state.isRanked,
+    query: where.query,
+    isLive: props.isLive,
+    hasSearchKey: props.hasSearchKey,
+    onLens: async (lens: Lens) => {
+      await update($, nav, value => ({ ...value, view: 'dialogs', lens, dialogCursor: 0 }))
+      await selectSavedLens($, null)
+      await ringCursor($)
+    },
+    onSaved: async id => {
+      await selectSavedLens($, id)
+      await ringCursor($)
+    },
+    onSearch: () => startSearch($),
+  })
+}
+
+/** What runs, on top: the search field while it is up, and the delegate task cards. */
+async function drawTop($: $, els: Els, seat: Seat, width: number): Promise<{ elements: RenderElement[]; rows: number }> {
+  const where = await read($, nav)
+  const Input = 'Input' in els ? els.Input : undefined
+  const search =
+    where.isSearching && Input !== undefined
+      ? [<Input key="search" label="search" placeholder="title or @name; empty clears" value={where.query} submitLabel="filter" onSubmit={value => submitSearch($, value)} />]
+      : []
+  const tasks = await drawTaskCards($, els, width, seat === 'dock' ? 'wide' : 'compact') // ── delegate ──
+  return { elements: [...search, ...tasks.elements], rows: search.length + tasks.rows }
+}
+
+/** Rows that come and go under the view: a drafted reply, the marks, the send box, one notice. */
+async function drawTemps($: $, els: Els, where: Where, width: number): Promise<{ elements: RenderElement[]; rows: number }> {
+  const elements: RenderElement[] = []
+  let rows = 0
+  const replyDraft = await read($, draft) // ── routing ──
+  if (replyDraft !== null) {
+    elements.push(
+      DraftRow(els, {
+        draft: replyDraft,
+        width,
+        onCheck: () => checkDraft($),
+        onSend: () => sendDraft($),
+        onDrop: () => update($, draft, () => null),
+        onEdit: text => update($, draft, value => (value === null ? null : { ...value, text, step: { kind: 'draft' } })),
+      }),
+    )
+    rows += 3 + (replyDraft.step.kind === 'planned' ? Math.ceil(replyDraft.text.length / Math.max(10, width)) : 1)
+  }
+  const chosen = await read($, selection)
+  if (where === 'chat' && (chosen.ids.length > 0 || chosen.anchor !== null)) {
+    elements.push(MarksLine(els, { count: chosen.ids.length, isRangeOpen: chosen.anchor !== null }))
+    rows += 1
+  }
+  const bt = await read($, bottest)
+  const open = await read($, thread)
+  const box = bt.composing && open !== null ? SendBox(els, { peer: open.peer.label, onSend: text => sendText($, text) }) : null
+  if (box !== null) {
+    elements.push(box)
+    rows += 1
+  }
+  const notice = bt.busy !== null ? { tone: 'info' as const, text: `${GLYPH.working} ${bt.busy}` } : bt.notice
+  if (notice !== null && open !== null) {
+    elements.push(NoticeRow(els, { notice }))
+    rows += Math.ceil(notice.text.length / Math.max(10, width))
+  }
+  return { elements, rows }
+}
+
+/** Dock: Chats on top, the open chat or a layer below. */
+async function drawDock($: $, els: Els, where: Where, width: number, room: number): Promise<RenderElement[]> {
+  const open = await read($, thread)
+  const listLength = (await shownDialogs($)).length
+  const listRows = Math.min(Math.max(1, listLength), Math.max(3, Math.floor(room * 0.4)))
+  const list = where === 'editor' ? [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one])) : await drawDialogList($, els, width, listRows, where === 'chats')
+  if (where === 'editor') return list
+  const lower = Math.max(1, room - listRows - 1)
+  return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, where, width, lower, open !== null))]
+}
+
+/** Inline: one view at a time. */
+async function drawInline($: $, els: Els, where: Where, width: number, room: number): Promise<RenderElement[]> {
+  if (where === 'chats') return drawDialogList($, els, width, room, true)
+  if (where === 'editor') return [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one]))
+  return drawLower($, els, where, width, room, true)
+}
+
+/** The slot T2–T6 fill: the chat, the card, the picker (the send sheet's place), activity, a diff. */
+async function drawLower($: $, els: Els, where: Where, width: number, rows: number, isOpen: boolean): Promise<RenderElement[]> {
+  const { Text } = els
+  switch (where) {
+    case 'card':
+    case 'activity': {
+      const view = await drawAutopilotView($, els, width, rows) // ── autopilot ──
+      if (view !== null) return [view]
+      const over = await drawOverlay($, els, width, rows) // ── routing ── the packet ledger
+      return over === null ? [] : [over]
+    }
+    case 'sheet': {
+      const over = await drawOverlay($, els, width, rows)
+      return over === null ? [] : [over]
+    }
+    case 'diff': {
+      const diff = await drawBottestDiff($, els, width, rows)
+      return diff === null ? [] : [diff]
+    }
+    case 'chats':
+    case 'chat': {
+      if (!isOpen) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
+      const summary = await drawSummary($, els, width)
+      return [...(summary.element === null ? [] : [summary.element]), ...(await drawThread($, els, width, Math.max(1, rows - summary.rows), where === 'chat'))]
+    }
+    case 'editor':
+    case 'menu':
+    case 'band':
+      return []
+  }
+}
+
+/** `─ @example_bot · bot · ◎ watched ─`: the open chat, its kind, and what is on it. */
+async function dividerLabel($: $): Promise<string> {
+  const open = await read($, thread)
+  if (open === null) return 'no chat open'
+  const kind = CHAT_KIND_LABEL[chatKind(open.peer.kind, isBotFather(open.peer.arg))]
+  const isWatched = (await read($, triage)).watched.some(one => one.id === open.peer.id)
+  const pin = (await read($, pins)).find(one => one.peer.id === open.peer.id) // ── routing ──
+  const follow = pin === undefined ? '' : pin.watch.status === 'failed' ? ` · ${GLYPH.pinned} ${GLYPH.error} ${pin.watch.reason}` : ` · ${GLYPH.pinned} follows → main`
+  const live = (await read($, bottest)).timing.watch === 'live' ? ` · ${GLYPH.latency} live` : ''
+  return `${open.peer.label} · ${kind}${isWatched ? ' · ◎ watched' : ''}${follow}${live}`
+}
+
+async function drawDialogList($: $, els: Els, width: number, rows: number, isActive: boolean): Promise<RenderElement[]> {
   const load = await read($, dialogs)
   const where = await read($, nav)
   const at = await read($, now)
   const open = await read($, thread)
-  const editor = await drawLensEditor($, els, rows)
-  if (editor !== null) return [editor]
   const waiting = LoadState(els, { load, now: at, rows, onReload: () => reload($) })
   if (waiting !== null) return [waiting]
   const list = await visibleTriaged($, loaded(load) ?? [], where)
@@ -550,29 +997,30 @@ async function drawDialogList($: $, els: Els, width: number, rows: number): Prom
   return shown.items.map((dialog, index) =>
     DialogRow(els, {
       dialog,
-      isCursor: where.view === 'dialogs' && shown.start + index === cursor,
+      isCursor: isActive && shown.start + index === cursor,
       isOpen: open?.peer.id === dialog.id,
       isPinned: pinned.has(dialog.id),
       width,
       now: at,
-      onOpen: () => openThread($, dialog),
+      onOpen: async () => {
+        await update($, nav, value => ({ ...value, dialogCursor: shown.start + index }))
+        await openThread($, dialog)
+      },
       mark: markOf(dialog.id),
       autopilot: pilotOf(dialog.id),
     }),
   )
 }
 
-async function drawThread($: $, els: Els, width: number, rows: number): Promise<RenderElement[]> {
+async function drawThread($: $, els: Els, width: number, rows: number, isActive: boolean): Promise<RenderElement[]> {
   const { Text } = els
   const open = await read($, thread)
-  if (open === null) return [<Text dimColor>Open a dialog with o or Enter.</Text>]
+  if (open === null) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
   const at = await read($, now)
   const waiting = LoadState(els, { load: open.load, now: at, rows, onReload: () => reload($) })
   if (waiting !== null) return [waiting]
   const messages = loaded(open.load) ?? []
   if (messages.length === 0) return [<Text dimColor>No messages in this chat yet.</Text>]
-  const diff = await drawBottestDiff($, els, width, rows)
-  if (diff !== null) return [diff]
   const where = await read($, nav)
   const chosen = await read($, selection)
   const cursor = clamp(where.messageCursor, messages.length)
@@ -583,97 +1031,17 @@ async function drawThread($: $, els: Els, width: number, rows: number): Promise<
     MessageCard(els, {
       ...bt(els, message),
       message,
-      isCursor: where.view === 'thread' && shown.start + index === cursor,
+      isCursor: isActive && shown.start + index === cursor,
       isSelected: chosen.ids.includes(message.id),
       isAnchor: chosen.anchor === message.id,
       width,
       now: at,
+      // ⏎ (or a click) on a message: where to send it. The send sheet (T2) takes this over.
       onPress: async () => {
         await update($, nav, value => ({ ...value, view: 'thread', messageCursor: shown.start + index }))
-        await selectAtCursor($, 'toggle')
+        await openSheet($)
       },
     }),
-  )
-}
-
-async function tray($: $, els: Els, size: 'full' | 'line'): Promise<RenderElement> {
-  return routedTray($, els, size, {
-    onWhole: async () => {
-      const order = (await threadMessages($)).map(one => one.id)
-      await update($, selection, () => selectWhole(order))
-    },
-    onClear: () => update($, selection, () => NO_SELECTION),
-  })
-}
-
-function lensProps($: $, where: { lens: Lens; query: string }) {
-  return {
-    lens: where.lens,
-    query: where.query,
-    onLens: async (lens: Lens) => {
-      await update($, nav, value => ({ ...value, lens, dialogCursor: 0 }))
-      await selectSavedLens($, null)
-    },
-    onSearch: async (query: string) => {
-      await update($, nav, value => ({ ...value, view: 'dialogs', query: query.trim(), dialogCursor: 0 }))
-      // Hand the keys back to the list, or j/k would keep typing into the field.
-      const first = (await shownDialogs($))[0]
-      if (first !== undefined) await moveRing($, `dialog:${first.id}`)
-    },
-  }
-}
-
-async function drawWide($: $, els: Els, width: number, rows: number): Promise<RenderElement> {
-  const { Box } = els
-  const where = await read($, nav)
-  const open = await read($, thread)
-  // Chrome: header, lens bar, watch row, autopilot row, two dividers, tray (3), hints; bot testing under a thread; task cards.
-  const taskCards = await drawTaskCards($, els, width, 'wide') // ── delegate ──
-  const room = Math.max(4, rows - 10 - taskCards.rows - (open === null ? 0 : await bottestRows($, width)))
-  const listRows = Math.max(3, Math.floor(room * 0.4))
-  const summary = await drawSummary($, els, width, false)
-  return (
-    <Box flexDirection="column">
-      {Header(els, { title: 'tg · dialogs', mode: 'wide', onMode: () => cycleMode($) })}
-      {LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
-      {await drawWatchRow($, els)}
-      {await drawAutopilotRow($, els)}
-      {...taskCards.elements}
-      {...await drawDialogList($, els, width, listRows)}
-      {Divider(els, { label: open?.peer.label ?? 'no dialog open', width })}
-      {summary.element}
-      {...await drawThread($, els, width, Math.max(1, room - listRows - summary.rows))}
-      {...await drawBottest($, els)}
-      {Divider(els, { label: '', width })}
-      {await tray($, els, 'full')}
-      {HintsRow(els, { hints: hintsFor(where.view, await read($, selection)), onHint: key => onHint($, key) })}
-    </Box>
-  )
-}
-
-async function drawCompact($: $, els: Els, width: number, rows: number): Promise<RenderElement> {
-  const { Box } = els
-  const where = await read($, nav)
-  const open = await read($, thread)
-  const isThread = where.view === 'thread' && open !== null
-  // Chrome: header, autopilot row, lens bar and watch row or summary and tray line, hints; 8-12 rows in all; bot testing under a thread; a task line each.
-  const taskRows = await drawTaskCards($, els, width, 'compact') // ── delegate ──
-  const room = Math.max(5, Math.min(rows, 12) - 4 - taskRows.rows - (isThread ? await bottestRows($, width) : 0))
-  const summary = isThread ? await drawSummary($, els, width, true) : { element: await drawWatchRow($, els), rows: 1 }
-  return (
-    <Box flexDirection="column">
-      {Header(els, { title: isThread ? `tg · ${open.peer.label}` : 'tg · dialogs', mode: 'compact', onMode: () => cycleMode($) })}
-      {await drawAutopilotRow($, els)}
-      {...taskRows.elements}
-      {isThread ? null : LensBar(els, { ...lensProps($, where), ...(await lensExtras($, els)) })}
-      {summary.element}
-      {...isThread
-        ? await drawThread($, els, width, Math.max(1, room - summary.rows))
-        : await drawDialogList($, els, width, Math.max(1, room - summary.rows))}
-      {...isThread ? await drawBottest($, els) : []}
-      {isThread ? await tray($, els, 'line') : null}
-      {HintsRow(els, { hints: hintsFor(isThread ? 'thread' : 'dialogs', await read($, selection)), onHint: key => onHint($, key) })}
-    </Box>
   )
 }
 
@@ -681,7 +1049,8 @@ async function drawCompact($: $, els: Els, width: number, rows: number): Promise
 // Live updates through the watch hub, watched dialogs in Hidden mode, saved
 // lenses, summaries and needs-you ranking (design §5 ideas 11–14). Every `$`
 // function of the triage phase is in this block; its pure rules are in
-// ./triage. Keys: w watch, t summary, z lens editor, y needs-you, 4–9 lenses.
+// ./triage. Keys (./ui/keys): w watch, t summary, z lens editor, y needs-you,
+// 4–9 saved lenses.
 // `On`, `MessageView` and `failureText` come from the bottest block's imports
 // (imports hoist; one module may import a name once).
 
@@ -879,22 +1248,6 @@ async function watchTarget($: $): Promise<PeerRef | undefined> {
   return dialog === undefined ? undefined : peerRefOf(dialog)
 }
 
-async function drawWatchRow($: $, els: Els): Promise<RenderElement | null> {
-  const state = await read($, triage)
-  if (state.editor !== null) return null
-  const target = await watchTarget($)
-  const where = await read($, nav)
-  const list = await shownDialogs($)
-  return WatchRow(els, {
-    cursor: where.view === 'thread' ? (loaded(await read($, dialogs)) ?? []).find(one => one.id === target?.id) : list[clamp(where.dialogCursor, list.length)],
-    isWatched: target !== undefined && state.watched.some(one => one.id === target.id),
-    health: state.health,
-    isSavedLens: state.lens !== null,
-    onWatch: async () => toggleWatch($, await watchTarget($)),
-    onLensEditor: () => openLensEditor($),
-  })
-}
-
 /** The band's "⏎ send to main" hook point: the watched reply's own message id, when the band shows one. */
 async function watchedReplyId($: $, dialogId: number): Promise<number | null> {
   const reply = (await read($, triage)).reply
@@ -913,20 +1266,6 @@ async function bandLatency($: $, els: Els, event: BandEvent): Promise<RenderElem
 
 async function visibleTriaged($: $, list: readonly TgDialog[], where: Nav): Promise<TgDialog[]> {
   return triageDialogs(list, where, await read($, triage), me ?? NO_ME)
-}
-
-async function lensExtras($: $, els: Els): Promise<{ extra: RenderElement; isSavedLens: boolean }> {
-  const state = await read($, triage)
-  return {
-    isSavedLens: state.lens !== null,
-    extra: LensTabs(els, {
-      lenses: state.lenses,
-      active: state.lens,
-      isRanked: state.isRanked,
-      onLens: id => selectSavedLens($, id),
-      onRank: () => toggleRanking($),
-    }),
-  }
 }
 
 async function selectSavedLens($: $, id: string | null): Promise<void> {
@@ -983,7 +1322,6 @@ async function drawLensEditor($: $, els: Els, rows: number): Promise<RenderEleme
     onPick: dialogId => editDraft($, lens => togglePicked(lens, dialogId)),
     onSave: () => saveLens($),
     onDelete: () => deleteLens($),
-    onCancel: () => update($, triage, value => ({ ...value, editor: null })),
   })
 }
 
@@ -1060,22 +1398,12 @@ async function toggleSummary($: $): Promise<void> {
   )
 }
 
-/** The summary block above the thread, and the rows it takes. */
-async function drawSummary($: $, els: Els, width: number, hasWatchKey: boolean): Promise<{ element: RenderElement | null; rows: number }> {
+/** The summary block above the thread while `t` has run, and the rows it takes. */
+async function drawSummary($: $, els: Els, width: number): Promise<{ element: RenderElement | null; rows: number }> {
   const open = await read($, thread)
-  if (open === null) return { element: null, rows: 0 }
-  const state = await read($, triage)
-  const summary = state.summary?.peerId === open.peer.id ? state.summary : null
-  return {
-    rows: summaryRows(summary),
-    element: SummaryBlock(els, {
-      summary,
-      isWatched: state.watched.some(peer => peer.id === open.peer.id),
-      width,
-      onSummary: () => toggleSummary($),
-      ...(hasWatchKey && { onWatch: () => toggleWatch($, open.peer) }),
-    }),
-  }
+  const summary = (await read($, triage)).summary
+  if (open === null || summary === null || summary.peerId !== open.peer.id) return { element: null, rows: 0 }
+  return { rows: summaryRows(summary), element: SummaryBlock(els, { summary, width }) }
 }
 
 // --- needs-you ranking ---
@@ -1313,7 +1641,7 @@ function watchEnded(ended: ProcessSpawnResult, stderr: string): string {
 // ── /watch hub ──
 
 // ── routing ──
-// Phase 2: the tray's send, the route picker and its agent radar, broadcast,
+// Phase 2: the route picker (⏎ on a message) and its agent radar, broadcast,
 // the packet ledger, live pins and drafted replies. Pure rules and drawing are
 // in ./routing; every `$` call is here.
 //
@@ -1327,7 +1655,6 @@ const PIN_FLUSH_MS = 1_500
 const route = atom({ plugin: 'dialogs-pane', key: 'route' } as const, { kind: 'one', to: { kind: 'main' } })
 const intent = atom({ plugin: 'dialogs-pane', key: 'intent' } as const, 'fix')
 const isRedacted = atom({ plugin: 'dialogs-pane', key: 'isRedacted' } as const, true)
-const isMaskShown = atom({ plugin: 'dialogs-pane', key: 'isMaskShown' } as const, false)
 const overlay = atom({ plugin: 'dialogs-pane', key: 'overlay' } as const, { kind: 'none' })
 const radar = atom({ plugin: 'dialogs-pane', key: 'radar' } as const, [])
 const isMainBusy = atom({ plugin: 'dialogs-pane', key: 'isMainBusy' } as const, false)
@@ -1382,31 +1709,42 @@ async function routingTick($: $): Promise<void> {
 
 // --- the overlay: route picker, broadcast, ledger ---
 
-async function closeOverlay($: $, ring?: string): Promise<void> {
+async function closeOverlay($: $): Promise<void> {
   await update($, overlay, () => ({ kind: 'none' }))
-  if (ring !== undefined) await moveRing($, ring)
+  await ringCursor($)
 }
 
-async function openPicker($: $): Promise<void> {
-  await update($, overlay, () => ({ kind: 'picker' }))
+/**
+ * ⏎ on a message: the route picker for the marked set, or for the message
+ * under the cursor when nothing is marked. A digit there sends. The send sheet
+ * (T2) replaces the picker; until then it is the sheet's place.
+ */
+async function openSheet($: $): Promise<void> {
+  const marked = (await read($, selection)).ids
+  const message = await cursorMessage($)
+  const ids = marked.length > 0 ? marked : message === undefined ? [] : [message.id]
+  if (ids.length === 0) return
+  await update($, overlay, () => ({ kind: 'picker', ids }))
   await refreshRadar($)
   await moveRing($, 'route:main')
 }
 
-/** A target is picked: the tray shows it and the ring waits on send, so Enter sends. */
-async function chooseRoute($: $, to: Recipient): Promise<void> {
-  await update($, route, () => ({ kind: 'one', to }))
-  await closeOverlay($, 'send')
+/** A target is picked: the packet goes there now, under the intent the picker shows. */
+async function chooseRoute($: $, ids: readonly number[], to: Recipient): Promise<void> {
+  const chosen = { kind: 'one', to } as const
+  await update($, route, () => chosen)
+  await closeOverlay($)
+  await sendIds($, ids, legsOf(chosen, await read($, intent)))
 }
 
-async function openBroadcast($: $): Promise<void> {
+async function openBroadcast($: $, ids: number[]): Promise<void> {
   const rows = broadcastRows(await read($, radar), await read($, intent))
-  await update($, overlay, () => ({ kind: 'broadcast', rows }))
+  await update($, overlay, () => ({ kind: 'broadcast', rows, ids }))
   await moveRing($, 'leg:0:on')
 }
 
 async function editLegs($: $, edit: (rows: BroadcastRow[]) => BroadcastRow[]): Promise<void> {
-  await update($, overlay, value => (value.kind === 'broadcast' ? { kind: 'broadcast', rows: edit(value.rows) } : value))
+  await update($, overlay, value => (value.kind === 'broadcast' ? { ...value, rows: edit(value.rows) } : value))
 }
 
 async function finishBroadcast($: $): Promise<void> {
@@ -1418,7 +1756,8 @@ async function finishBroadcast($: $): Promise<void> {
     return
   }
   await update($, route, () => chosen)
-  await closeOverlay($, 'send')
+  await closeOverlay($)
+  await sendIds($, shown.ids, legsOf(chosen, await read($, intent)))
 }
 
 async function openLedger($: $): Promise<void> {
@@ -1447,27 +1786,30 @@ async function jumpTo($: $, entry: LedgerEntry): Promise<void> {
 
 async function drawOverlay($: $, els: Els, width: number, rows: number): Promise<RenderElement | null> {
   const shown = await read($, overlay)
-  const count = (await read($, selection)).ids.length
   switch (shown.kind) {
     case 'none':
       return null
-    case 'picker':
+    case 'picker': {
+      const { ids } = shown
       return RoutePicker(els, {
-        count,
+        ids,
         radar: await read($, radar),
         isMainBusy: await read($, isMainBusy),
         intent: await read($, intent),
+        isRedacted: await read($, isRedacted),
+        masked: await maskedCount($, ids),
         width,
-        onMain: () => chooseRoute($, { kind: 'main' }),
-        onAgent: (agent: RadarEntry) => chooseRoute($, { kind: 'agent', agentId: agent.agentId, label: agent.label }),
-        onNew: () => chooseRoute($, { kind: 'new' }),
-        onBroadcast: () => openBroadcast($),
+        onMain: () => chooseRoute($, ids, { kind: 'main' }),
+        onAgent: (agent: RadarEntry) => chooseRoute($, ids, { kind: 'agent', agentId: agent.agentId, label: agent.label }),
+        onNew: () => chooseRoute($, ids, { kind: 'new' }),
+        onBroadcast: () => openBroadcast($, ids),
         onIntent: () => update($, intent, nextIntent),
-        onClose: () => closeOverlay($, 'send'),
+        onRedact: () => update($, isRedacted, value => !value),
       })
+    }
     case 'broadcast':
       return BroadcastPicker(els, {
-        count,
+        count: shown.ids.length,
         rows: shown.rows,
         width,
         onToggle: index => editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, isOn: !leg.isOn } : leg))),
@@ -1475,7 +1817,6 @@ async function drawOverlay($: $, els: Els, width: number, rows: number): Promise
           editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, intent: nextIntent(leg.intent) } : leg))),
         onAdd: () => editLegs($, addNewLeg),
         onDone: () => finishBroadcast($),
-        onBack: () => openPicker($),
       })
     case 'ledger':
       return Ledger(els, {
@@ -1484,71 +1825,24 @@ async function drawOverlay($: $, els: Els, width: number, rows: number): Promise
         rows,
         width,
         onJump: entry => jumpTo($, entry),
-        onClose: () => closeOverlay($, 'send'),
       })
   }
 }
 
-// --- the tray ---
-
-async function routedTray(
-  $: $,
-  els: Els,
-  size: 'full' | 'line',
-  handlers: { onWhole: () => Promise<void>; onClear: () => Promise<unknown> },
-): Promise<RenderElement> {
+/** What redaction would mask in a packet of `ids`, so the picker can say it before sending. */
+async function maskedCount($: $, ids: readonly number[]): Promise<number> {
   const open = await read($, thread)
   const messages = await threadMessages($)
-  const chosen = await read($, selection)
-  const selected = selectedMessages(messages, chosen.ids)
-  const { known, toFetch } = parentsAtHand(selected, messages)
-  const redact = await read($, isRedacted)
-  const shownIntent = await read($, intent)
-  const redactions =
-    open === null || selected.length === 0 || !redact
-      ? []
-      : previewPacket({
-          selected,
-          context: known,
-          peer: peerOf(open.peer, loaded(await read($, dialogs)) ?? []),
-          intent: shownIntent,
-          isRedacted: true,
-        }).redactions
-  const pin = open === null ? null : ((await read($, pins)).find(one => one.peer.id === open.peer.id) ?? null)
-  return RoutedTray(els, {
-    size,
-    selection: chosen,
-    preview: { selected, parents: known.length, toFetch: toFetch.length, redactions },
-    route: await read($, route),
-    intent: shownIntent,
-    isRedacted: redact,
-    isMaskShown: await read($, isMaskShown),
-    pin,
-    draft: await read($, draft),
-    width: 200,
-    onSend: () => sendSelection($),
-    onWhole: handlers.onWhole,
-    onClear: handlers.onClear,
-    onRoute: () => openPicker($),
-    onIntent: async () => {
-      await update($, intent, nextIntent)
-      await moveRing($, 'send')
-    },
-    onRedact: async () => {
-      await update($, isRedacted, value => !value)
-    },
-    onMask: async () => {
-      await update($, isMaskShown, value => !value)
-    },
-    onPin: () => togglePin($),
-    onLedger: () => openLedger($),
-    onDraft: {
-      onCheck: () => checkDraft($),
-      onSend: () => sendDraft($),
-      onDrop: () => update($, draft, () => null),
-      onEdit: text => update($, draft, value => (value === null ? null : { ...value, text, step: { kind: 'draft' } })),
-    },
-  })
+  const selected = selectedMessages(messages, ids)
+  if (open === null || selected.length === 0 || !(await read($, isRedacted))) return 0
+  const { known } = parentsAtHand(selected, messages)
+  return previewPacket({
+    selected,
+    context: known,
+    peer: peerOf(open.peer, loaded(await read($, dialogs)) ?? []),
+    intent: await read($, intent),
+    isRedacted: true,
+  }).redactions.length
 }
 
 // --- sending a packet ---
@@ -1683,27 +1977,26 @@ async function sendPacket(
   return { failed: added.filter(entry => entry.state.kind === 'failed').length, fetchFailure }
 }
 
-/** The tray's send: the selection, along the route, under the intent. */
-async function sendSelection($: $): Promise<void> {
+/** The picker's send: these messages, along the legs; the marks clear once every leg went. */
+async function sendIds($: $, ids: readonly number[], legs: readonly Leg[]): Promise<void> {
   const open = await read($, thread)
   const messages = await threadMessages($)
-  const selected = selectedMessages(messages, (await read($, selection)).ids)
+  const selected = selectedMessages(messages, ids)
   if (open === null || selected.length === 0) {
-    $.ui.toast('tg: select messages first (x, v, or d for the whole thread).')
+    $.ui.toast('tg: those messages are no longer loaded; ⏎ on one sends it.')
     return
   }
-  const legs = legsOf(await read($, route), await read($, intent))
   const sent = await sendPacket($, { peer: open.peer, selected, known: messages, legs })
   const why = sent.fetchFailure === null ? '' : ` Reply-chain parents missing: ${sent.fetchFailure.kind}.`
   if (sent.failed === 0) {
     await update($, selection, () => NO_SELECTION)
-    $.ui.toast(`tg: packet sent to ${legs.length === 1 ? 'one target' : `${legs.length} targets`}; l shows the ledger.${why}`)
+    $.ui.toast(`tg: packet sent to ${legs.length === 1 ? 'one target' : `${legs.length} targets`}; l shows activity.${why}`)
   } else {
-    $.ui.toast(`tg: ${sent.failed} of ${legs.length} deliveries failed; l shows why. The selection is kept.${why}`)
+    $.ui.toast(`tg: ${sent.failed} of ${legs.length} deliveries failed; l shows why. The marks are kept.${why}`)
   }
 }
 
-/** The Hidden band's ⏎: the dialog's newest message to main, under the tray's intent. */
+/** The Hidden band's ⏎: the dialog's newest message to main, under the picker's intent. */
 async function bandToMain($: $): Promise<void> {
   const event = await read($, band)
   const dialog = (loaded(await read($, dialogs)) ?? []).find(one => one.id === event?.dialogId)
@@ -1895,8 +2188,8 @@ async function sendDraft($: $): Promise<void> {
 // ── bottest ──
 // Bot testing in the pane (docs/design/dialogs-pane.md §5 ideas 6–10): pressable
 // buttons (b, then Enter), a one-line send box (n), the recorder (r), the reply
-// diff (f: a Button hotkey is a letter or digit, so `=` cannot be one) and latency
-// stamps. The pure parts are in ./bottest; everything that takes `$` is here.
+// diff (f) and latency stamps; ./ui/keys keeps r and f to bot chats. The pure
+// parts are in ./bottest; everything that takes `$` is here.
 // The block keeps its own imports (ES imports hoist), so the phase-2 branches
 // that edit this file meet as little as possible.
 import type { On } from 'claude-code'
@@ -1908,7 +2201,7 @@ import { diffPair, replyDiff } from './bottest/diff'
 import { chipAction, isBotFather, readOnlyText } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
-import { BotBar, ChipRow, DiffView, NoticeRow, SendBox, chipKey } from './bottest/ui'
+import { ChipRow, DiffView, SendBox, chipKey } from './bottest/ui'
 import type { Button as KeyButton, MessageView } from './packet/types'
 
 const NO_BOTTEST: BotTest = {
@@ -2111,8 +2404,7 @@ async function sendText($: $, text: string): Promise<void> {
   const result = await runWrite($, calls.send(open.peer.arg, true), text)
   await finishWrite($, open.peer, { kind: 'send', text, wait_s: SEND_WAIT_S }, at, result)
   // Hand the keys back to the thread, or j/k would type into nothing.
-  const last = (await threadMessages($)).at(-1)
-  if (last !== undefined) await moveRing($, `msg:${last.id}`)
+  await ringCursor($)
 }
 
 // --- keys: b, n, r, f ---
@@ -2217,33 +2509,6 @@ async function drawBottestDiff($: $, els: Els, width: number, rows: number): Pro
   return DiffView(els, { diff: replyDiff(before, after), width, rows })
 }
 
-/** Rows the bot-testing lines take under an open thread: the bar, a wrapped notice, the send box. */
-async function bottestRows($: $, width: number): Promise<number> {
-  const state = await read($, bottest)
-  const notice = state.notice === null ? 0 : Math.ceil(state.notice.text.length / Math.max(10, width))
-  return 1 + notice + (state.composing ? 1 : 0)
-}
-
-async function drawBottest($: $, els: Els): Promise<RenderElement[]> {
-  const open = await read($, thread)
-  if (open === null) return []
-  const state = await read($, bottest)
-  const box = state.composing ? SendBox(els, { peer: open.peer.label, onSend: text => sendText($, text) }) : null
-  return [
-    BotBar(els, {
-      recording: state.recording,
-      busy: state.busy,
-      watch: state.timing.watch,
-      onButtons: () => focusButtons($),
-      onCompose: () => toggleCompose($),
-      onRecord: () => toggleRecord($),
-      onDiff: () => toggleDiff($),
-    }),
-    ...(state.notice === null ? [] : [NoticeRow(els, { notice: state.notice })]),
-    ...(box === null ? [] : [box]),
-  ]
-}
-
 // ── autopilot ──
 // Phase 3 (docs/design/dialogs-pane.md §6): chosen dialogs answered as you.
 // Each running dialog listens on the watch hub (name 'autopilot', unbounded).
@@ -2253,13 +2518,13 @@ async function drawBottest($: $, els: Els): Promise<RenderElement[]> {
 // bottest write runner as `tg send PEER - --plain --json` (calls.reply), so tg's
 // guard and allow.toml decide. Only the owner's own keys pass --yes: ⏎ on a
 // draft the band shows whole, and `u`'s delete (design doc §9 decision 9).
-// Pure rules are in ./autopilot; every `$` call is here. Keys: q the card
-// (pane), u undo (pane and band); a draft's ⏎ e x o in the band. The kill
-// switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
+// Pure rules are in ./autopilot; every `$` call is here. Keys (./ui/keys): a
+// the card (pane), u undo (pane and band); a draft's ⏎ e d o in the band. The
+// kill switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
 import type { PluginOptions } from 'claude-code'
 
 import type { ApDialog, ApDraft, ApLevel, ApOutcome, ApPhase, ApTopic, ApUndo, Autopilot } from '../types'
-import { AutopilotCard, AutopilotLedger, AutopilotRow, DraftBand, NoteBand, UndoBand, type AllowView } from './autopilot/components'
+import { AutopilotCard, AutopilotLedger, DraftBand, NoteBand, UndoBand, type AllowView } from './autopilot/components'
 import {
   AP_LEVELS,
   LEVEL_GLYPH,
@@ -2275,7 +2540,7 @@ import {
   DEFAULT_QUIET,
 } from './autopilot/config'
 import { MAX_REGENERATIONS, NO_BURST, afterCheck, consume, gate, onDeleted, onEdited, onIncoming, onTyping, sentLastHour, wakeAt, type AfterCheck, type Burst } from './autopilot/burst'
-import { NO_AUTOPILOT, UNDO_MS, addEntry as addApEntry, draftsTail, logCheck, patchEntry, putDraft, undoStatus } from './autopilot/ledger'
+import { NO_AUTOPILOT, UNDO_MS, addEntry as addApEntry, draftsTail, logCheck, patchEntry, putDraft, undoLeft, undoStatus } from './autopilot/ledger'
 import {
   HISTORY_LIMIT,
   LISTEN_SYSTEM,
@@ -2833,7 +3098,7 @@ async function apUnfoldDraft($: $, draft: ApDraft): Promise<void> {
 
 /** `o` on a draft or a summary: the pane, on that dialog. */
 async function apOpen($: $, peer: PeerRef): Promise<void> {
-  if ((await read($, mode)) === 'hidden') await setMode($, defaultMode(undefined))
+  if ((await read($, mode)) === 'hidden') await setMode($, 'open')
   const listed = (loaded(await read($, dialogs)) ?? []).find(one => one.id === peer.id)
   await openThread($, listed ?? dialogOfPeer(peer))
 }
@@ -2884,7 +3149,7 @@ async function apToggleCard($: $): Promise<void> {
   }
   const peer = await watchTarget($)
   if (peer === undefined) {
-    $.ui.toast('tg: put the cursor on a dialog, then press q for its autopilot card.')
+    $.ui.toast('tg: put the cursor on a chat, then press a for its agent card.')
     return
   }
   await update($, autopilot, value => ({
@@ -2892,6 +3157,8 @@ async function apToggleCard($: $): Promise<void> {
     dialogs: value.dialogs[String(peer.id)] === undefined ? { ...value.dialogs, [String(peer.id)]: defaultDialog(peer) } : value.dialogs,
     view: { kind: 'card', dialogId: peer.id, notice: null },
   }))
+  // ⏎ starts or stops: the ring waits on the bar's `⏎ start` (design §3.3).
+  await moveRing($, 'key:start')
   // Fresh: an allow added in the prompt since the last read shows at once.
   loadAllow($).catch(() => {
     // loadAllow records its own failure, and the card shows it.
@@ -2977,7 +3244,7 @@ async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
     return dialog === undefined ? [] : [`${LEVEL_GLYPH[dialog.level]} ${dialog.peer.label}: ${dialog.level}, ${rateText(dialog.perHour)}, ${state.phase[String(id)] ?? 'listening'}`]
   })
   lines.push(...(await dgTaskLines($))) // ── delegate ──
-  return { text: lines.length === 0 ? 'tg autopilot: off. Open a dialog in the pane and press q.' : ['tg autopilot:', ...lines].join('\n') }
+  return { text: lines.length === 0 ? 'tg autopilot: off. Open a chat in the pane and press a.' : ['tg autopilot:', ...lines].join('\n') }
 }
 
 /** The card or the ledger tab in place of the pane while one is open. */
@@ -2985,11 +3252,10 @@ async function drawAutopilotView($: $, els: Els, width: number, rows: number): P
   const state = await read($, autopilot)
   const view = state.view
   if (view.kind === 'none') return null
-  const close = () => update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
   if (view.kind === 'ledger') {
     const at = await $.clock.now()
     const ledger = await dgLedger($, state.ledger, state.dialogs) // ── delegate ── with the guard's stop events
-    return AutopilotLedger(els, { ledger, now: Math.max(at, state.now), rows, width, onCard: null, onClose: close })
+    return AutopilotLedger(els, { ledger, now: Math.max(at, state.now), rows, width })
   }
   const dialog = state.dialogs[String(view.dialogId)]
   if (dialog === undefined) return null
@@ -3024,26 +3290,6 @@ async function drawAutopilotView($: $, els: Els, width: number, rows: number): P
       if (!parsed.ok) return apNotice($, `"${text}" is not a range: write it as 22:00-08:00, or off.`)
       await apNotice($, null)
       await edit(one => ({ ...one, quiet: parsed.value }))
-    },
-    onStart: () => apToggleRun($, dialog),
-    onEditBrief: () => moveRing($, 'ap:tone'),
-    onLedger: () => update($, autopilot, value => ({ ...value, view: { kind: 'ledger' } })),
-    onClose: close,
-  })
-}
-
-async function drawAutopilotRow($: $, els: Els): Promise<RenderElement> {
-  const state = await read($, autopilot)
-  return AutopilotRow(els, {
-    running: state.running.length,
-    drafts: state.drafts.length,
-    undo: state.undo,
-    now: state.now,
-    onCard: () => apToggleCard($),
-    onUndo: () => apUndo($),
-    onStopAll: async () => {
-      const stopped = await apStopAll($)
-      $.ui.toast(`tg autopilot off: ${stopped} dialog${stopped === 1 ? '' : 's'} stopped.`)
     },
   })
 }
@@ -3375,7 +3621,7 @@ function guardEntries(events: readonly GuardEvent[], dialogs: Record<string, ApD
 
 /** The card's `guard:` row while delegate cannot start here; null once the guard answers. */
 async function dgGuardText($: $): Promise<string | null> {
-  return (await dgGuardArmed($)) === null ? `delegate needs the ${GUARD} plugin loaded and answering: it holds the Worker's hard stops. Enable it, then press s.` : null
+  return (await dgGuardArmed($)) === null ? `delegate needs the ${GUARD} plugin loaded and answering: it holds the Worker's hard stops. Enable it, then press ⏎ again.` : null
 }
 
 // --- settings and the card's rows ---
@@ -3868,6 +4114,12 @@ async function dgStatus($: $): Promise<{ line: string | null; tail: string }> {
 /** A task's waiting stops: the Speaker's (on the task) and the Worker's (the guard's). */
 function holdsOfView(task: DgTask, guard: { holds: readonly GuardHold[] }): { stops: readonly string[]; what: string }[] {
   return [...task.holds, ...guard.holds.filter(hold => hold.taskId === task.id)]
+}
+
+/** Hard stops waiting for the owner, for the header's "for you". */
+async function dgHoldCount($: $): Promise<number> {
+  const guard = await dgGuardView($)
+  return (await read($, delegate)).tasks.filter(isLive).reduce((sum, task) => sum + holdsOfView(task, guard).length, 0)
 }
 
 async function drawHoldBand($: $, els: Els, width: number): Promise<RenderElement | null> {

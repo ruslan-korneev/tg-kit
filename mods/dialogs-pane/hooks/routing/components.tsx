@@ -1,83 +1,20 @@
-// The routing components of design §4: the tray with its chips (route,
-// IntentChip, redaction, pin), RoutePicker with AgentChips, the broadcast
-// picker, LedgerRow and the drafted reply. Plain functions over the surface's
-// element table, as ../ui/components.tsx draws; handlers come in as closures.
+// The routing components of design §4: RoutePicker with AgentChips (⏎ on a
+// message opens it until the send sheet, T2, replaces it), the broadcast
+// picker, the packet ledger and the drafted reply. Plain functions over the
+// surface's element table, as ../ui/components.tsx draws; handlers come in as
+// closures. Their letters are ../ui/keys'; digits pick what is numbered here.
 import type { RenderElement } from 'claude-code'
 
-import type {
-  BroadcastRow,
-  LedgerEntry,
-  Pin,
-  RadarEntry,
-  ReplyDraft,
-  Route,
-  RouteIntent,
-  Selection,
-  TgMessage,
-} from '../../types'
-import type { Redaction } from '../packet/redact'
+import type { BroadcastRow, LedgerEntry, RadarEntry, ReplyDraft, RouteIntent } from '../../types'
 import type { Els } from '../ui/components'
 import { GLYPH, TOKEN, oneLine } from '../ui/model'
-import { agentChip, intentLabel, ledgerRowText, recipientLabel, routeLabel } from './route'
-
-/** What the tray knows about the packet before anything runs. */
-export type TrayPreview = {
-  selected: readonly TgMessage[]
-  /** Reply-chain parents in the thread, and the ones a send fetches. */
-  parents: number
-  toFetch: number
-  redactions: readonly Redaction[]
-}
-
-export type TrayProps = {
-  size: 'full' | 'line'
-  selection: Selection
-  preview: TrayPreview
-  route: Route
-  intent: RouteIntent
-  isRedacted: boolean
-  isMaskShown: boolean
-  pin: Pin | null
-  draft: ReplyDraft | null
-  width: number
-  onSend: () => void
-  onWhole: () => void
-  onClear: () => void
-  onRoute: () => void
-  onIntent: () => void
-  onRedact: () => void
-  onMask: () => void
-  onPin: () => void
-  onLedger: () => void
-  onDraft: DraftHandlers
-}
+import { agentChip, intentLabel, ledgerRowText, recipientLabel } from './route'
 
 export type DraftHandlers = { onCheck: () => void; onSend: () => void; onDrop: () => void; onEdit: (text: string) => void }
 
-function summaryOf(preview: TrayPreview): string {
-  const { selected } = preview
-  if (selected.length === 0) return 'nothing selected: x selects, v a range, d the whole thread'
-  const ids = selected
-    .slice(0, 4)
-    .map(message => `#${message.id}`)
-    .join(' ')
-  const more = selected.length > 4 ? ` +${selected.length - 4}` : ''
-  const buttons = selected.reduce((sum, message) => sum + message.buttons.flat().length, 0)
-  const media = selected.filter(message => message.media !== null).length
-  const parents = preview.parents + preview.toFetch
-  const chain = parents === 0 ? '' : ` · +${parents} reply-chain${preview.toFetch > 0 ? ` (${preview.toFetch} via tg msg)` : ''}`
-  return `${ids}${more} · ${buttons} buttons · ${media === 0 ? 'no media' : `${media} media`}${chain}`
-}
-
-/** What redaction masked, `original → placeholder`, on one line. */
-function maskedText(redactions: readonly Redaction[]): string {
-  if (redactions.length === 0) return 'masked: nothing in this selection'
-  return `masked: ${redactions.map(one => `${one.original} → ${one.placeholder}`).join(' · ')}`
-}
-
 function IntentChip(
   { Button, Text }: Els,
-  props: { intent: RouteIntent; onPress: () => void; hotkey?: string; id: string; isShort?: boolean },
+  props: { intent: RouteIntent; onPress: () => void; id: string; isShort?: boolean; hotkey?: string },
 ): RenderElement {
   return (
     <Button key={props.id} plain hotkey={props.hotkey} onPress={props.onPress}>
@@ -87,109 +24,12 @@ function IntentChip(
   )
 }
 
-/** How a pin's `tg watch` stands: starting, live (nothing to say) or stopped and why. */
-function watchMark(pin: Pin): string {
-  switch (pin.watch.status) {
-    case 'starting':
-      return ` ${GLYPH.working}`
-    case 'live':
-      return ''
-    case 'failed':
-      return ` ${GLYPH.error} ${pin.watch.reason}`
-  }
-}
-
-/** The packet tray: what is selected, where it goes, under which intent, masked or not. */
-export function RoutedTray(els: Els, props: TrayProps): RenderElement {
-  const { Box, Text, Button } = els
-  const count = props.selection.ids.length
-  const pinned = props.pin === null ? 'pin' : `${GLYPH.pinned} pinned → ${recipientLabel(props.pin.to)}${watchMark(props.pin)}`
-  const send = (
-    <Button key="send" variant="primary" onPress={props.onSend}>
-      send
-    </Button>
-  )
-  const routeChip = (
-    <Button key="route" plain hotkey="a" onPress={props.onRoute}>
-      <Text color={TOKEN.accent}>{routeLabel(props.route)}</Text>
-    </Button>
-  )
-  const draft = props.draft === null ? null : DraftRow(els, { draft: props.draft, width: props.width, ...props.onDraft })
-  if (props.size === 'line') {
-    return (
-      <Box flexDirection="column">
-        {draft}
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-          <Text color={TOKEN.accent}>{`${count} selected`}</Text>
-          {routeChip}
-          {IntentChip(els, { intent: props.intent, onPress: props.onIntent, hotkey: 'i', id: 'intent', isShort: true })}
-          {send}
-          <Button key="whole" plain hotkey="d" dimColor onPress={props.onWhole}>
-            all
-          </Button>
-          <Button key="clear" plain hotkey="c" dimColor onPress={props.onClear}>
-            clear
-          </Button>
-          <Button key="pin" plain hotkey="p" dimColor={props.pin === null} onPress={props.onPin}>
-            {props.pin === null ? 'pin' : GLYPH.pinned}
-          </Button>
-          <Button key="ledger" plain hotkey="l" dimColor onPress={props.onLedger}>
-            ledger
-          </Button>
-        </Box>
-      </Box>
-    )
-  }
-  return (
-    <Box flexDirection="column">
-      {draft}
-      <Text color={TOKEN.accent}>{`packet · ${count} msg`}</Text>
-      <Text dimColor wrap="truncate-end">
-        {summaryOf(props.preview)}
-      </Text>
-      <Box flexDirection="row" gap={2}>
-        {routeChip}
-        {IntentChip(els, { intent: props.intent, onPress: props.onIntent, hotkey: 'i', id: 'intent' })}
-        <Button key="redact" plain onPress={props.onRedact}>
-          <Text dimColor>redact: </Text>
-          <Text color={props.isRedacted ? undefined : TOKEN.warn}>{props.isRedacted ? 'on' : 'off'}</Text>
-        </Button>
-        {props.isRedacted ? (
-          <Button key="masked" plain dimColor onPress={props.onMask}>
-            {props.isMaskShown ? 'hide masked' : `${props.preview.redactions.length} masked`}
-          </Button>
-        ) : null}
-      </Box>
-      {props.isRedacted && props.isMaskShown ? (
-        <Text dimColor wrap="wrap">
-          {maskedText(props.preview.redactions)}
-        </Text>
-      ) : null}
-      <Box flexDirection="row" gap={2}>
-        {send}
-        <Button key="whole" plain hotkey="d" dimColor onPress={props.onWhole}>
-          all
-        </Button>
-        <Button key="clear" plain hotkey="c" dimColor onPress={props.onClear}>
-          clear
-        </Button>
-        <Button key="pin" plain hotkey="p" dimColor={props.pin === null} onPress={props.onPin}>
-          {pinned}
-        </Button>
-        <Button key="ledger" plain hotkey="l" dimColor onPress={props.onLedger}>
-          ledger
-        </Button>
-      </Box>
-    </Box>
-  )
-}
-
 /**
  * The drafted reply: check (dry run, the WritePlan and the guard), then send, or drop.
  * Planned, the text is drawn whole and wrapped above "send reply": the owner sends it
  * with --yes as their own (decision 9), so they read all of it first; `edit` reopens it.
  */
-function DraftRow(
+export function DraftRow(
   els: Els,
   props: { draft: ReplyDraft; width: number } & DraftHandlers,
 ): RenderElement {
@@ -255,21 +95,26 @@ function DraftRow(
   )
 }
 
-/** RoutePicker: main, live agents with their AgentChips, a new agent, broadcast. */
+/**
+ * RoutePicker: main, live agents with their AgentChips, a new agent, broadcast.
+ * A digit sends at once, under the intent and redaction shown.
+ */
 export function RoutePicker(
   els: Els,
   props: {
-    count: number
+    ids: readonly number[]
     radar: readonly RadarEntry[]
     isMainBusy: boolean
     intent: RouteIntent
+    isRedacted: boolean
+    masked: number
     width: number
     onMain: () => void
     onAgent: (agent: RadarEntry) => void
     onNew: () => void
     onBroadcast: () => void
     onIntent: () => void
-    onClose: () => void
+    onRedact: () => void
   },
 ): RenderElement {
   const { Box, Text, Button } = els
@@ -279,7 +124,7 @@ export function RoutePicker(
   const next = () => (hotkey <= 9 ? String(hotkey++) : undefined)
   return (
     <Box flexDirection="column">
-      <Text color={TOKEN.accent} bold>{`send ${props.count} message${props.count === 1 ? '' : 's'} to`}</Text>
+      <Text color={TOKEN.accent} bold>{`send ${props.ids.length === 1 ? `#${props.ids[0]}` : `${props.ids.length} messages`} to`}</Text>
       <Button key="route:main" plain hotkey={next()} onPress={props.onMain}>
         {pad('main (this session)', nameWidth + 12)}
         <Text dimColor>{agentChip(props.isMainBusy ? 'running' : 'idle')}</Text>
@@ -300,9 +145,10 @@ export function RoutePicker(
         ⇉ broadcast with per-agent intent
       </Button>
       <Box flexDirection="row" gap={2}>
-        {IntentChip(els, { intent: props.intent, onPress: props.onIntent, hotkey: 'i', id: 'picker:intent' })}
-        <Button key="picker:close" plain hotkey="a" dimColor onPress={props.onClose}>
-          close
+        {IntentChip(els, { intent: props.intent, onPress: props.onIntent, id: 'picker:intent', hotkey: 'i' })}
+        <Button key="redact" plain onPress={props.onRedact}>
+          <Text dimColor>redact: </Text>
+          <Text color={props.isRedacted ? undefined : TOKEN.warn}>{props.isRedacted ? `on · ${props.masked} masked` : 'off'}</Text>
         </Button>
       </Box>
     </Box>
@@ -320,14 +166,13 @@ export function BroadcastPicker(
     onIntent: (index: number) => void
     onAdd: () => void
     onDone: () => void
-    onBack: () => void
   },
 ): RenderElement {
   const { Box, Text, Button } = els
   const on = props.rows.filter(row => row.isOn).length
   return (
     <Box flexDirection="column">
-      <Text color={TOKEN.accent} bold>{`broadcast ${props.count} message${props.count === 1 ? '' : 's'}: one packet, an intent per agent`}</Text>
+      <Text color={TOKEN.accent} bold>{`broadcast ${props.count} message${props.count === 1 ? '' : 's'}: one packet, an intent per agent; ⏎ sends`}</Text>
       {props.rows.map((row, index) => (
         <Box key={`leg:${index}`} flexDirection="row" gap={1}>
           <Button key={`leg:${index}:on`} plain hotkey={index < 9 ? String(index + 1) : undefined} onPress={() => props.onToggle(index)}>
@@ -339,13 +184,10 @@ export function BroadcastPicker(
       ))}
       <Box flexDirection="row" gap={2}>
         <Button key="broadcast:done" variant="primary" onPress={props.onDone}>
-          {`route to ${on}`}
+          {`send to ${on}`}
         </Button>
-        <Button key="broadcast:add" plain hotkey="0" dimColor onPress={props.onAdd}>
+        <Button key="broadcast:add" plain dimColor onPress={props.onAdd}>
           + new agent
-        </Button>
-        <Button key="broadcast:back" plain hotkey="a" dimColor onPress={props.onBack}>
-          back
         </Button>
       </Box>
       <Text dimColor>digits toggle a leg; Enter on an intent cycles it</Text>
@@ -362,7 +204,6 @@ export function Ledger(
     rows: number
     width: number
     onJump: (entry: LedgerEntry) => void
-    onClose: () => void
   },
 ): RenderElement {
   const { Box, Text, Button } = els
@@ -378,12 +219,7 @@ export function Ledger(
           <Text color={color(entry)}>{oneLine(ledgerRowText(entry, props.now), Math.max(20, props.width - 2))}</Text>
         </Button>
       ))}
-      <Box flexDirection="row" gap={2}>
-        <Text dimColor>Enter jumps to the message</Text>
-        <Button key="ledger:close" plain hotkey="l" dimColor onPress={props.onClose}>
-          close
-        </Button>
-      </Box>
+      <Text dimColor>⏎ on a row jumps to the message</Text>
     </Box>
   )
 }

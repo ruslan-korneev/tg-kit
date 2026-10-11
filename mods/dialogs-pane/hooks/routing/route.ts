@@ -33,7 +33,7 @@ void INTENTS_MATCH
 
 const INTENT_ORDER: readonly RouteIntent[] = INTENT_IDS
 
-/** `i`: Fix → Reproduce → Explain → Test → Draft reply → Raw → Fix. */
+/** The picker's intent chip: Fix → Reproduce → Explain → Test → Draft reply → Raw → Fix. */
 export function nextIntent(intent: RouteIntent): RouteIntent {
   const at = INTENT_ORDER.indexOf(intent)
   return INTENT_ORDER[(at + 1) % INTENT_ORDER.length] ?? 'fix'
@@ -101,7 +101,7 @@ export function routeLabel(route: Route): string {
   return `⇉ broadcast ×${on}`
 }
 
-/** What a send delivers: one leg under the tray's intent, or the broadcast's own legs. */
+/** What a send delivers: one leg under the picker's intent, or the broadcast's own legs. */
 export function legsOf(route: Route, intent: RouteIntent): Leg[] {
   return route.kind === 'one' ? [{ to: route.to, intent }] : route.legs
 }
@@ -110,7 +110,7 @@ export function legsOf(route: Route, intent: RouteIntent): Leg[] {
 const SPLIT: readonly RouteIntent[] = ['reproduce', 'test', 'draft_reply']
 
 /**
- * The broadcast picker's rows: main under the tray's intent (on), each live
+ * The broadcast picker's rows: main under the picker's intent (on), each live
  * agent and one new agent (off), with the split intents handed round.
  */
 export function broadcastRows(radar: readonly RadarEntry[], intent: RouteIntent): BroadcastRow[] {
@@ -160,7 +160,7 @@ export function selectedMessages(messages: readonly TgMessage[], ids: readonly n
 
 /**
  * Reply-chain parents the thread already holds, and the ones a send fetches
- * with `tg msg` (one hop: what the tray can say before anything runs).
+ * with `tg msg` (one hop: what the picker can say before anything runs).
  */
 export function parentsAtHand(
   selected: readonly TgMessage[],
@@ -182,7 +182,7 @@ export function parentsAtHand(
   return { known, toFetch }
 }
 
-/** The tray's preview: the packet as it stands with the parents at hand. */
+/** The picker's preview: the packet as it stands with the parents at hand. */
 export function previewPacket(input: {
   selected: readonly TgMessage[]
   context: readonly TgMessage[]

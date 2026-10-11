@@ -1,13 +1,15 @@
 // The autopilot's components (docs/design/dialogs-pane.md §6 mockups): the
-// card that hands a dialog over, its ledger tab, the pane's autopilot row, and
-// the band rows for a draft, an undoable auto reply and a `listen` summary.
-// Plain functions over the surface's element table, as ../ui/components.tsx.
+// card that hands a dialog over, its ledger tab, and the band rows for a
+// draft, an undoable auto reply and a `listen` summary. Plain functions over
+// the surface's element table, as ../ui/components.tsx. Their letters are
+// ../ui/keys' (one meaning each, the band's included); the card's digits pick
+// a level, and its other controls are reached by the ring until T3.
 import type { RenderElement } from 'claude-code'
 
 import type { ApDialog, ApDraft, ApEntry, ApLevel, ApNote, ApPhase, ApTopic, ApUndoWindow } from '../../types'
 import type { Els } from '../ui/components'
 import { GLYPH, TOKEN, oneLine } from '../ui/model'
-import { AP_LEVELS, AP_TOPICS, LEVEL_GLYPH, TOPIC_KEY, TOPIC_LABEL, quietText, rateText } from './config'
+import { AP_LEVELS, AP_TOPICS, LEVEL_GLYPH, TOPIC_LABEL, quietText, rateText } from './config'
 import { entryLines, undoLeft } from './ledger'
 
 /** What the card says about allow.toml for the dialog. */
@@ -23,10 +25,6 @@ export type CardHandlers = {
   onTopic: (topic: ApTopic) => void
   onQuiet: () => void
   onQuietText: (text: string) => void
-  onStart: () => void
-  onEditBrief: () => void
-  onLedger: () => void
-  onClose: () => void
 }
 
 const PHASE_TEXT: Record<ApPhase, string> = {
@@ -141,7 +139,7 @@ export function AutopilotCard(
       <Box flexDirection="row">
         {Label(els, 'quiet:')}
         <Box flexDirection="row" columnGap={2}>
-          <Button key="ap:quiet" plain hotkey="t" onPress={props.onQuiet}>
+          <Button key="ap:quiet" plain onPress={props.onQuiet}>
             {dialog.quiet === null ? 'off' : 'on'}
           </Button>
           {Field(els, { id: 'ap:quiet:range', label: 'hours', value: quietText(dialog.quiet), placeholder: '22:00-08:00', onSubmit: props.onQuietText })}
@@ -153,7 +151,7 @@ export function AutopilotCard(
           {AP_TOPICS.map(topic => {
             const isOn = dialog.topics.includes(topic)
             return (
-              <Button key={`ap:topic:${topic}`} plain hotkey={TOPIC_KEY[topic]} dimColor={!isOn} onPress={() => props.onTopic(topic)}>
+              <Button key={`ap:topic:${topic}`} plain dimColor={!isOn} onPress={() => props.onTopic(topic)}>
                 {isOn ? <Text color={TOKEN.accent}>{TOPIC_LABEL[topic]}</Text> : <Text strikethrough>{TOPIC_LABEL[topic]}</Text>}
               </Button>
             )
@@ -168,45 +166,19 @@ export function AutopilotCard(
       {props.notice === null ? null : (
         <Text color={TOKEN.warn} wrap="wrap">{props.notice}</Text>
       )}
-      <Box flexDirection="row" gap={2}>
-        <Button key="ap:start" plain hotkey="s" autoFocus onPress={props.onStart}>
-          {props.isRunning ? '⏎ stop' : '⏎ start'}
-        </Button>
-        <Button key="ap:brief" plain hotkey="e" dimColor onPress={props.onEditBrief}>
-          edit brief
-        </Button>
-        <Button key="ap:ledger" plain hotkey="l" dimColor onPress={props.onLedger}>
-          ledger
-        </Button>
-        <Button key="ap:close" plain hotkey="q" dimColor onPress={props.onClose}>
-          close
-        </Button>
-      </Box>
     </Box>
   )
 }
 
 /** The autopilot ledger tab: newest first, two lines a burst. */
 export function AutopilotLedger(
-  { Box, Text, Button }: Els,
-  props: { ledger: readonly ApEntry[]; now: number; rows: number; width: number; onCard: (() => void) | null; onClose: () => void },
+  { Box, Text }: Els,
+  props: { ledger: readonly ApEntry[]; now: number; rows: number; width: number },
 ): RenderElement {
   const shown = [...props.ledger].reverse().slice(0, Math.max(1, Math.floor((props.rows - 2) / 2)))
   return (
     <Box key="ap:ledger" flexDirection="column">
-      <Box flexDirection="row" justifyContent="space-between">
-        <Text color={TOKEN.accent} bold>{`autopilot ledger · ${props.ledger.length} burst${props.ledger.length === 1 ? '' : 's'}`}</Text>
-        <Box flexDirection="row" gap={2}>
-          {props.onCard === null ? null : (
-            <Button key="ap:ledger:card" plain hotkey="l" dimColor onPress={props.onCard}>
-              card
-            </Button>
-          )}
-          <Button key="ap:ledger:close" plain hotkey="q" dimColor onPress={props.onClose}>
-            close
-          </Button>
-        </Box>
-      </Box>
+      <Text color={TOKEN.accent} bold>{`autopilot ledger · ${props.ledger.length} burst${props.ledger.length === 1 ? '' : 's'}`}</Text>
       {shown.length === 0 ? <Text dimColor>Nothing yet: a burst shows here once the autopilot handled it.</Text> : null}
       {...shown.map(entry => {
         const [head, tail] = entryLines(entry, props.now, props.width)
@@ -218,34 +190,6 @@ export function AutopilotLedger(
           </Box>
         )
       })}
-    </Box>
-  )
-}
-
-/** The pane's autopilot row: q opens the card; what runs; undo; stop all (0). */
-export function AutopilotRow(
-  { Box, Text, Button }: Els,
-  props: { running: number; drafts: number; undo: ApUndoWindow | null; now: number; onCard: () => void; onUndo: () => void; onStopAll: () => void },
-): RenderElement {
-  const left = undoLeft(props.undo, props.now)
-  return (
-    <Box key="ap:row" flexDirection="row" gap={2}>
-      <Button key="ap:card-open" plain hotkey="q" dimColor onPress={props.onCard}>
-        autopilot
-      </Button>
-      {props.running === 0 ? null : <Text color={TOKEN.accent}>{`${LEVEL_GLYPH.auto} ${props.running} on`}</Text>}
-      {props.drafts === 0 ? null : <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} ${props.drafts} draft${props.drafts === 1 ? '' : 's'}`}</Text>}
-      {left === 0 ? null : (
-        <Button key="ap:undo" plain hotkey="u" onPress={props.onUndo}>
-          {`undo ${left}s`}
-        </Button>
-      )}
-      {props.running === 0 ? null : (
-        // 0 is free in the pane: only the broadcast overlay draws it, and that replaces the pane.
-        <Button key="ap:stop-all" plain hotkey="0" onPress={props.onStopAll}>
-          <Text color={TOKEN.danger}>stop all</Text>
-        </Button>
-      )}
     </Box>
   )
 }
@@ -328,7 +272,7 @@ export function DraftBand(
           <Button key="ap:draft:edit" plain hotkey="e" dimColor onPress={props.onEdit}>
             edit
           </Button>
-          <Button key="ap:draft:drop" plain hotkey="x" dimColor onPress={props.onDrop}>
+          <Button key="ap:draft:drop" plain hotkey="d" dimColor onPress={props.onDrop}>
             drop
           </Button>
           <Button key="ap:draft:open" plain hotkey="o" dimColor onPress={props.onOpen}>
@@ -358,7 +302,7 @@ export function UndoBand(
       <Button key="ap:band:undo-press" plain hotkey="u" autoFocus onPress={props.onUndo}>
         {`undo ${undoLeft(undo, props.now)}s`}
       </Button>
-      <Button key="ap:band:undo-dismiss" plain hotkey="x" dimColor onPress={props.onDismiss}>
+      <Button key="ap:band:undo-dismiss" plain hotkey="d" dimColor onPress={props.onDismiss}>
         dismiss
       </Button>
     </Box>
@@ -377,7 +321,7 @@ export function NoteBand({ Box, Text, Button }: Els, props: { note: ApNote; widt
       <Button key="ap:note:open" plain hotkey="o" dimColor onPress={props.onOpen}>
         open
       </Button>
-      <Button key="ap:note:dismiss" plain hotkey="x" dimColor autoFocus onPress={props.onDismiss}>
+      <Button key="ap:note:dismiss" plain hotkey="d" dimColor autoFocus onPress={props.onDismiss}>
         dismiss
       </Button>
     </Box>
