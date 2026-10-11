@@ -370,15 +370,15 @@ describe('auto', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [] })
     const { ui, filled } = await openCard($, on, clock)
-    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toContain('· needs allow.toml')
+    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toContain('needs allow.toml · ')
     await ui.press({ key: 'ap:level:auto' })
     expect(await ui.find({ type: 'Text', text: '✗ Dev Team is not in allow.toml, and auto sends alone' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: '⏎ puts  ! tg allow add 1002 --yes  in your prompt' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '⏎ puts  tg allow add 1002 --yes  in your prompt' })).toBeDefined()
     expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ allow in the prompt…')
     await ui.press({ key: 'key:start' })
     await clock.settle()
-    expect(filled).toEqual(['! tg allow add 1002 --yes'])
-    expect(await ui.find({ type: 'Text', text: '! tg allow add 1002 --yes is in your prompt: Esc, then Enter runs it; this card notices.' })).toBeDefined()
+    expect(filled).toEqual(['tg allow add 1002 --yes'])
+    expect(await ui.find({ type: 'Text', text: 'tg allow add 1002 --yes is in your prompt: Esc, ctrl+a, then ! and Enter run it in the shell; this card notices.' })).toBeDefined()
     expect(seen.children).toHaveLength(0)
     // allow.toml stays the human's: tg allow add never runs from the pane.
     expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add')).toEqual([])
@@ -392,7 +392,7 @@ describe('auto', () => {
     seen.store.set('autopilot.dialogs', { [String(GROUP)]: { peer: { id: GROUP, arg: '1002', label: 'Dev Team', kind: 'supergroup' }, level: 'auto' } })
     const { ui } = await openCard($, on, clock)
     // The card opens on the stored level, and its read says no.
-    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toMatch(/^▸ 4: ⟳ auto/)
+    expect((await ui.find({ key: 'ap:rung:auto' }))?.text).toMatch(/^▸ ⟳ auto/)
     expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ allow in the prompt…')
     allow.push(GROUP) // the owner runs `! tg allow add 1002 --yes` where the card cannot see it
     const reads = allowReads(seen)
@@ -433,7 +433,7 @@ describe('auto', () => {
     await ui.press({ key: 'ap:level:auto' })
     expect(await ui.find({ type: 'Text', text: '⚠ could not read allow.toml · g: retry' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /not in allow\.toml/ })).toBeUndefined()
-    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toContain('· could not read allow.toml')
+    expect((await ui.find({ key: 'ap:level:auto' }))?.text).toContain('could not read allow.toml · ')
     expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ read allow.toml again')
     isDown = false
     await ui.press({ key: 'key:reload' })

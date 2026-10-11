@@ -1138,7 +1138,7 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
   const { Text } = els
   switch (where) {
     case 'card': {
-      const view = await drawCard($, els) // ── autopilot ──
+      const view = await drawCard($, els, width) // ── autopilot ──
       return view === null ? [] : [view]
     }
     case 'activity':
@@ -2832,6 +2832,7 @@ import type { ApDialog, ApDraft, ApOutcome, ApPhase, ApRung, ApTopic, ApUndo, Ap
 import { CardLadder, CardOptions, cardChip } from './autopilot/components'
 import { AP_LEVELS, LEVEL_GLYPH, defaultDialog, parseDialogs as parseApDialogs, parseQuiet, rateText, toggleTopic } from './autopilot/config'
 import {
+  ALLOW_KEYS,
   RUNG_GLYPH,
   RUNG_NAME,
   allowCommand,
@@ -2880,7 +2881,8 @@ function registerAutopilot(on: On): void {
   on('session.append', async ($, e, next) => {
     const done = await next(e)
     if (isShellOutput(e.message) && (await read($, bottest)).allow.status !== 'idle') {
-      loadAllow($).catch(() => {
+      // The card's "is in your prompt" notice has done its job once the command ran.
+      Promise.all([loadAllow($), apNotice($, null)]).catch(() => {
         // loadAllow records its own failure, and the card shows it (§7.4).
       })
     }
@@ -3489,7 +3491,7 @@ async function apStep($: $, step: CardStep, ring?: string): Promise<void> {
   const view = await update($, autopilot, value => (value.view.kind === 'card' ? { ...value, view: { ...value.view, step, notice: null, back: step === 'options' ? (value.view.step === 'grant' ? 'grant' : 'ladder') : value.view.back } } : value))
   if (view.view.kind !== 'card') return
   if (step === 'grant') await dgFillRepos($, view.view.dialogId) // ── delegate ──
-  await moveRing($, ring ?? (step === 'options' ? 'ap:rate' : step === 'ladder' ? 'key:start' : `key:start:${step}`))
+  await moveRing($, ring ?? (step === 'ladder' ? 'key:start' : `key:start:${step}`))
 }
 
 /** `e` on the card: the repos field on the grant, else the brief's first field, in the options. */
@@ -3504,7 +3506,7 @@ async function apEditField($: $): Promise<void> {
 /** The card's facts for the key table: its step, and what ⏎ does now (the bar's label). */
 async function cardFacts($: $, view: Extract<ApView, { kind: 'card' }>, peer: PeerRef): Promise<CardFacts> {
   const action = await apCardActionNow($, view, peer)
-  return { step: view.step, enter: action.kind === 'none' ? null : actionLabel(action, view.pick, view.step), isDelegate: view.pick === 'delegate' }
+  return { step: view.step, enter: actionLabel(action, view.pick, view.step), isDelegate: view.pick === 'delegate' }
 }
 
 /** `h` on the card: the options back to where `o` came from, the warning and the grant back to the ladder, the ladder closes. */
@@ -3566,7 +3568,8 @@ async function apCardEnter($: $): Promise<void> {
     action = await apCardActionNow($, view, peer)
   }
   switch (action.kind) {
-    case 'none':
+    case 'done':
+      return apCardBack($)
     case 'reading':
     case 'retry':
       return
@@ -3579,7 +3582,7 @@ async function apCardEnter($: $): Promise<void> {
       // allow.toml stays the human's (decision 1): the command waits in the prompt for them to run.
       const command = allowCommand(peer.arg)
       const filled = await $.prompt.fill({ text: command })
-      return apNotice($, filled.isFilled ? `${command} is in your prompt: Esc, then Enter runs it; this card notices.` : `Run ${command} in the prompt; this card notices.`)
+      return apNotice($, filled.isFilled ? `${command} is in your prompt: ${ALLOW_KEYS} in the shell; this card notices.` : `Run ! ${command} in the prompt; this card notices.`)
     }
     case 'guard':
       return apNotice($, `Not started: ${await dgGuardText($)}`)
@@ -3668,7 +3671,7 @@ async function autopilotCommand($: $, args: string): Promise<{ text: string }> {
 }
 
 /** The card in the lower part (dock) or the body (inline) while it is open: its step's layer. */
-async function drawCard($: $, els: Els): Promise<RenderElement | null> {
+async function drawCard($: $, els: Els, width: number): Promise<RenderElement | null> {
   const state = await read($, autopilot)
   const view = state.view
   if (view.kind === 'none') return null
@@ -3694,6 +3697,7 @@ async function drawCard($: $, els: Els): Promise<RenderElement | null> {
         isGuardUp,
         followTo: to.kind === 'main' ? 'main, every turn' : to.label,
         notice: view.notice,
+        width,
         onPick: rung => apPick($, rung),
       })
     }

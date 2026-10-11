@@ -39,7 +39,7 @@ describe('what ⏎ does on the card', () => {
     expect(cardAction(input({ pick: 'auto', allow: OUTSIDE }))).toEqual({ kind: 'allow' })
     expect(cardAction(input({ step: 'grant', pick: 'delegate', allow: OUTSIDE }))).toEqual({ kind: 'allow' })
     expect(cardAction(input({ pick: 'auto' }))).toEqual({ kind: 'start' })
-    expect(allowCommand('1004')).toBe('! tg allow add 1004 --yes')
+    expect(allowCommand('1004')).toBe('tg allow add 1004 --yes')
   })
 
   test('a read of allow.toml that failed is a retry, never "not in allow.toml" (§7.4); one on its way waits', () => {
@@ -66,7 +66,7 @@ describe('what ⏎ does on the card', () => {
     expect(cardAction(input({ step: 'grant', pick: 'delegate', running: 'delegate', allow: OUTSIDE }))).toEqual({ kind: 'stop' })
     expect(cardAction(input({ pick: 'auto', running: 'follow' }))).toEqual({ kind: 'switch', from: 'follow' })
     expect(actionLabel({ kind: 'switch', from: 'follow' }, 'auto', 'ladder')).toBe('switch to auto')
-    expect(cardAction(input({ step: 'options' }))).toEqual({ kind: 'none' })
+    expect(cardAction(input({ step: 'options' }))).toEqual({ kind: 'done' })
     expect(runningRung(true, null)).toBe('follow')
     expect(runningRung(true, 'auto')).toBe('auto')
     expect(runningRung(false, null)).toBeNull()

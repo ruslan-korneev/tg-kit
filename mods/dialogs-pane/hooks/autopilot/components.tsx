@@ -11,9 +11,9 @@ import type { RenderElement } from 'claude-code'
 import type { ApDialog, ApPhase, ApRung, ApTopic } from '../../types'
 import type { Els } from '../ui/components'
 import type { ChatKind } from '../ui/keys'
-import { GLYPH, TOKEN } from '../ui/model'
+import { GLYPH, TOKEN, oneLine } from '../ui/model'
 import { AP_TOPICS, TOPIC_LABEL, clockText, quietText, rateText } from './config'
-import { RUNG_GLYPH, RUNG_NAME, allowCommand, readOnlyKindText, rungBlock, rungDigit, rungWhat, type AllowView } from './ladder'
+import { ALLOW_KEYS, RUNG_GLYPH, RUNG_NAME, allowCommand, readOnlyKindText, rungBlock, rungDigit, rungWhat, type AllowView } from './ladder'
 
 /** §7.3: cards align their labels in a 7-column left column (brief, limits, asks, writes, grant, stops, guard). */
 export const LABEL_COLUMN = 7
@@ -69,7 +69,7 @@ export function writesRows(els: Els, props: { label: string; arg: string; rung: 
         : [
             Row(els, 'writes', `✗ ${props.label} is not in allow.toml, and ${RUNG_NAME[rung]} sends alone`, TOKEN.warn),
             Row(els, '', `⏎ puts  ${allowCommand(props.arg)}  in your prompt`),
-            Row(els, '', '(Esc, then Enter runs it; this card notices)'),
+            Row(els, '', `(${ALLOW_KEYS} in the shell; this card notices)`),
           ]
   }
 }
@@ -99,7 +99,7 @@ function essentials(els: Els, props: LadderProps): RenderElement[] {
     case 'listen':
       return [Row(els, 'writes', 'never: each burst becomes a summary in the band')]
     case 'draft':
-      return [Row(els, 'brief', briefText(dialog)), Row(els, 'asks', asksText(dialog)), Row(els, 'writes', `${GLYPH.done} you send each draft with ⏎ on its row: no allow.toml needed`, TOKEN.ok)]
+      return [Row(els, 'brief', briefText(dialog)), Row(els, 'asks', asksText(dialog)), Row(els, 'writes', `${GLYPH.done} you send each draft yourself: no allow.toml needed`, TOKEN.ok)]
     case 'auto':
       return [Row(els, 'limits', `${limitsText(dialog)}   o: change`), Row(els, 'asks', asksText(dialog)), ...writesRows(els, { label: dialog.peer.label, arg: dialog.peer.arg, rung: pick, allow: props.allow })]
     case 'delegate':
@@ -121,6 +121,7 @@ type LadderProps = {
   /** Where a follow sends the chat's messages: `main, every turn`, or the agent the route names. */
   followTo: string
   notice: string | null
+  width: number
   onPick: (rung: ApRung) => void
 }
 
@@ -137,18 +138,18 @@ export function CardLadder(els: Els, props: LadderProps): RenderElement {
       {...props.ladder.map(rung => {
         const isPick = rung === props.pick
         const block = rungBlock(rung, props.allow, props.isGuardUp)
-        const head = `${rungDigit(rung)}: ${RUNG_GLYPH[rung]} ${RUNG_NAME[rung].padEnd(10)}`
+        // The engine draws the hotkey before the label (`3: `), so ▸ sits outside the Button, and the
+        // rest is one truncated line: why it cannot start comes first, then what it does.
+        const tail = `${RUNG_GLYPH[rung]} ${RUNG_NAME[rung].padEnd(10)} ${block === null ? '' : `${block} · `}${rungWhat(rung, props.kind)}${rung === props.running ? ` · ${GLYPH.unread} on` : ''}`
         return (
-          <Button key={`ap:level:${rung}`} plain hotkey={rungDigit(rung)} onPress={() => props.onPick(rung)}>
+          <Box key={`ap:rung:${rung}`} flexDirection="row">
             <Text color={TOKEN.accent}>{isPick ? `${GLYPH.cursor} ` : '  '}</Text>
-            <Text color={isPick ? TOKEN.accent : undefined} bold={isPick} dimColor={!isPick && block !== null}>
-              {head}
-            </Text>
-            <Text dimColor wrap="truncate-end">
-              {` ${rungWhat(rung, props.kind)}${block === null ? '' : ` · ${block}`}`}
-            </Text>
-            {rung === props.running ? <Text color={TOKEN.ok}>{`  ${GLYPH.unread} on`}</Text> : null}
-          </Button>
+            <Button key={`ap:level:${rung}`} plain hotkey={rungDigit(rung)} onPress={() => props.onPick(rung)}>
+              <Text color={isPick ? TOKEN.accent : rung === props.running ? TOKEN.ok : undefined} bold={isPick} dimColor={!isPick && block !== null}>
+                {oneLine(tail, Math.max(10, props.width - 2 - 3))}
+              </Text>
+            </Button>
+          </Box>
         )
       })}
       {...essentials(els, props)}

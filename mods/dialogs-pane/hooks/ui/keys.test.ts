@@ -294,7 +294,8 @@ describe('the agent card (§5.4, §5.5)', () => {
     expect(actionBar(card('grant', 'start delegate', true)).find(key => key.id === 'open')?.label).toBe('limits & safety…')
     expect(actionBar(card('grant', 'start delegate', true)).find(key => key.id === 'edit')?.label).toBe('repos')
     expect(ids(actionBar(card('warning', 'I understand, set it up', true)))).toEqual(['start', 'back', 'menu'])
-    expect(ids(actionBar(card('options', null)))).toEqual(['back', 'menu'])
+    expect(ids(actionBar(card('options', 'done')))).toEqual(['start', 'back', 'menu'])
+    expect(actionBar(card('options', 'done'))[0]?.button).toBe('key:start:options')
   })
 
   test("the card's ⏎ is keyed per step, so a step's ring waits for its own drawing", () => {

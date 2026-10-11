@@ -68,7 +68,7 @@ export type ForYouRow = 'chat' | 'draft' | 'reply' | 'undo'
 /** The agent card while it is up (§5.4, §5.5): its step, and what ⏎ does now. */
 export type CardFacts = {
   step: CardStep
-  /** The bar's `⏎ …` (`start draft`, `stop auto`, `allow in the prompt…`); null in the options step, where ⏎ belongs to its fields. */
+  /** The bar's `⏎ …` (`start draft`, `stop auto`, `allow in the prompt…`, `done`); null where ⏎ has nothing to do. */
   enter: string | null
   /** delegate is picked: `o` opens limits and the safety settings (the danger zone). */
   isDelegate: boolean
@@ -419,8 +419,12 @@ export function isLive(def: KeyDef, c: KeyContext): boolean {
   return exists(def, c) && needsOf(def, c) === null
 }
 
-/** `button`: the bar Button's key where it is not `key:<id>` (the card's ⏎ per step, so a step's ring waits for its own drawing). */
-export type ShownKey = { id: RunKey; key: string; hotkey: string | null; label: string; button?: string }
+/**
+ * `button`: the bar Button's key where it is not `key:<id>` (the card's ⏎ per step, so a step's ring waits
+ * for its own drawing). `isRinged`: the ring starts there when the pane takes the keys (the card's ⏎, which
+ * has no cursor row to start on; seen live: after Esc and ctrl+x tab the ring was on nothing, and ⏎ did nothing).
+ */
+export type ShownKey = { id: RunKey; key: string; hotkey: string | null; label: string; button?: string; isRinged?: true }
 
 function shown(def: KeyDef, c: KeyContext): ShownKey {
   // Digit groups never reach here: they are in no bar and pressed by their options.
@@ -474,7 +478,7 @@ function verbs(c: KeyContext): readonly KeyId[] {
         case 'warning':
           return ['start', 'back']
         case 'options':
-          return ['back']
+          return ['start', 'back']
       }
     case 'activity':
       return ['open', 'dismiss', 'back']
@@ -528,8 +532,8 @@ export function actionBar(c: KeyContext, width = Infinity): ShownKey[] {
   return picked.map(id =>
     id === 'open' && c.where !== 'card'
       ? { ...shown(keyDef(id), c), hotkey: null }
-      : id === 'start' && step !== 'ladder'
-        ? { ...shown(keyDef(id), c), button: `key:start:${step}` }
+      : id === 'start'
+        ? { ...shown(keyDef(id), c), isRinged: true as const, ...(step === 'ladder' ? {} : { button: `key:start:${step}` }) }
         : shown(keyDef(id), c),
   )
 }

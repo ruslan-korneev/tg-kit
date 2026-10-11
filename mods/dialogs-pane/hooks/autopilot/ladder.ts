@@ -57,7 +57,7 @@ export function rungWhat(rung: ApRung, kind: ChatKind): string {
     case 'auto':
       return 'replies alone within limits; unsure → draft'
     case 'delegate':
-      return 'replies and does the work, with tools you grant'
+      return 'replies and does the work'
   }
 }
 
@@ -97,8 +97,12 @@ export type CardAction =
   | { kind: 'grant' }
   /** delegate while dialogs-pane-guard does not answer: ⏎ says so, nothing starts. */
   | { kind: 'guard' }
-  /** The options step: ⏎ belongs to its fields. */
-  | { kind: 'none' }
+  /**
+   * The options step: ⏎ is done, back to where `o` came from. The ring starts
+   * on it, a Button: on a Select no letter is a hotkey, so h and m would not
+   * work there (seen live on 2.1.296); ↓ walks to the fields.
+   */
+  | { kind: 'done' }
 
 export type CardInput = {
   step: CardStep
@@ -118,7 +122,7 @@ export type CardInput = {
  */
 export function cardAction(input: CardInput): CardAction {
   const { step, pick, running, allow } = input
-  if (step === 'options') return { kind: 'none' }
+  if (step === 'options') return { kind: 'done' }
   if (step !== 'warning' && running === pick) return { kind: 'stop' }
   if (step === 'warning') return { kind: 'grant' }
   if (step === 'ladder' && pick === 'delegate') return input.isWarned ? { kind: 'grant' } : { kind: 'warn' }
@@ -152,15 +156,23 @@ export function actionLabel(action: CardAction, pick: ApRung, step: CardStep): s
       return 'set up delegate…'
     case 'grant':
       return step === 'warning' ? 'I understand, set it up' : 'set up delegate…'
-    case 'none':
-      return ''
+    case 'done':
+      return 'done'
   }
 }
 
-/** What ⏎ puts in the prompt: the human runs it, and allow.toml stays theirs (decision 1). */
+/**
+ * What ⏎ puts in the prompt: the human runs it, and allow.toml stays theirs
+ * (decision 1). Without its `!`: a plugin's fill cannot turn the box to shell
+ * mode, and a filled `! tg …` goes to the model as a prompt (seen live on
+ * 2.1.296); `!` typed at the start of the box does turn it (ctrl+a, then !).
+ */
 export function allowCommand(arg: string): string {
-  return `! tg allow add ${arg} --yes`
+  return `tg allow add ${arg} --yes`
 }
+
+/** How the owner runs what ⏎ put in the prompt. */
+export const ALLOW_KEYS = 'Esc, ctrl+a, then ! and Enter run it'
 
 /** The rung a chat runs: a follow (pin) or the autopilot's level; one at most (decision 2). */
 export function runningRung(isFollowed: boolean, level: ApRung | null): ApRung | null {
