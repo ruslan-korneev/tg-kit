@@ -9,7 +9,7 @@ import {
   draftArgv,
   draftOf,
   feedPin,
-  ledgerRowText,
+  packetLogText,
   legsOf,
   onMainTurnStart,
   onRadar,
@@ -99,12 +99,11 @@ describe('the ledger', () => {
     expect(onTurnComplete(sent, 'other', 7).closed).toEqual([])
   })
 
-  test('a row reads packet → agent, intent, state, age', () => {
+  test('a log line reads packet → agent, intent, state; the time and the chat are the log’s columns (§10.6)', () => {
     const to = { kind: 'agent', isNew: true, agentId: 'a1', label: 'tg Fix #677791' } as const
-    expect(ledgerRowText(entry({ to, state: { kind: 'working' }, at: 0 }), 180_000)).toBe(
-      '#677791 @example_bot → +tg Fix #677791 · Fix · …working · 3m',
-    )
-    expect(ledgerRowText(entry({ state: { kind: 'failed', reason: 'gone' } }), 5000)).toContain('⚠ gone · 5s')
+    expect(packetLogText(entry({ to, state: { kind: 'working' }, at: 0 }))).toBe('#677791 → +tg Fix #677791 · Fix · …working')
+    expect(packetLogText(entry({ state: { kind: 'failed', reason: 'gone' } }))).toMatch(/· ⚠ gone$/)
+    expect(packetLogText(entry({ state: { kind: 'sent' } }))).toMatch(/· Fix · sent$/)
   })
 })
 

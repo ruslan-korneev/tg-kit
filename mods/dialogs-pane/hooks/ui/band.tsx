@@ -13,12 +13,10 @@ import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
 import { latencyText } from '../triage/live'
 import type { Els } from './components'
-import { GLYPH, oneLine } from './model'
+import { GLYPH, oneLine, peerConfirmLabel } from './model'
 import type { Colors } from './palette'
+import type { Seg } from './running'
 import { COMPACT_NARROW, COMPACT_WIDTH, DRAFT_LEAD, compactStatusText, draftFits, positionText, type BandItem, type CompactStatus } from './queue'
-
-/** An agent is on: §10.3's ⚡ (T12's `GLYPH.agent` once it lands). */
-const AGENT_GLYPH = '⚡'
 
 /** The band's width from which a draft's row 1 also draws `ctrl+x tab ›` and `o: open`; under it `o` stays a hidden key. */
 export const WIDE_BAND = 90
@@ -56,7 +54,7 @@ export function BandItemView(els: Els, colors: Colors, props: BandProps): Render
     case 'hold':
       return Item(els, props, {
         title: titleText(els, '⏸', colors.held, `HARD STOP ${props.item.stops.join(' + ')}: ${oneLine(props.item.what, 200)}`),
-        detail: `${LEVEL_GLYPH.delegate} ${props.item.peer.label} · answer in the dialog`,
+        detail: `${LEVEL_GLYPH.delegate} ${peerConfirmLabel(props.item.peer)} · answer in the dialog`,
         primary: { key: 'band:hold:open', label: '⏎ open' },
         keys: [],
         hidden: ['o'],
@@ -65,7 +63,7 @@ export function BandItemView(els: Els, colors: Colors, props: BandProps): Render
       const { undo } = props.item
       const conf = undo.confidence === null ? '' : ` · conf ${undo.confidence.toFixed(2)}`
       return Item(els, props, {
-        title: titleText(els, LEVEL_GLYPH.auto, colors.ok, `${undo.peer.label} replied "${oneLine(undo.text, 200)}"${conf}`),
+        title: titleText(els, LEVEL_GLYPH.auto, colors.ok, `${peerConfirmLabel(undo.peer)} replied "${oneLine(undo.text, 200)}"${conf}`),
         detail: null,
         primary: { key: 'ap:band:undo-press', label: `undo ${undoLeft(undo, props.now)}s`, hotkey: 'u' },
         keys: [{ key: 'ap:band:undo-dismiss', label: 'ok', hotkey: 'd', run: props.on.dismiss }],
@@ -201,7 +199,7 @@ function DraftItem(els: Els, colors: Colors, props: BandProps, item: Extract<Ban
         <Box flexGrow={1} flexShrink={1}>
           <Text wrap="truncate-end">
             <Text color={colors.held}>{`${LEVEL_GLYPH.draft} `}</Text>
-            {`${draft.peer.label}: "${oneLine(draft.incoming, 200)}"${draft.why === '' ? '' : ` · ${draft.why}`}`}
+            {`${peerConfirmLabel(draft.peer)}: "${oneLine(draft.incoming, 200)}"${draft.why === '' ? '' : ` · ${draft.why}`}`}
           </Text>
         </Box>
         {verdict === null ? null : (
@@ -262,8 +260,8 @@ export type CompactProps = {
   /** The band's `bodyColumns`. */
   width: number
   status: CompactStatus
-  /** `▰▰▱▱▱ 12/50` (T14's gauge) and its pair for the one-line form, while an agent is on; `bar` null with no limit. */
-  gauge: { bar: RenderElement | null; pair: string } | null
+  /** `▰▰▱▱▱ 12/50` (T14's `gaugeSegs`) and its pair for the one-line form, while an agent is on; `segs` null with no limit (`on`). */
+  gauge: { segs: readonly Seg[] | null; pair: string } | null
   /** The chat rows, drawn for `compactInner(width)` cells, the ringed one a Button; left out under an item and in one line. */
   rows: readonly RenderElement[]
   /** A band item shows above: the card keeps its status line, and ⏎ `j` `k` are the item's. */
@@ -322,7 +320,7 @@ export function CompactCard(els: Els, colors: Colors, props: CompactProps): Rend
         <Text color={colors.dim}> · </Text>
         {dot}
         {words}
-        {props.gauge === null ? null : <Text color={colors.ok}>{` · ${AGENT_GLYPH} ${props.gauge.pair}`}</Text>}
+        {props.gauge === null ? null : <Text color={colors.ok}>{` · ${GLYPH.agent} ${props.gauge.pair}`}</Text>}
       </Text>
     )
     return (
@@ -344,8 +342,14 @@ export function CompactCard(els: Els, colors: Colors, props: CompactProps): Rend
     <Text wrap="truncate-end">
       {dot}
       {words}
-      {props.gauge === null ? null : <Text color={colors.ok}>{`   ${AGENT_GLYPH} `}</Text>}
-      {props.gauge === null ? null : (props.gauge.bar ?? <Text color={colors.text}>{props.gauge.pair}</Text>)}
+      {props.gauge === null ? null : <Text color={colors.ok}>{`   ${GLYPH.agent} `}</Text>}
+      {props.gauge === null
+        ? null
+        : (props.gauge.segs ?? [{ text: props.gauge.pair, role: 'text' }]).map((seg, index) => (
+            <Text key={`compact:gauge:${index}`} color={seg.role === null ? undefined : colors[seg.role]}>
+              {seg.text}
+            </Text>
+          ))}
     </Text>
   )
   return (

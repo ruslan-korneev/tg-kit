@@ -47,7 +47,7 @@ export async function siteText($: Engine, site: typeof FOOTER | typeof HINT): Pr
 
 /**
  * The band's hotkeys as drawn and kept hidden, checked against §6 "Band": one
- * Button per hotkey, each a key the table gives the band, no digit (§10: a
+ * Button per hotkey, each a key the table gives the band, no digit (§11: a
  * prompt that starts with a digit would press it). Returns the problems.
  */
 export async function bandKeyProblems(band: { findAll: (query: { type: 'Button' }) => Promise<{ props: { hotkey?: unknown } }[]> }): Promise<string[]> {

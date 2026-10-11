@@ -104,6 +104,8 @@ function world(
   const seen: World = { runs: [], children: [], asked: [], status: [], toasts: [], commands: [], questions: [], opens: [], store: new Map(Object.entries(STARTED)), history: [message(498, 'is the release ready?'), message(499, 'yes', { out: true })] }
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  // session.start reads HOME (── delegate ──); unanswered, the hook is skipped and the session starts only in part.
+  on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
   on('store.set', (_$, e) => {
     seen.store.set(e.key, e.value)
@@ -235,7 +237,9 @@ describe('auto', () => {
   test('a burst waits its gap, the Speaker writes, tg send goes through the guard, u undoes it', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { ui, child } = await handOver($, clock, seen, '3')
+    const { ui: card, child } = await handOver($, clock, seen, '3')
+    // No pane while the clock runs: every state change would redraw it, and nothing here reads it (the band does).
+    await card.unmount()
     expect(child?.argv).toEqual(['tg', 'watch', '1002', '--jsonl'])
     expect(seen.store.get('autopilot.dialogs')).toMatchObject({ [String(GROUP)]: { level: 'auto', perHour: 50, gapS: 20, threshold: 0.8, quiet: null } })
 
@@ -260,7 +264,7 @@ describe('auto', () => {
     // The undo window is the band's (§8 T5): the status line keeps alarms only.
     expect(seen.status.at(-1)).toBeUndefined()
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
-    expect(await band.find({ type: 'Text', text: 'Dev Team replied "Merged, thanks" · conf 0.93' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: 'Dev Team · 1002 replied "Merged, thanks" · conf 0.93' })).toBeDefined()
     expect((await band.find({ key: 'ap:band:undo-press' }))?.text).toContain('undo 30s')
 
     await clock.advance(2_000)
@@ -269,11 +273,13 @@ describe('auto', () => {
     await band.press({ key: 'ap:band:undo-press' })
     expect(seen.runs.at(-1)?.argv).toEqual(['tg', 'delete', '1002', '900', '--yes', '--json'])
 
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
     // l from the card: Activity's log, one line a burst (§5.7).
-    const ledger = await ui.find({ type: 'Text', text: /→ "Merged, thanks"/ })
-    expect(ledger?.text).toMatch(/^ {2}\d\d:\d\d ⟳ Dev Team · → "Merged, thanks" · conf 0\.93 · ✓ sent · undone$/)
+    const ledger = await ui.find({ type: 'Text', text: /sent "Merged, thanks"/ })
+    // The time and the chat are the log's columns, the text what happened (§10.6).
+    expect(ledger?.text).toMatch(/^\d\d:\d\d {2}Dev Team {6}sent "Merged, thanks" · 0\.93 · undone$/)
     await band.unmount()
     await ui.unmount()
   })
@@ -304,7 +310,9 @@ describe('auto', () => {
   test('typing holds 60 s at most', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    const { child } = await handOver($, clock, seen, '3')
+    const { ui, child } = await handOver($, clock, seen, '3')
+    // No pane while 90 s of typing run: each event would redraw it, and the test reads only the Speaker's calls.
+    await ui.unmount()
     watchMessage(child, message(500, 'hi'))
     for (let s = 0; s < 90; s += 5) {
       child?.line({ event: 'typing', chat_id: GROUP, date: '2026-10-10T12:00:00Z', sender: alice, action: 'typing' })
@@ -407,7 +415,7 @@ describe('auto', () => {
     await clock.settle()
     expect(seen.opens.slice(opens)).toEqual([{ id: 'tg', focus: true }])
     // The argv is built once: the dialog shows it verbatim, and it is what runs.
-    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team without you, so Dev Team must be in allow.toml. Run  tg allow add 1002 --yes  ? (kept for later: tg allow remove takes it out)', options: ['No', 'Yes, add it'] }])
+    expect(seen.questions).toEqual([{ question: 'auto sends in Dev Team · 1002 without you, so Dev Team · 1002 must be in allow.toml. Run  tg allow add 1002 --yes  ? (kept for later: tg allow remove takes it out)', options: ['No', 'Yes, add it'] }])
     expect(adds(seen)).toEqual([['tg', 'allow', 'add', '1002', '--yes']])
     // Read again after the add, then straight on into the level: the card closes and the watch starts.
     expect(seen.runs.at(seen.runs.findIndex(one => one.argv[2] === 'add') + 1)?.argv).toEqual(['tg', 'allow', 'list', '--json'])
@@ -416,7 +424,7 @@ describe('auto', () => {
     expect(seen.toasts.at(-1)).toBe('tg: ⟳ auto on for Dev Team. 0 or /tg stop stops every chat.')
     // The audit trail, now that no `!` row shows the add.
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⟳ Dev Team · allow.toml \+ Dev Team \(1002\), your Yes$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^\d\d:\d\d {2}Dev Team +allow.toml \+ Dev Team \(1002\), your Yes$/ })).toBeDefined()
     await ui.unmount()
   })
 
@@ -438,7 +446,7 @@ describe('auto', () => {
     await ui.press({ key: 'key:start' })
     await clock.settle()
     expect(seen.questions).toHaveLength(1)
-    expect((await ui.find({ key: 'header' }))?.text).toContain('agent for @example_bot')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('agent for Example Bot')
     expect(adds(seen)).toEqual([])
     expect(seen.children).toHaveLength(0)
     await ui.unmount()
@@ -616,7 +624,7 @@ describe('draft and listen', () => {
     await clock.settle()
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     // Two rows (§8 T5): the message it answers and why it waits, then the draft alone at the full width.
-    expect(await band.find({ type: 'Text', text: 'Dev Team: "Can we call tomorrow at 10?" · escalated: dates · conf 0.62' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: 'Dev Team · 1002: "Can we call tomorrow at 10?" · escalated: dates · conf 0.62' })).toBeDefined()
     expect((await band.find({ key: 'band:row2' }))?.text).toBe('  → Tomorrow is packed, can I write after 18?')
     expect(sends(seen)).toHaveLength(0)
     await band.press({ key: 'ap:draft:edit' })
@@ -675,7 +683,7 @@ describe('draft and listen', () => {
     // The pane is on the chat, the cursor on the draft's row: its whole text, wrapped, and the verdict.
     const row = await draftRow(ui)
     expect(row?.props.autoFocus).toBe(true)
-    expect(row?.text).toContain('✎ draft to Dev Team · escalated: dates · conf 0.62')
+    expect(row?.text).toContain('✎ draft to Dev Team · 1002 · escalated: dates · conf 0.62')
     expect(await ui.find({ type: 'Text', text: long })).toMatchObject({ props: { wrap: 'wrap' } })
     expect(await ui.find({ type: 'Text', text: '   ✓ the guard allows it' })).toBeDefined()
     // §4.6 "the cursor on a draft": ⏎ send draft, e: edit, d: drop, a: agent.
@@ -911,8 +919,9 @@ describe('kill switch', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const { ui, child } = await handOver($, clock, seen, '3')
-    expect((await findChat(ui, 1002))?.text).toContain('⟳ # Dev Team')
-    expect((await findChat(ui, 1002))?.text).toContain('auto 0/50')
+    // The row's symbol is its unread count, which outranks ⚡ (§10.3); the header counts the level.
+    expect((await findChat(ui, 1002))?.text).toMatch(/◇ Dev Team .* 5$/)
+    expect((await ui.find({ key: 'header' }))?.text).toContain('⟳1')
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(child?.isKilled).toBe(true)

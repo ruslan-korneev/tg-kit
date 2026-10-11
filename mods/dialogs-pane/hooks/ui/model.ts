@@ -3,12 +3,14 @@
 // The keys are in ./keys.
 import type {
   Load,
+  PeerRef,
   Selection,
   TgDialog,
   TgFailure,
   TgMessage,
   TgPeerKind,
 } from '../../types'
+import type { Role } from './palette'
 
 /** Terminal palette names, so the pane follows the person's theme. */
 export const TOKEN = {
@@ -20,10 +22,23 @@ export const TOKEN = {
 } as const
 
 export const GLYPH = {
-  bot: '◆',
-  group: '#',
+  // The chat row's kinds (§10.3), each drawn in its role.
+  person: '○',
+  group: '◇',
+  channel: '▷',
+  bot: '⬡',
   saved: '★',
-  person: '•',
+  forum: '⌗',
+  /** A forum topic, in its `icon_color`; General is `general`, dim. */
+  topic: '●',
+  general: '#',
+  allTopics: '≡',
+  // The row's symbols (§10.3); counts are text.
+  /** An agent is on here, at any level. Wide: two cells. */
+  agent: '⚡',
+  muted: '◌',
+  closed: '⊘',
+  draft: '✎',
   unread: '●',
   cursor: '▸',
   /** The open chat's row while the cursor is elsewhere (dock). */
@@ -36,18 +51,38 @@ export const GLYPH = {
   error: '⚠',
 } as const
 
-const GROUP_KINDS: readonly TgPeerKind[] = ['group', 'supergroup', 'channel']
-
-export function dialogGlyph(kind: TgPeerKind): { glyph: string; color?: string } {
-  if (kind === 'bot') return { glyph: GLYPH.bot, color: TOKEN.bot }
-  if (kind === 'self') return { glyph: GLYPH.saved }
-  if (GROUP_KINDS.includes(kind)) return { glyph: GLYPH.group }
-  return { glyph: GLYPH.person }
+/** A chat's kind glyph and its role (§10.3). tg's JSON has no forum flag yet: the caller says (T16). */
+export function dialogGlyph(kind: TgPeerKind, isForum = false): { text: string; role: Role } {
+  if (isForum) return { text: GLYPH.forum, role: 'group' }
+  switch (kind) {
+    case 'bot':
+      return { text: GLYPH.bot, role: 'bot' }
+    case 'self':
+      return { text: GLYPH.saved, role: 'saved' }
+    case 'group':
+    case 'supergroup':
+      return { text: GLYPH.group, role: 'group' }
+    case 'channel':
+      return { text: GLYPH.channel, role: 'channel' }
+    case 'user':
+    case 'unknown':
+      return { text: GLYPH.person, role: 'person' }
+  }
 }
 
-export function dialogLabel(dialog: Pick<TgDialog, 'kind' | 'title' | 'username'>): string {
-  if (dialog.kind === 'self') return 'Saved Messages'
-  return dialog.username === null ? dialog.title : `@${dialog.username}`
+/** A chat's name: its title (a user's first and last name), never `@username` (§10.4). */
+export function dialogLabel(dialog: Pick<TgDialog, 'kind' | 'title'>): string {
+  return dialog.kind === 'self' ? 'Saved Messages' : dialog.title
+}
+
+/**
+ * The name where the owner confirms something about a peer, with the handle tg is
+ * given: names are not unique, and anyone can take "Ivan Petrov". `Ivan Petrov ·
+ * @ivan_example`, `Project team · -1001234`; Saved Messages alone. Lists, the log and
+ * dividers show the name only (§10.4).
+ */
+export function peerConfirmLabel(peer: Pick<PeerRef, 'label' | 'arg'>): string {
+  return peer.arg === 'me' ? peer.label : `${peer.label} · ${peer.arg}`
 }
 
 /** What tg is handed for a dialog: `me`, `@username`, or the numeric id. */
@@ -72,18 +107,77 @@ export function isErrorText(text: string): boolean {
   return text.startsWith(GLYPH.error) || text.startsWith('❌') || /\b(error|went wrong|failed)\b/i.test(text)
 }
 
-/** `14:02` today, `yesterday`, else `09-29`; local time. */
-export function shortTime(iso: string | null, now: number): string {
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const
+
+/** The row's time (§10.4), at most 6 cells: `14:02` today, `Mon` within six days, `Oct 3` this year, else `2025`; local time. */
+export function rowTime(iso: string | null, now: number): string {
   if (iso === null) return ''
   const at = new Date(iso)
   if (Number.isNaN(at.getTime())) return ''
   const today = new Date(now)
-  const dayMs = 86_400_000
-  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  // Calendar days, not 24 h steps, so a DST change does not move the edge.
+  const sixDaysBack = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6)
   const pad = (n: number) => String(n).padStart(2, '0')
-  if (at.getTime() >= startOfToday) return `${pad(at.getHours())}:${pad(at.getMinutes())}`
-  if (at.getTime() >= startOfToday - dayMs) return 'yesterday'
-  return `${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+  if (at >= startOfToday) return `${pad(at.getHours())}:${pad(at.getMinutes())}`
+  if (at >= sixDaysBack) return WEEKDAYS[at.getDay()] ?? ''
+  if (at.getFullYear() === today.getFullYear()) return `${MONTHS[at.getMonth()] ?? ''} ${at.getDate()}`
+  return String(at.getFullYear())
+}
+
+/** The row's columns besides the name and the preview (§10.4): cursor 1, time 6, the glyph 1, symbol 3, and five spaces. */
+const ROW_FIXED = 15
+const ROW_NAME_MAX = 20
+const ROW_PREVIEW_MIN = 12
+const ROW_NAME_MIN = 10
+
+/** The name's and the preview's cells in a row `width` wide: the preview gives way first (§10.4). */
+export function rowWidths(width: number): { name: number; preview: number } {
+  const rest = Math.max(0, width - ROW_FIXED)
+  const name = Math.min(ROW_NAME_MAX, rest - ROW_PREVIEW_MIN)
+  if (name < ROW_NAME_MIN) return { name: rest, preview: 0 }
+  return { name, preview: rest - name }
+}
+
+/**
+ * An agent on the chat: `holding` while it holds a draft or a hard stop for the
+ * owner; `no-stops` while a delegate runs with hard stops skipped.
+ */
+export type AgentMark = 'on' | 'holding' | 'no-stops'
+
+/** The row's one symbol and its role, by §10.3's priority; null draws the column blank. */
+export function rowSymbol(
+  dialog: Pick<TgDialog, 'unread' | 'mentions' | 'muted' | 'username'>,
+  agent: AgentMark | null,
+  extra: { isClosed?: boolean; hasDraft?: boolean } = {},
+): { text: string; role: Role } | null {
+  // Skipped hard stops are the one dangerous state, so they outrank what waits.
+  if (agent === 'no-stops') return { text: GLYPH.error, role: 'unread' }
+  // Telegram notifies mentions in a muted chat too, so they keep their colour there (decision 5).
+  if (dialog.mentions > 0) return { text: dialog.mentions > 99 ? '@9+' : `@${dialog.mentions}`, role: 'mention' }
+  if (dialog.unread > 0) return { text: dialog.unread > 99 ? '99+' : String(dialog.unread), role: dialog.muted ? 'dim' : 'unread' }
+  if (extra.isClosed === true) return { text: GLYPH.closed, role: 'dim' }
+  if (agent !== null) return { text: GLYPH.agent, role: agent === 'holding' ? 'held' : 'ok' }
+  if (isReadOnlyPeer(dialog)) return { text: 'ro', role: 'held' }
+  if (extra.hasDraft === true) return { text: GLYPH.draft, role: 'held' }
+  if (dialog.muted) return { text: GLYPH.muted, role: 'dim' }
+  return null
+}
+
+/** What a chat list's row draws for a dialog, spread into `ChatRow`'s props. */
+export function dialogRow(
+  dialog: TgDialog,
+  context: { now: number; agent: AgentMark | null; isForum?: boolean },
+): { time: string; glyph: { text: string; role: Role }; name: string; isUnread: boolean; preview: { text: string }; symbol: { text: string; role: Role } | null } {
+  return {
+    time: rowTime(dialog.last_date, context.now),
+    glyph: dialogGlyph(dialog.kind, context.isForum),
+    name: dialogLabel(dialog),
+    isUnread: dialog.unread > 0 && !dialog.muted,
+    preview: { text: dialog.last_text },
+    symbol: rowSymbol(dialog, context.agent),
+  }
 }
 
 /** `14:02`, local time, from epoch milliseconds. */
@@ -117,10 +211,15 @@ export function cells(text: string): number {
 
 /**
  * Glyphs of the pane's own chrome that `cells` counts two but a terminal draws
- * in one (East Asian Width Neutral): the running strip's level glyphs and
- * arrow, and the folder strip's ‹ ›. ⏸ is two, so it is not here.
+ * in one (East Asian Width Neutral or Ambiguous): the running strip's level glyphs
+ * and arrow, the folder strip's ‹ ›, and §10.3's kinds, symbols and card glyphs.
+ * ⏸ and ⚡ are two, so they are not here.
  */
-export const NARROW_GLYPHS: ReadonlySet<string> = new Set(['⟳', '⌁', '◉', '✎', '↯', '→', '‹', '›'])
+export const NARROW_GLYPHS: ReadonlySet<string> = new Set([
+  '⟳', '⌁', '◉', '✎', '↯', '→', '‹', '›',
+  '○', '◇', '▷', '⬡', '★', '⌗', '●', '≡', '⊘', '◌', '▸',
+  '◎', '▪', '▣', '✓', '✗', '…', '■', '▰', '▱', '━', '↻', '⚠',
+])
 
 /** Cells of the pane's own labels: its narrow glyphs as drawn, everything else erring wide (`cells`). */
 export function labelCells(text: string): number {
@@ -187,16 +286,17 @@ export function failureText(failure: TgFailure, now: number, retryAt?: number): 
   }
 }
 
-export function failureColor(failure: TgFailure): string | undefined {
+/** A failure's role (§10.2): a flood wait is `held`, an error `unread` (red); the rest plain. */
+export function failureRole(failure: TgFailure): Role | undefined {
   switch (failure.kind) {
     case 'flood':
-      return TOKEN.warn
+      return 'held'
     case 'auth':
     case 'missing':
       return undefined
     case 'not-found':
     case 'error':
-      return TOKEN.danger
+      return 'unread'
   }
 }
 
