@@ -2472,14 +2472,22 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
 ```
 
 - **Where**: AbovePrompt, right-aligned, `width = min(46, bodyColumns − 2)`, as statuspane draws
-  its card (`justifyContent="flex-end"`, a rounded border). Under 40 columns it is one line, the
-  title's. It calls `next(e)` and draws what the plugins beneath drew above itself, as statuspane
-  does, so the two cards stack (P3).
+  its card (`justifyContent="flex-end"`, a rounded border). Under 40 columns it is one
+  right-aligned line without a border, `tg · ● 3 waiting · ⚡ 12/50`, itself the ring stop (⏎
+  opens Wide, `q` hides). It always calls `next(e)` and draws what the plugins beneath drew above
+  itself, as statuspane does, so the two cards stack (P3). Top to bottom: the band's item (full
+  width), what `next(e)` drew (statuspane's card), our card. v1's band item replaced `next(e)`;
+  v2 always chains.
 - **Lines**: the title `tg` in the top border, in `accent`. Then a status line. Then the top two
   chats in the row format: For you's first two, else the current folder's first two unread, else
   none. The status line shows two things:
-  - `● 3 chats waiting`: the chats in For you, `●` in `mention`;
-  - the gauge pair `⚡ ▰▰▱▱▱ 12/50`, while an agent is on.
+  - `● 3 chats waiting`, `●` in `mention`: the distinct chats in For you, its people rows (from
+    the last pass, or the latest dialogs before the first pass) and its drafts and hard stops. A
+    chat with both a draft and a mention counts once;
+  - with For you empty: `● 15 unread`, `●` in `unread`; with nothing unread and no agent on: `all
+    read`, dim;
+  - the gauge pair `⚡ ▰▰▱▱▱ 12/50`, while an agent is on; `⚡ autopilot on` when no chat on has a
+    limit (`∞/h`).
 - **When the band holds an item** (a draft, a hard stop, an undo; §5.3, §5.4), the item keeps its
   full-width rows above the card, since a draft is read whole there (decision 9). The card drops
   to its status line.
@@ -2494,8 +2502,11 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
 
 ### 10.8 Hidden
 
-The owner's line: `● tg: 15 unread · @2 · autopilot 12/50`. Zero parts are left out, and `●` takes
-the most urgent part's role.
+The owner's line: `● tg: 15 unread · @2 · autopilot 12/50`. Zero parts are left out. In the
+footer label `●` cannot take a role (`SessionMode`'s `modes` is `string[]`), so the whole label is
+dim. The label shows this line in every state, not only Hidden, in place of v1's
+`tg 22 · ⌁1 ⟳1 · ◎ 3 new · 2 for you`: `tg …` while loading, `tg ⚠` or `tg ⚠ not logged in` on a
+failure, `tg` when every part is zero, and `autopilot on` when agents run with no limit.
 
 **The footer label, not the status line** (§10.13, decision 2). The owner first said "a status-line entry". The engine, however,
 draws a plugin's status line as a yellow `⚠ name:` notice. That is audit #11, and flightdeck's
@@ -2760,7 +2771,8 @@ to T13).
   - ⏎ `j k q` after ctrl+x tab;
   - the bottom border `⏎ open · q: hide`.
 - States in `$.store`: Wide, Compact, Hidden. `q` in the pane closes to Compact; `q` in the card
-  and `/tg hide` go to Hidden; `/tg` opens Wide.
+  and `/tg hide` go to Hidden; `/tg` and `/tg wide` open Wide; `/tg compact` goes to Compact
+  (v1 made it an alias of `/tg`).
 - The Hidden line in the `SessionMode` footer label (§10.8, decision 2). `$.ui.status`
   keeps its three alarms.
 - Tests:
