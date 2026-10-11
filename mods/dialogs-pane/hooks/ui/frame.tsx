@@ -5,10 +5,10 @@
 // surface's element table, as ./components draws; handlers come in as closures.
 import type { RenderElement } from 'claude-code'
 
-import type { Lens, Notice, SavedLens } from '../../types'
+import type { Notice } from '../../types'
 import type { Els } from './components'
 import { MENU_GROUPS, type MenuGroup, type MenuSection, type RunKey, type ShownKey } from './keys'
-import { GLYPH, LENSES, LENS_LABEL, TOKEN, type SummaryParts } from './model'
+import { GLYPH, TOKEN, type SummaryParts } from './model'
 
 const FOCUS_HELD = '● keys'
 const FOCUS_ELSEWHERE = 'ctrl+x tab: keys'
@@ -52,48 +52,81 @@ export function Header(
 }
 
 /**
- * The lens strip, Telegram folders' place until T9 brings them: the built-in
- * lenses and the saved ones, the current one marked. Their digits are live only
- * while the cursor is in Chats (`isLive`); elsewhere a click still picks one.
+ * The folder strip (§4.7, §7.3): Telegram's folders in its order, then For you
+ * and Bots, the current one marked `‹Work 3›`, `+N` for the ones past an edge.
+ * The tabs are text, not ring stops: a pass changes their counts, and inline
+ * the header's summary changes the room they get, both while the cursor stays,
+ * so stops here would move the ring (§4.3 rule 1). Their digits are Buttons
+ * the frame keeps undrawn under the bar (`DigitKeys`), live while the cursor
+ * is in Chats; `h` lists every folder as pressable rows. The dock adds `↑N`
+ * (what waits for the owner's move) and `s: search` at the right.
  */
 export function Strip(
   { Box, Text, Button }: Els,
   props: {
-    lens: Lens
-    lenses: readonly SavedLens[]
-    /** The saved lens shown, or null for the built-in one in `lens`. */
-    active: string | null
-    firstSavedDigit: number
-    isRanked: boolean
+    tabs: readonly { text: string; isCurrent: boolean }[]
+    /** Entries past the left and the right edge. */
+    before: number
+    after: number
     query: string
-    isLive: boolean
+    /** Chats waiting to move (§8 T9); drawn dim in the dock, where the strip has its own row. */
+    waiting: number
+    /** `…` while the folder list or the pass is on its way (§7.4). */
+    isLoading: boolean
     /** The dock draws `s: search` here (`key`), or the Button alone over a layer (`click`); inline has it in the action bar. */
     search: 'key' | 'click' | 'none'
-    onLens: (lens: Lens) => void
-    onSaved: (id: string) => void
     onSearch: () => void
   },
 ): RenderElement {
-  const tab = (key: string, digit: number, name: string, isCurrent: boolean, onPress: () => void) => (
-    <Button key={key} plain hotkey={props.isLive ? String(digit) : undefined} dimColor={!isCurrent} onPress={onPress}>
-      {isCurrent ? <Text color={TOKEN.accent} bold>{`‹${name}›`}</Text> : name}
-    </Button>
-  )
   return (
     <Box key="strip" flexDirection="row" justifyContent="space-between" columnGap={2}>
-      <Box flexDirection="row" columnGap={2} flexShrink={1}>
-        {LENSES.map((lens, index) => tab(`lens:${lens}`, index + 1, LENS_LABEL[lens], props.active === null && lens === props.lens, () => props.onLens(lens)))}
-        {props.lenses.map((saved, index) => tab(`lens:saved:${saved.id}`, props.firstSavedDigit + index, saved.name, saved.id === props.active, () => props.onSaved(saved.id)))}
-        {props.isRanked ? <Text color={TOKEN.accent}>you↑</Text> : null}
+      <Box flexDirection="row" columnGap={2} flexShrink={1} overflow="hidden">
+        {props.before > 0 ? <Text dimColor>{`+${props.before}`}</Text> : null}
+        {props.tabs.map((tab, index) =>
+          tab.isCurrent ? (
+            <Text key={`tab:${index}`} color={TOKEN.accent} bold wrap="truncate-end">
+              {tab.text}
+            </Text>
+          ) : (
+            <Text key={`tab:${index}`} wrap="truncate-end">
+              {tab.text}
+            </Text>
+          ),
+        )}
+        {props.after > 0 ? <Text dimColor>{`+${props.after}`}</Text> : null}
+        {props.isLoading ? <Text dimColor>{GLYPH.working}</Text> : null}
       </Box>
       <Box flexDirection="row" columnGap={1} flexShrink={0}>
         {props.query === '' ? null : <Text dimColor>{`"${props.query}"`}</Text>}
+        {props.search === 'none' || props.waiting === 0 ? null : <Text dimColor>{`↑${props.waiting}`}</Text>}
         {props.search === 'none' ? null : (
           <Button key="key:search" plain hotkey={props.search === 'key' ? 's' : undefined} dimColor onPress={props.onSearch}>
             search
           </Button>
         )}
       </Box>
+    </Box>
+  )
+}
+
+/** Cells the dock strip's right side takes: `"query"`, `↑N`, `s: search`; the tabs get the rest. */
+export function stripRight(query: string, waiting: number): number {
+  return (query === '' ? 0 : query.length + 3) + (waiting === 0 ? 0 : String(waiting).length + 2) + 'search'.length + 3 + 2
+}
+
+/**
+ * The strip's digits while they are live: Buttons in a Box the surface does
+ * not show, as HiddenKeys are. They sit under the bar, so no ring stop above
+ * the list depends on them.
+ */
+export function DigitKeys({ Box, Button }: Els, props: { digits: readonly { digit: number; title: string; onPress: () => void }[] }): RenderElement {
+  return (
+    <Box key="keys:digits" display="none">
+      {props.digits.map(one => (
+        <Button key={`digit:${one.digit}`} plain hotkey={String(one.digit)} onPress={one.onPress}>
+          {one.title}
+        </Button>
+      ))}
     </Box>
   )
 }
@@ -122,8 +155,25 @@ function BarKey({ Button, Text }: Els, key: ShownKey, isFocused: boolean, onKey:
  * site holds the keys. `lead` (`▪ 3 marked`) comes first: the marks ride the
  * bar's row, so marking never takes a row from the thread (§4.3 rule 1, T4b).
  */
-export function ActionBar(els: Els, props: { keys: readonly ShownKey[]; lead: string | null; isFocused: boolean; onKey: (id: RunKey) => void }): RenderElement {
+export function ActionBar(
+  els: Els,
+  props: {
+    keys: readonly ShownKey[]
+    lead: string | null
+    /** `1-9: folder` after the first key, where the rows carry the digits (the Folders list, §4.6). */
+    digits?: string | null
+    isFocused: boolean
+    onKey: (id: RunKey) => void
+  },
+): RenderElement {
   const { Box, Text } = els
+  const keys = props.keys.map(key => BarKey(els, key, props.isFocused, props.onKey))
+  const digits =
+    props.digits === undefined || props.digits === null ? null : (
+      <Text key="bar:digits" dimColor={!props.isFocused}>
+        {props.digits}
+      </Text>
+    )
   return (
     <Box key="bar" flexDirection="row" columnGap={2}>
       {props.lead === null ? null : (
@@ -131,7 +181,46 @@ export function ActionBar(els: Els, props: { keys: readonly ShownKey[]; lead: st
           {props.lead}
         </Text>
       )}
-      {props.keys.map(key => BarKey(els, key, props.isFocused, props.onKey))}
+      {keys.slice(0, 1)}
+      {digits}
+      {keys.slice(1)}
+    </Box>
+  )
+}
+
+/**
+ * The hotkeys a drawn tree already binds, read off its Buttons: the bar's,
+ * the hidden keys', and the ones its content draws (a message's buttons, the
+ * sheet's intents, the card's levels, the strip's digits).
+ */
+export function hotkeysIn(nodes: readonly unknown[]): Set<string> {
+  const found = new Set<string>()
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const one of node) walk(one)
+      return
+    }
+    if (typeof node !== 'object' || node === null) return
+    if ('props' in node && typeof node.props === 'object' && node.props !== null && 'hotkey' in node.props && typeof node.props.hotkey === 'string') found.add(node.props.hotkey)
+    if ('children' in node) walk(node.children)
+  }
+  walk(nodes)
+  return found
+}
+
+/**
+ * The keys nothing in this view binds, each a Button in a Box the surface
+ * does not show: a press says where the key works instead of falling through
+ * to the prompt, which would take the keys with it (the T9 review's M1).
+ */
+export function StrayKeys({ Box, Button }: Els, props: { keys: readonly string[]; onKey: (key: string) => void }): RenderElement {
+  return (
+    <Box key="keys:stray" display="none">
+      {props.keys.map(key => (
+        <Button key={`stray:${key}`} plain hotkey={key} onPress={() => props.onKey(key)}>
+          {key}
+        </Button>
+      ))}
     </Box>
   )
 }
@@ -258,6 +347,10 @@ export function Frame(
     notice: RenderElement | null
     bar: RenderElement
     hidden: RenderElement
+    /** The strip's digits while live (DigitKeys). */
+    digits?: RenderElement | null
+    /** Every other key, caught (StrayKeys). */
+    stray?: RenderElement | null
   },
 ): RenderElement {
   return (
@@ -271,6 +364,8 @@ export function Frame(
       {props.notice}
       {props.bar}
       {props.hidden}
+      {props.digits ?? null}
+      {props.stray ?? null}
     </Box>
   )
 }

@@ -17,6 +17,13 @@ before tg runs, as tg itself has no such rule.
 State lives in $FAKE_TG_DIR (default: $TMPDIR/fake-tg): calls.log has one line
 per call, and `tg watch` prints the lines appended to watch.jsonl, so a live
 event is `echo '{"event": "message", ...}' >> "$FAKE_TG_DIR/watch.jsonl"`.
+
+Folders (T9): fifteen placeholder folders, All chats third, so the strip
+overflows at 64 and 100 columns; Work holds 60 chats (Contact 10 to Contact 69)
+for the ring checks. `echo 40 > "$FAKE_TG_DIR/flood"` makes the next
+`folders --chats` exit 5 with FLOOD_WAIT 40s (the file is removed), as tg does
+past flood_sleep_threshold. The pass bumps a chat that `watch.jsonl` wrote to,
+so a later pass agrees with the live events.
 """
 
 import json
@@ -54,11 +61,23 @@ DIALOGS = [
      "last_id": 42, "last_date": "2026-10-09T08:20:00Z", "last_text": "note to self"},
 ]
 EXTRA = {"pinned": False, "muted": False, "mentions": 0}
+# The channel is muted (its count draws dim, ·14); the group has an unread mention (For you).
+ROW_EXTRA = {1006: {"muted": True}, 1002: {"mentions": 1}}
+# Work's 60 placeholder people, oldest last: the ring checks need a folder longer than the pane.
+MANY = [
+    {"id": 5000 + k, "kind": "user", "title": f"Contact {k + 10}", "username": None, "unread": 1 if k % 7 == 0 else 0,
+     "last_id": 100 + k, "last_date": f"2026-10-10T{19 - k // 30:02d}:{59 - k % 30:02d}:00Z", "last_text": f"placeholder note {k + 10}"}
+    for k in range(60)
+]
 FOLDERS = [
-    {"id": 2, "title": "Work", "kind": "folder", "chats": [1002, 1001, 1004]},
-    {"id": 3, "title": "Bots", "kind": "folder", "chats": [1001, 1007]},
+    {"id": 1, "title": "Personal", "kind": "folder", "chats": [1004, 1005, 1003]},
+    {"id": 2, "title": "Work", "kind": "folder", "chats": [1002, 1001, 1004] + [d["id"] for d in MANY]},
     {"id": 0, "title": "All chats", "kind": "all", "chats": [d["id"] for d in DIALOGS]},
+    {"id": 3, "title": "Bots", "kind": "folder", "chats": [1001, 1007]},
     {"id": 11, "title": "News", "kind": "shared", "chats": [1006]},
+] + [
+    {"id": 20 + k, "title": title, "kind": "shared" if k % 4 == 3 else "folder", "chats": [1003]}
+    for k, title in enumerate(["Clients", "Family", "Study", "Travel", "Reading", "Dev", "Old", "Music", "Sport", "Friends"])
 ]
 ALLOW = [1002]
 
@@ -111,10 +130,37 @@ THREADS = {
 }
 
 
+def rows():
+    """Every chat's row, the chats a watch event wrote to newest first, as Telegram would list them."""
+    seen = {}
+    spool = os.path.join(STATE, "watch.jsonl")
+    if os.path.exists(spool):
+        for line in open(spool):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("event") == "message" and "chat_id" in event:
+                seen[event["chat_id"]] = event
+    out = []
+    for d in DIALOGS + MANY:
+        row = {**d, **EXTRA, **ROW_EXTRA.get(d["id"], {})}
+        event = seen.get(d["id"])
+        if event is not None and event["id"] > (row["last_id"] or 0):
+            row.update(last_id=event["id"], last_date=event["date"], last_text=event.get("text", ""),
+                       unread=0 if event.get("out") else row["unread"] + 1)
+        out.append(row)
+    return out
+
+
+def ordered(ids, by_id):
+    return sorted((i for i in ids if i in by_id), key=lambda i: by_id[i]["last_date"] or "", reverse=True)
+
+
 def peer_id(arg):
     if arg == "me":
         return 1003
-    for d in DIALOGS:
+    for d in DIALOGS + MANY:
         if arg.lstrip("@").lower() == (d["username"] or "").lower() or arg == str(d["id"]):
             return d["id"]
     return None
@@ -159,21 +205,34 @@ def main(argv):
     if cmd == "allow":
         out([{"id": i} for i in ALLOW])
     if cmd == "dialogs":
-        rows = [{**d, **EXTRA} for d in DIALOGS]
+        by_id = {r["id"]: r for r in rows()}
+        listed = [by_id[i] for i in ordered([d["id"] for d in DIALOGS], by_id)]
         folder = flag(argv, "--folder")
+        query = flag(argv, "--query")
+        if "--archived" in argv:
+            listed = []
         if folder is not None:
             match = [f for f in FOLDERS if str(f["id"]) == folder or f["title"] == folder]
             if not match:
                 fail(f"no folder {folder}\n  fix: tg folders", 4)
-            rows = [r for i in match[0]["chats"] for r in rows if r["id"] == i]
-        out(rows[: int(flag(argv, "--limit", "50"))])
+            listed = [by_id[i] for i in ordered(match[0]["chats"], by_id)]
+        if query is not None:
+            listed = [r for r in by_id.values() if query.lower() in f"{r['title']} {r['username'] or ''}".lower()]
+        out(listed[: int(flag(argv, "--limit", "50"))])
     if cmd == "folders":
-        unread = lambda f: sum(1 for d in DIALOGS if d["id"] in f["chats"] and d["unread"] > 0)
+        by_id = {r["id"]: r for r in rows()}
+        unread = lambda f: sum(1 for i in f["chats"] if by_id[i]["unread"] > 0 and not by_id[i]["muted"])
         listed = [{"id": f["id"], "title": f["title"], "kind": f["kind"]} for f in FOLDERS]
         if "--chats" in argv:
+            flood = os.path.join(STATE, "flood")
+            if os.path.exists(flood):
+                seconds = open(flood).read().strip() or "40"
+                os.remove(flood)
+                fail(f"FLOOD_WAIT {seconds}s: Telegram asks to wait before retrying", 5)
+            members = {i for f in FOLDERS for i in f["chats"]}
             out({"at": "2026-10-10T21:05:00+00:00", "scan": 500,
-                 "folders": [{**l, "unread": unread(f), "pinned": [], "chats": f["chats"]} for l, f in zip(listed, FOLDERS)],
-                 "dialogs": [{**d, **EXTRA} for d in DIALOGS]})
+                 "folders": [{**l, "unread": unread(f), "pinned": [], "chats": ordered(f["chats"], by_id)} for l, f in zip(listed, FOLDERS)],
+                 "dialogs": [r for r in by_id.values() if r["id"] in members]})
         if "--counts" in argv:
             out([{**l, "unread": unread(f)} for l, f in zip(listed, FOLDERS)])
         out(listed)
@@ -181,10 +240,11 @@ def main(argv):
     if cmd in ("read", "msg", "send", "press", "delete", "watch") and pid is None:
         fail(f"no chat {argv[1] if len(argv) > 1 else ''}\n  fix: tg dialogs", 4)
     if cmd == "read":
-        out(THREADS[pid][-int(flag(argv, "--limit", "30")):])
+        thread = THREADS.get(pid) or [msg(100, "placeholder note", CONTACT_A, pid, False, "2026-10-10T18:00:00Z")]
+        out(thread[-int(flag(argv, "--limit", "30")):])
     if cmd == "msg":
         wanted = {int(a) for a in argv[2:] if a.isdigit()}
-        found = [m for m in THREADS[pid] if m["id"] in wanted]
+        found = [m for m in THREADS.get(pid, []) if m["id"] in wanted]
         if not found:
             fail("message not found", 4)
         out(found)

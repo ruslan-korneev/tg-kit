@@ -5,6 +5,7 @@ import {
   KEYS,
   MAX_BAR,
   NO_FACTS,
+  STRAY_KEYS,
   WHERES,
   actionBar,
   barCells,
@@ -13,6 +14,7 @@ import {
   hiddenKeys,
   keyDef,
   menu,
+  strayText,
   type ChatKind,
   type KeyContext,
   type KeyFacts,
@@ -91,8 +93,13 @@ describe('the action bar', () => {
     expect(ids(actionBar(at('chat', 'group')))).toEqual(['send', 'summary', 'watch', 'agent', 'write', 'menu'])
     expect(ids(actionBar(at('chat', 'channel')))).toEqual(['send', 'summary', 'watch', 'agent', 'mark', 'menu'])
     expect(ids(actionBar(at('chat', 'saved')))).toEqual(['send', 'write', 'mark', 'menu'])
-    expect(ids(actionBar(at('chats', 'bot')))).toEqual(['open', 'summary', 'watch', 'agent', 'menu'])
-    expect(ids(actionBar(at('chats', 'bot', {}, 'inline')))).toEqual(['open', 'search', 'summary', 'watch', 'agent', 'menu'])
+    expect(ids(actionBar(at('chats', 'bot')))).toEqual(['open', 'back', 'summary', 'watch', 'agent', 'menu'])
+    expect(ids(actionBar(at('chats', 'bot', {}, 'inline')))).toEqual(['open', 'back', 'search', 'summary', 'watch', 'agent', 'menu'])
+    // T9: the Folders list, and For you by its cursor row (§4.6).
+    expect(ids(actionBar(at('folders', null)))).toEqual(['open', 'foryou', 'back', 'menu'])
+    expect(ids(actionBar(at('foryou', 'person', { row: 'chat' })))).toEqual(['open', 'summary', 'back', 'menu'])
+    expect(ids(actionBar(at('foryou', 'person', { row: 'draft' })))).toEqual(['senddraft', 'edit', 'dismiss', 'back', 'menu'])
+    expect(ids(actionBar(at('foryou', 'person', { row: 'undo', undoLeft: 20 })))).toEqual(['open', 'back', 'undo', 'menu'])
   })
 
   test('f joins on a pair; 0 and u join while they work; back joins inline', () => {
@@ -249,10 +256,31 @@ describe('rows that come and go (T4b)', () => {
     expect(ranging.length).toBeLessThanOrEqual(MAX_BAR)
   })
 
+  test('while marking, x: mark follows ⏎ in every kind of chat, a group too, whose bar has no x otherwise', () => {
+    expect(ids(actionBar(at('chat', 'group')))).not.toContain('mark')
+    for (const kind of ['bot', 'person', 'group', 'channel', 'saved', 'botfather'] as const) {
+      const bar = ids(actionBar(at('chat', kind, { marks: 1 })))
+      expect(bar.slice(0, 2)).toEqual(['send', 'mark'])
+      // f waits for a pair, and exists in bot chats only.
+      expect(bar).not.toContain('diff')
+    }
+  })
+
   test('docked at 64 columns, two replies marked: ⏎, x, f and h: clear stay beside the marks count', () => {
     // The bar gets what `▪ 2 marked` leaves of the row.
     const bar = ids(actionBar(at('chat', 'bot', { marks: 2, hasPair: true }), 64 - '▪ 2 marked'.length - 2))
     expect(bar.slice(0, 3)).toEqual(['send', 'mark', 'diff'])
     expect(bar).toContain('back')
+  })
+})
+
+describe('keys with no meaning here (the T9 review M1)', () => {
+  test('a stray key says where it works, the step it waits for, or that it is not a key', () => {
+    expect(strayText('x', at('folders', null))).toBe('x: mark works in a chat')
+    expect(strayText('r', at('chat', 'person'))).toBe('r: rec works in a bot chat')
+    expect(strayText('f', at('chat', 'bot'))).toBe('f: diff · needs two replies marked (x)')
+    expect(strayText('c', at('chats', 'bot'))).toBe('c: not a key · m lists them')
+    expect(strayText('7', at('chat', 'person'))).toBe('7: nothing is numbered 7 here · m lists the keys')
+    expect(STRAY_KEYS).toHaveLength(36)
   })
 })

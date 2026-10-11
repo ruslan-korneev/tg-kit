@@ -15,10 +15,6 @@ const MAX_LATENCY_MS = 10 * 60_000
 export const EMPTY_TRIAGE: Triage = {
   watched: [],
   health: {},
-  lens: null,
-  lenses: [],
-  editor: null,
-  isRanked: false,
   verdicts: {},
   repliedToYou: {},
   summary: null,

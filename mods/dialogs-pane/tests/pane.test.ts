@@ -4,9 +4,9 @@
 import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
-import { KEYS, hotkeyTable } from '../hooks/ui/keys'
+import { KEYS, STRAY_KEYS, hotkeyTable } from '../hooks/ui/keys'
 import type { TgDialog, TgMessage } from '../types'
-import { DIALOGS, MESSAGES, PERSON_MESSAGES, messagesFor } from './fixtures'
+import { DIALOGS, MESSAGES, PERSON_MESSAGES, chatIds, chatKey, findChat, folderRun, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -24,9 +24,9 @@ const INLINE: RenderPropsOf['Pane'] = { ...DOCK, bodyColumns: 96, placement: 'in
 /** One placeholder chat of every kind §4.6 tells apart. */
 const KINDS: TgDialog[] = [
   ...DIALOGS,
-  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, last_id: 92, last_date: '2026-10-10T10:49:00Z', last_text: 'Can we call?' },
-  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, last_id: 7, last_date: '2026-10-10T09:19:00Z', last_text: 'release' },
-  { id: 1006, kind: 'bot', title: 'BotFather', username: 'BotFather', unread: 0, last_id: 3, last_date: '2026-10-08T09:00:00Z', last_text: 'Done!' },
+  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', last_text: 'Can we call?' },
+  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', last_text: 'release' },
+  { id: 1006, kind: 'bot', title: 'BotFather', username: 'BotFather', unread: 0, mentions: 0, pinned: false, muted: false, last_id: 3, last_date: '2026-10-08T09:00:00Z', last_text: 'Done!' },
 ]
 
 type Ui = Mounted<'terminal', 'Pane'>
@@ -64,7 +64,8 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
     seen.store.set(e.key, e.value)
     return { value: undefined }
   })
-  on('process.run', (_$, e) => ({ value: tg(e.argv) }))
+  // `tg folders`: the chats `tg dialogs` answers, as one All chats folder (an account without folders).
+  on('process.run', (_$, e) => ({ value: e.argv[1] === 'folders' ? folderRun(e.argv, tg(['tg', 'dialogs', '--limit', '50', '--json'])) : tg(e.argv) }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.open', (_$, e) => {
     seen.opened.push(e.id)
@@ -96,9 +97,15 @@ const runTg = (args = '', columns = 160) =>
   ({ command: 'tg', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns } }) as const
 
 /** Every Button drawn, shown or kept as a hidden hotkey, by its hotkey. */
+/** The keys the view binds to something, by hotkey: every Button but the catch-all's (`stray:`), which say where a key works. */
 async function hotkeys(ui: Ui): Promise<string[]> {
   const buttons = await ui.findAll({ type: 'Button' })
-  return buttons.flatMap(button => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : []))
+  return buttons.flatMap(button => (typeof button.props.hotkey === 'string' && button.key?.startsWith('stray:') !== true ? [button.props.hotkey] : []))
+}
+
+/** Every hotkey drawn, the catch-all's included. */
+async function allHotkeys(ui: Ui): Promise<string[]> {
+  return (await ui.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : []))
 }
 
 /** The bar's keys as drawn: the `key:<id>` Buttons inside the bar. */
@@ -115,6 +122,12 @@ async function barKeys(ui: Ui): Promise<string[]> {
   return ids
 }
 
+/** The strip's tabs as written: text, not ring stops (a Text keeps no key, so they are read off the strip's first Box). */
+async function tabsOf(ui: Ui): Promise<string[]> {
+  const strip = (await ui.find({ key: 'strip' })) as { children?: { children?: { type?: string; children?: unknown[] }[] }[] } | undefined
+  return (strip?.children?.[0]?.children ?? []).flatMap(one => (one.type === 'Text' && typeof one.children?.[0] === 'string' ? [one.children[0]] : []))
+}
+
 async function openPane($: Engine, on: On, props = DOCK, tg = happy) {
   const clock = mock.clock(on, { now: Date.parse('2026-10-10T12:00:00Z') })
   const seen = world(on, tg)
@@ -127,7 +140,7 @@ async function openPane($: Engine, on: On, props = DOCK, tg = happy) {
 
 /** ⏎ on a chat's row in Chats. */
 async function openChat(ui: Ui, id: number): Promise<void> {
-  await ui.press({ key: `dialog:${id}` })
+  await ui.press({ key: await chatKey(ui, id) })
 }
 
 describe('the frame', () => {
@@ -142,8 +155,8 @@ describe('the frame', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'tg', props: DOCK })
       expect((await ui.find({ key: 'header' }))?.text).toContain('tg › chats')
-      expect((await ui.find({ key: 'dialog:1001' }))?.text).toContain('@example_bot')
-      expect((await ui.find({ key: 'dialog:1003' }))?.text).toContain('Saved Messages')
+      expect((await findChat(ui, 1001))?.text).toContain('@example_bot')
+      expect((await findChat(ui, 1003))?.text).toContain('Saved Messages')
       await ui.unmount()
     }
   })
@@ -164,32 +177,34 @@ describe('the frame', () => {
 
   test('dock: the strip, Chats on top and the open chat below', async ($, on) => {
     const { ui } = await openPane($, on)
-    expect(await ui.find({ key: 'strip' })).toBeDefined()
-    expect((await ui.find({ key: 'lens:all' }))?.props.hotkey).toBe('1')
-    expect(await barKeys(ui)).toEqual(['open', 'summary', 'watch', 'agent', 'menu'])
+    // An account without folders: All chats, then the pane's views; digits are live in Chats (§4.7).
+    expect(await tabsOf(ui)).toEqual(['1: ‹All chats 3›', '2: For you', '3: Bots'])
+    expect((await ui.find({ key: 'digit:1' }))?.props.hotkey).toBe('1')
+    expect(await barKeys(ui)).toEqual(['open', 'back', 'summary', 'watch', 'agent', 'menu'])
     await openChat(ui, 1001)
     // Chats stay on screen above the thread; the open chat's row is marked.
-    expect((await ui.find({ key: 'dialog:1001' }))?.text).toContain('›')
+    expect((await findChat(ui, 1001))?.text).toContain('›')
     expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('Something went wrong')
     expect(await ui.find({ type: 'Text', text: '@example_bot · bot' })).toBeDefined()
     // In the chat the strip's digits are not live: only the active column's are.
-    expect((await ui.find({ key: 'lens:all' }))?.props.hotkey).toBeUndefined()
+    expect(await ui.find({ key: 'digit:1' })).toBeUndefined()
+    expect(await tabsOf(ui)).toEqual(['‹All chats 3›', 'For you', 'Bots'])
     expect(await barKeys(ui)).toEqual(['send', 'write', 'record', 'mark', 'agent', 'menu'])
     await ui.unmount()
   })
 
   test('inline: one view at a time, the strip in the header, h: chats in the bar', async ($, on) => {
     const { ui } = await openPane($, on, INLINE)
-    expect((await ui.find({ key: 'header' }))?.text).toContain('‹All›')
-    expect(await barKeys(ui)).toEqual(['open', 'search', 'summary', 'watch', 'agent', 'menu'])
+    expect((await ui.find({ key: 'header' }))?.text).toContain('1: ‹All chats 3›')
+    expect(await barKeys(ui)).toEqual(['open', 'back', 'search', 'summary', 'watch', 'agent', 'menu'])
     await openChat(ui, 1001)
-    expect(await ui.find({ key: 'dialog:1001' })).toBeUndefined()
+    expect(await findChat(ui, 1001)).toBeUndefined()
     expect(await ui.find({ key: 'strip' })).toBeUndefined()
     expect((await ui.find({ key: 'header' }))?.text).toContain('tg › @example_bot')
     expect((await ui.find({ key: 'key:back' }))?.text).toContain('chats')
     expect(await barKeys(ui)).toContain('back')
     await ui.press({ key: 'key:back' })
-    expect(await ui.find({ key: 'dialog:1001' })).toBeDefined()
+    expect(await findChat(ui, 1001)).toBeDefined()
     await ui.unmount()
   })
 
@@ -255,12 +270,12 @@ describe('keys', () => {
     // a: the agent card takes the lower part, the list stays; h closes it.
     await ui.press({ key: 'key:agent' })
     expect(await ui.find({ key: 'ap:card' })).toBeDefined()
-    expect(await ui.find({ key: 'dialog:1002' })).toBeDefined()
+    expect(await findChat(ui, 1002)).toBeDefined()
     await ui.press({ key: 'key:back' })
     expect(await ui.find({ key: 'ap:card' })).toBeUndefined()
     // From the chat, h moves the cursor up to Chats; the chat stays open below.
     await ui.press({ key: 'key:back' })
-    expect((await ui.find({ key: 'dialog:1001' }))?.text).toContain('▸')
+    expect((await findChat(ui, 1001))?.text).toContain('▸')
     expect(await ui.find({ key: 'msg:677791' })).toBeDefined()
     await ui.unmount()
   })
@@ -363,17 +378,30 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
         { name: `marked, range open ${seat}`, props, steps: ['dialog:1001', 'key:mark', 'key:up', 'key:range'] },
       ]
     }),
-    { name: 'lens editor', props: DOCK, steps: ['key:lenses'] },
-    { name: 'lens editor inline', props: INLINE, steps: ['key:lenses'] },
+    // T9: the Folders list, For you and Bots, in both seats, and over them the menu.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        { name: `folders ${seat}`, props, steps: ['key:back'] },
+        { name: `folders menu ${seat}`, props, steps: ['key:back', 'key:menu'] },
+        { name: `for you ${seat}`, props, steps: ['key:foryou'] },
+        { name: `for you menu ${seat}`, props, steps: ['key:foryou', 'key:menu'] },
+        { name: `bots ${seat}`, props, steps: ['digit:3'] },
+        { name: `a chat from bots ${seat}`, props, steps: ['digit:3', 'dialog:1001'] },
+      ]
+    }),
   ]
 
   for (const view of VIEWS) {
-    test(`${view.name}: no two Buttons share a hotkey, each is the table's, the bar holds ≤ 7`, async ($, on) => {
+    test(`${view.name}: each of a–z and 0–9 has exactly one Button; the bound ones are the table's; the bar holds ≤ 7`, async ($, on) => {
       const { ui } = await openPane($, on, view.props)
-      for (const key of view.steps) await ui.press({ key })
+      for (const key of view.steps) await ui.press({ key: key.startsWith('dialog:') ? await chatKey(ui, Number(key.slice('dialog:'.length))) : key })
       const drawn = await hotkeys(ui)
-      expect(drawn.filter((key, index) => drawn.indexOf(key) !== index)).toEqual([])
       for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
+      // Nothing falls through to the prompt (the T9 review's M1): what the view does not bind, the catch-all does, once.
+      const every = await allHotkeys(ui)
+      expect(every.filter((key, index) => every.indexOf(key) !== index)).toEqual([])
+      expect([...every].sort()).toEqual([...STRAY_KEYS].sort())
       expect((await barKeys(ui)).length).toBeLessThanOrEqual(7)
       await ui.unmount()
     })
@@ -562,7 +590,7 @@ describe('the running strip comes and goes over the same ring stops (§4.3 rule 
     await ui.press({ key: 'key:back' })
     for (let i = 0; i < 5; i++) await ui.press({ key: 'key:down' })
     const base = await place(ui)
-    expect(base.key).toBe('dialog:1006')
+    expect(chatIds([base.key])).toEqual([1006])
     await $.command.run(runTg('stop'))
     expect(await place(ui)).toEqual(base)
     // The notice goes after its 15 s; nothing moves then either.
@@ -820,21 +848,6 @@ describe('states', () => {
     await ui.unmount()
   })
 
-  test('a flood wait counts down and retries', async ($, on) => {
-    let calls = 0
-    const { ui, clock } = await openPane($, on, DOCK, argv => {
-      if (argv[1] !== 'dialogs') return json([])
-      calls += 1
-      return calls === 1 ? failure(5, 'error: FLOOD_WAIT 3s: Telegram asks to wait before retrying') : json(DIALOGS)
-    })
-    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 3 s' })).toBeDefined()
-    await clock.advance(1000)
-    expect(await ui.find({ type: 'Text', text: 'Telegram asks to wait 2 s' })).toBeDefined()
-    await clock.advance(2000)
-    expect(await ui.find({ key: 'dialog:1001' })).toBeDefined()
-    await ui.unmount()
-  })
-
   test('loading shows dim … rows', async ($, on) => {
     mock.clock(on, { now: Date.parse('2026-10-10T12:00:00Z') })
     world(on, happy)
@@ -845,26 +858,20 @@ describe('states', () => {
     await ui.unmount()
   })
 
-  test('lenses filter and say how to leave an empty one', async ($, on) => {
-    const { ui } = await openPane($, on, DOCK, argv => (argv[1] === 'dialogs' ? json(DIALOGS.filter(d => d.kind !== 'bot')) : json([])))
-    await ui.press({ key: 'lens:bots' })
-    expect(await ui.find({ type: 'Text', text: 'Press 1 for All' })).toBeDefined()
-    await ui.press({ key: 'lens:unread' })
-    expect(await ui.find({ key: 'dialog:1002' })).toBeDefined()
-    expect(await ui.find({ key: 'dialog:1003' })).toBeUndefined()
-    await ui.unmount()
-  })
-
-  test('s opens the search field; a search filters, an empty one clears', async ($, on) => {
-    const { ui } = await openPane($, on)
+  test('s searches every chat with tg dialogs --query; an empty search goes back to the folder', async ($, on) => {
+    const searched = (argv: readonly string[]) => {
+      const query = argv.includes('--query') ? argv[argv.indexOf('--query') + 1]?.toLowerCase() : undefined
+      return argv[1] === 'dialogs' && query !== undefined ? json(KINDS.filter(one => one.title.toLowerCase().includes(query))) : happy(argv)
+    }
+    const { ui } = await openPane($, on, DOCK, searched)
     await ui.press({ key: 'key:search' })
     await ui.input({ key: 'search', text: 'dev' })
-    expect(await ui.find({ key: 'dialog:1002' })).toBeDefined()
-    expect(await ui.find({ key: 'dialog:1001' })).toBeUndefined()
+    expect(await findChat(ui, 1002)).toBeDefined()
+    expect(await findChat(ui, 1001)).toBeUndefined()
     expect(await ui.find({ key: 'search' })).toBeUndefined()
     await ui.press({ key: 'key:search' })
     await ui.input({ key: 'search', text: '' })
-    expect(await ui.find({ key: 'dialog:1001' })).toBeDefined()
+    expect(await findChat(ui, 1001)).toBeDefined()
     await ui.unmount()
   })
 

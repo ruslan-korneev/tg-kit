@@ -136,7 +136,7 @@ export function peerOf(ref: PeerRef, dialogs: readonly TgDialog[]): Peer {
 /** A dialog row for a peer the list no longer holds, so the ledger can still open its thread. */
 export function dialogOfPeer(ref: PeerRef): TgDialog {
   const { id, kind, title, username } = peerOf(ref, [])
-  return { id, kind, title, username, unread: 0, last_id: null, last_date: null, last_text: '' }
+  return { id, kind, title, username, unread: 0, mentions: 0, pinned: false, muted: false, last_id: null, last_date: null, last_text: '' }
 }
 
 /** The selected messages in thread order. */

@@ -11,24 +11,18 @@ import type { EngineInterface, ModelCompleteResult, Register, RenderElement, Tim
 
 import type {
   BandEvent,
-  Lens,
-  LensDraft,
   Load,
   Mode,
-  Nav,
   PeerRef,
-  SavedLens,
   Summary,
   TgDialog,
   TgFailure,
   WatchHealth,
 } from '../types'
-import { EmptySavedLens, LensEditor, SummaryBlock, watchMark } from './triage/components'
-import { FIRST_LENS_DIGIT, MAX_LENSES, draftFrom, parseLenses, toggleGroup, togglePicked, upsertLens } from './triage/lenses'
+import { SummaryBlock, watchMark } from './triage/components'
 import { EMPTY_TRIAGE, RECENT, applyToDialogs, applyToMessages, hiddenStatus, latencyText, repliesToYou, reportReply } from './triage/live'
-import { RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, toAsk, verdictKey, type Me } from './triage/needs'
+import { NO_ME, RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, toAsk, verdictKey, type Me } from './triage/needs'
 import { SUMMARY_LIMIT, SUMMARY_MAX_TOKENS, SUMMARY_SYSTEM, SUMMARY_TIMEOUT_MS, TRIAGE_MODEL, summaryPrompt } from './triage/summary'
-import { NO_ME, triageDialogs } from './triage/view'
 import { MAX_WATCHED, parseWatched } from './triage/watch'
 // ── routing ──
 import type { AgentInfo, HookStream, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
@@ -83,11 +77,13 @@ import {
 import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
-import { DialogRow, Divider, EmptyLens, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
-import { ActionBar, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, marksLead } from './ui/frame'
+import { DialogRow, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
+import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
+  STRAY_KEYS,
+  strayText,
   actionBar,
   chatKind,
   hiddenKeys,
@@ -132,12 +128,15 @@ const isMode = (value: unknown): value is Mode => MODES.some(one => one === valu
 const mode = atom({ plugin: 'dialogs-pane', key: 'mode' } as const, 'open')
 const nav = atom({ plugin: 'dialogs-pane', key: 'nav' } as const, {
   view: 'dialogs',
-  lens: 'all',
+  // All chats until the folder list says which folder is Telegram's first (§4.7).
+  list: { kind: 'folder', id: 0 },
   query: '',
   dialogCursor: 0,
   messageCursor: 0,
+  folderCursor: 0,
   dialogStart: 0,
   messageStart: 0,
+  folderStart: 0,
   isMenuOpen: false,
   isSearching: false,
   isDraftOpen: false,
@@ -169,18 +168,19 @@ export const register: Register = (on, options) => {
     const isFresh = (await $.state.get({ plugin: 'dialogs-pane', key: 'mode' })).version === 0
     const kept = await $.store.get(STORE_MODE)
     if (isFresh && isMode(kept)) await update($, mode, () => kept)
-    // Hidden keeps its status line fresh; an open pane keeps its list fresh.
+    // Hidden keeps its status line fresh until the pane is first opened; from then on the passes do (── folders ──).
     $.clock.every(POLL_MS, () => {
       poll($).catch(() => {
-        // A failed poll leaves the last list on screen; the next one retries.
+        // A failed poll leaves the last status line; the next one retries.
       })
     })
     if ((await read($, mode)) === 'hidden') {
-      loadDialogs($).catch(() => {
+      loadLatest($).catch(() => {
         // The status line stays at `tg …` until the first poll lands.
       })
     }
     const started = await next(e)
+    await startFolders($) // ── folders ──
     await startRouting($) // ── routing ──
     await startTriage($)
     await startAutopilot($) // ── autopilot ──
@@ -198,10 +198,10 @@ export const register: Register = (on, options) => {
     if (!isHide && asked !== '' && asked !== 'wide' && asked !== 'compact') return { text: 'Usage: /tg [hide|stop|autopilot]' }
     await setMode($, isHide ? 'hidden' : 'open')
     if (!isHide) await ringCursor($)
-    // Hidden needs the list too: its status line counts the unread.
-    if ((await read($, dialogs)).status !== 'ok') {
-      loadDialogs($).catch(() => {
-        // loadDialogs records its own failures in state; nothing is left to report.
+    // Hidden needs the list too: its status line counts the unread. Once a pass is held, it counts that.
+    if (isHide && passHeld === null && (await read($, dialogs)).status !== 'ok') {
+      loadLatest($).catch(() => {
+        // loadLatest records its own failures in state; nothing is left to report.
       })
     }
     return { text: isHide ? 'tg pane hidden: status line only. /tg opens it.' : 'tg pane open. m lists every key.' }
@@ -215,6 +215,7 @@ export const register: Register = (on, options) => {
       await $.store.set(STORE_MODE, 'hidden')
       await refreshStatus($)
       await syncWatches($)
+      await armNext($) // ── folders ── every 5 min while hidden
     }
     return done
   }).catch(($, e, next) => next(e))
@@ -298,7 +299,7 @@ export const register: Register = (on, options) => {
   // The dialogs pinned to main reach it every turn as one context block.
   on('prompt.context', async ($, e, next) => {
     const done = await next(e)
-    const peers = loaded(await read($, dialogs)) ?? []
+    const peers = await knownDialogs($)
     const text = pinnedContext(await read($, pins), peers, await read($, isRedacted))
     return text === null ? done : { ...done, blocks: [...done.blocks, { name: 'tgPinned', text }] }
   })
@@ -329,8 +330,10 @@ async function setMode($: $, next: Mode): Promise<void> {
   await $.store.set(STORE_MODE, next)
   if (next === 'hidden') {
     await $.ui.close({ id: PANE })
+    await armNext($) // ── folders ── every 5 min while hidden
   } else {
     await $.ui.open({ id: PANE, title: 'tg · dialogs', focus: true, columns: DOCK_COLUMNS, rows: INLINE_ROWS })
+    await openFolders($) // ── folders ──
   }
   await refreshStatus($)
   await syncWatches($)
@@ -342,12 +345,14 @@ async function refreshStatus($: $): Promise<void> {
     $.ui.status(pilot.line ?? (pilot.tail === '' ? undefined : `tg${pilot.tail}`))
     return
   }
-  $.ui.status(pilot.line ?? hiddenStatus(await read($, dialogs), await read($, band), (await read($, triage)).reply) + ledgerStatus(await read($, ledger)) + pilot.tail)
+  // Once a pass is held, the status line counts every chat it has, not the view on screen.
+  const counted: Load<TgDialog[]> = passHeld === null ? await read($, dialogs) : { status: 'ok', value: [...passHeld.rows.values()] }
+  $.ui.status(pilot.line ?? hiddenStatus(counted, await read($, band), (await read($, triage)).reply) + ledgerStatus(await read($, ledger)) + pilot.tail)
 }
 
+/** Before the pane is first opened, Hidden's status line reads `tg dialogs`; after it, the passes (── folders ──). */
 async function poll($: $): Promise<void> {
-  const isUp = (await $.ui.panes()).some(pane => pane.id === PANE && pane.isPlaced)
-  if (isUp || (await read($, mode)) === 'hidden') await loadDialogs($, { isQuiet: true })
+  if ((await read($, mode)) === 'hidden' && !(await read($, folders)).pass.hasOpened) await loadLatest($, { isQuiet: true })
 }
 
 // --- loading, and the flood-wait countdown ---
@@ -383,7 +388,8 @@ async function retryAfterFlood($: $, seconds: number, retry: () => Promise<void>
   }
 }
 
-async function loadDialogs($: $, options: { isQuiet?: boolean } = {}): Promise<void> {
+/** The latest chats (`tg dialogs`), for Hidden's status line and band before the pane is first opened. */
+async function loadLatest($: $, options: { isQuiet?: boolean } = {}): Promise<void> {
   const before = loaded(await read($, dialogs))
   // A quiet reload keeps the list on screen instead of the loading rows.
   if (options.isQuiet !== true || before === undefined) await update($, dialogs, () => ({ status: 'loading' }))
@@ -392,14 +398,13 @@ async function loadDialogs($: $, options: { isQuiet?: boolean } = {}): Promise<v
   await update($, now, () => at)
   if (!result.ok) {
     await update($, dialogs, () => failed(result.failure, at))
-    if (result.failure.kind === 'flood') await retryAfterFlood($, result.failure.seconds, () => loadDialogs($))
+    if (result.failure.kind === 'flood') await retryAfterFlood($, result.failure.seconds, () => loadLatest($))
     await refreshStatus($)
     return
   }
-  await update($, dialogs, () => ({ status: 'ok', value: result.value }))
-  afterDialogs($).catch(() => {
-    // Ranking is a convenience: without verdicts the list keeps tg's order.
-  })
+  // The pane opened meanwhile: the list is its view now, not the latest chats.
+  if ((await read($, folders)).pass.hasOpened) return
+  await update($, dialogs, () => ({ status: 'ok', value: result.value.map(cutRow) }))
   const grown = before === undefined ? undefined : grownDialog(before, result.value)
   if (grown !== undefined && (await read($, mode)) === 'hidden') {
     await update($, band, () => ({ dialogId: grown.id, label: dialogLabel(grown), kind: grown.kind, text: grown.last_text }))
@@ -434,6 +439,7 @@ async function loadThread($: $, peer: PeerRef): Promise<void> {
   await update($, nav, value => ({ ...value, messageCursor: Math.max(0, messages.length - 1) }))
 }
 
+/** `g`: the open chat again; on a list, what waits applies at once and a pass runs or queues (§8 T9). */
 async function reload($: $): Promise<void> {
   const open = await read($, thread)
   if ((await read($, nav)).view === 'thread' && open !== null) {
@@ -441,23 +447,20 @@ async function reload($: $): Promise<void> {
     await loadThread($, open.peer)
     return
   }
-  await loadDialogs($)
+  await reloadList($) // ── folders ──
 }
 
 // --- the cursor and the ring ---
-
-async function shownDialogs($: $): Promise<TgDialog[]> {
-  return visibleTriaged($, loaded(await read($, dialogs)) ?? [], await read($, nav))
-}
 
 async function threadMessages($: $) {
   const open = await read($, thread)
   return open === null ? [] : (loaded(open.load) ?? [])
 }
 
+/** The chat under the cursor in Chats or For you; none on an agent's row. */
 async function cursorDialog($: $): Promise<TgDialog | undefined> {
-  const list = await shownDialogs($)
-  return list[clamp((await read($, nav)).dialogCursor, list.length)]
+  const row = await cursorRow($)
+  return row?.kind === 'chat' ? row.dialog : undefined
 }
 
 async function cursorMessage($: $): Promise<TgMessage | undefined> {
@@ -471,18 +474,22 @@ async function cursorMessage($: $): Promise<TgMessage | undefined> {
  * of the last drawing rather than state; a reload starts it over at 0, which
  * the next drawing corrects.
  */
-const windowRows = { dialogs: 0, messages: 0 }
+const windowRows = { dialogs: 0, messages: 0, folders: 0 }
 
 /**
  * The cursor of one list moved by a step: its window start is first settled
  * where the drawing put it (a jump may have moved the cursor without it), then
  * moved only if the cursor leaves the window.
  */
-function cursorTo(value: Nav, list: 'dialogs' | 'messages', cursor: number, length: number): Nav {
+function cursorTo(value: Nav, list: 'dialogs' | 'messages' | 'folders', cursor: number, length: number): Nav {
   const rows = windowRows[list]
   if (list === 'dialogs') {
     const drawn = edgeStart(value.dialogStart, value.dialogCursor, rows, length)
     return { ...value, dialogCursor: cursor, dialogStart: edgeStart(drawn, cursor, rows, length) }
+  }
+  if (list === 'folders') {
+    const drawn = edgeStart(value.folderStart, value.folderCursor, rows, length)
+    return { ...value, folderCursor: cursor, folderStart: edgeStart(drawn, cursor, rows, length) }
   }
   const drawn = edgeStart(value.messageStart, value.messageCursor, rows, length)
   return { ...value, messageCursor: cursor, messageStart: edgeStart(drawn, cursor, rows, length) }
@@ -490,11 +497,17 @@ function cursorTo(value: Nav, list: 'dialogs' | 'messages', cursor: number, leng
 
 /** Moves the cursor in the active list; answers the key of the row it lands on. */
 async function moveCursor($: $, by: number): Promise<string | undefined> {
-  if ((await read($, nav)).view === 'dialogs') {
-    const list = await shownDialogs($)
+  const view = (await read($, nav)).view
+  if (view === 'folders') {
+    const items = await folderItems($)
+    const moved = await update($, nav, value => cursorTo(value, 'folders', clamp(value.folderCursor + by, items.length), items.length))
+    return items[moved.folderCursor]?.key
+  }
+  if (view === 'dialogs') {
+    const list = await listRows($)
     const moved = await update($, nav, value => cursorTo(value, 'dialogs', clamp(value.dialogCursor + by, list.length), list.length))
-    const dialog = list[moved.dialogCursor]
-    return dialog === undefined ? undefined : `dialog:${dialog.id}`
+    const row = list[moved.dialogCursor]
+    return row === undefined ? undefined : rowKey((await read($, folders)).gen, row)
   }
   const messages = await threadMessages($)
   const moved = await update($, nav, value => cursorTo(value, 'messages', clamp(value.messageCursor + by, messages.length), messages.length))
@@ -504,18 +517,23 @@ async function moveCursor($: $, by: number): Promise<string | undefined> {
 
 async function followRing($: $, element: string): Promise<void> {
   const [kind, raw] = element.split(':')
-  const id = Number(raw)
   // The ring only reaches drawn rows: the window holds where it was drawn, as for j and k.
-  if (kind === 'dialog') {
-    const list = await shownDialogs($)
-    const index = list.findIndex(dialog => dialog.id === id)
+  if (kind === 'dialog' || kind === 'fy') {
+    const gen = (await read($, folders)).gen
+    const list = await listRows($)
+    const index = list.findIndex(row => rowKey(gen, row) === element)
     if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'dialogs', index, list.length), view: 'dialogs' }))
+  } else if (kind === 'folder') {
+    const items = await folderItems($)
+    const index = items.findIndex(item => item.key === element)
+    if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'folders', index, items.length), view: 'folders' }))
   } else if (kind === 'msg') {
+    const id = Number(raw)
     const messages = await threadMessages($)
     const index = messages.findIndex(message => message.id === id)
     if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'messages', index, messages.length), view: 'thread' }))
   } else if (kind === 'act') {
-    await followActivity($, id) // ── running ──
+    await followActivity($, Number(raw)) // ── running ──
   }
 }
 
@@ -537,15 +555,23 @@ async function ringCursor($: $): Promise<void> {
   } else if (where === 'chat') {
     const message = await cursorMessage($)
     if (message !== undefined) await moveRing($, `msg:${message.id}`)
-  } else if (where === 'chats') {
-    const dialog = await cursorDialog($)
-    if (dialog !== undefined) await moveRing($, `dialog:${dialog.id}`)
+  } else if (where === 'folders') {
+    const items = await folderItems($)
+    const item = items[clamp((await read($, nav)).folderCursor, items.length)]
+    if (item !== undefined) await moveRing($, item.key)
+  } else if (where === 'chats' || where === 'foryou') {
+    const row = await cursorRow($)
+    if (row !== undefined) await moveRing($, rowKey((await read($, folders)).gen, row))
   }
 }
 
+/** ⏎ on a row of Chats or For you: a chat opens, and what waits applies first (§8 T9); an agent's row does its own. */
 async function openAtCursor($: $): Promise<void> {
-  const dialog = await cursorDialog($)
-  if (dialog !== undefined) await openThread($, dialog)
+  const row = await cursorRow($)
+  if (row?.kind === 'agent') return pressAgentRow($, row.item)
+  if (row === undefined) return
+  await applyWaiting($)
+  await openThread($, row.dialog)
 }
 
 async function selectAtCursor($: $, how: 'toggle' | 'range'): Promise<void> {
@@ -562,8 +588,8 @@ async function selectAtCursor($: $, how: 'toggle' | 'range'): Promise<void> {
 
 /**
  * The view the keys act on, under the menu: a layer (the card, Activity, the
- * send sheet, a diff, the lens editor, a drafted reply, the summary, the send
- * box or the search field) or the column the cursor is in.
+ * send sheet, a diff, a drafted reply, the summary, the send box or the search
+ * field) or where the cursor is: the Folders list, For you, Chats, the chat.
  */
 async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   if ((await read($, autopilot)).view.kind === 'card') return 'card' // ── autopilot ──
@@ -571,7 +597,6 @@ async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   const shown = (await read($, overlay)).kind // ── routing ──
   if (shown === 'sheet' || shown === 'broadcast') return 'sheet'
   if ((await read($, bottest)).diff !== null) return 'diff'
-  if ((await read($, triage)).editor !== null) return 'editor'
   // T4b's layers: the drafted reply and the summary over the lower part, a field in the bar's row.
   const where = await read($, nav)
   const open = await read($, thread)
@@ -579,17 +604,21 @@ async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   const summary = (await read($, triage)).summary
   if (open !== null && summary !== null && summary.peerId === open.peer.id && where.view === 'thread') return 'summary'
   if (where.isSearching || (open !== null && (await read($, bottest)).composing)) return 'field'
-  return where.view === 'thread' && open !== null ? 'chat' : 'chats'
+  if (where.view === 'thread' && open !== null) return 'chat'
+  if (where.view === 'folders') return 'folders'
+  return where.list.kind === 'foryou' && where.query === '' ? 'foryou' : 'chats'
 }
 
 /** The chat the keys of `where` act on: the card's, the cursor row's in Chats, else the open one. */
 async function keyPeer($: $, where: Where): Promise<PeerRef | undefined> {
   const view = (await read($, autopilot)).view
   if (where === 'card' && view.kind === 'card') return (await apDialog($, view.dialogId))?.peer
-  if (where === 'chats') {
-    const dialog = await cursorDialog($)
-    return dialog === undefined ? undefined : peerRefOf(dialog)
+  if (where === 'chats' || where === 'foryou') {
+    const row = await cursorRow($)
+    if (row?.kind === 'agent') return agentPeer($, row.item) // ── folders ──
+    return row === undefined ? undefined : peerRefOf(row.dialog)
   }
+  if (where === 'folders') return undefined
   return (await read($, thread))?.peer
 }
 
@@ -611,7 +640,14 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
     seat,
     kind: peer === undefined ? null : chatKind(peer.kind, isBotFather(peer.arg)),
     facts: {
-      rows: where === 'chats' ? (await shownDialogs($)).length : where === 'activity' ? (await activityRows($)).length : messages.length,
+      rows:
+        where === 'chats' || where === 'foryou'
+          ? (await listRows($)).length
+          : where === 'folders'
+            ? (await folderItems($)).length
+            : where === 'activity'
+              ? (await activityRows($)).length
+              : messages.length,
       // ── running ── what 0 stops: every follow, autopilot and Worker (§5.6).
       isRunning: pilot.running.length > 0 || (await read($, pins)).length > 0 || tasks.some(isLive),
       hasFinished: tasks.some(task => !isLive(task)),
@@ -625,9 +661,8 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       isRecording: bt.recording !== null,
       isWatched: peer !== undefined && tri.watched.some(one => one.id === peer.id),
       isFollowed: peer !== undefined && (await read($, pins)).some(pin => pin.peer.id === peer.id),
-      isRanked: tri.isRanked,
       summary: peer !== undefined && tri.summary?.peerId === peer.id ? tri.summary.status : 'none',
-      isSavedLens: tri.lens !== null,
+      row: where === 'foryou' ? await forYouRowKind($) : null, // ── folders ──
       isAgentOn: view.kind === 'card' && pilot.running.includes(view.dialogId),
       sheet: sheetStepOf(await read($, overlay)),
     },
@@ -646,7 +681,10 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return
     }
     case 'open':
-      return where === 'activity' ? openActivityRow($, (await read($, activity))?.cursor ?? 0) : openAtCursor($)
+      if (where === 'activity') return openActivityRow($, (await read($, activity))?.cursor ?? 0)
+      return where === 'folders' ? openFolderAt($, (await read($, nav)).folderCursor) : openAtCursor($)
+    case 'senddraft':
+      return openAtCursor($)
     case 'send':
       return openSheet($)
     case 'start': {
@@ -683,10 +721,14 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'write': {
       // On the summary, t retries one that failed and otherwise closes it, as h does.
       if (where === 'summary') return (await read($, triage)).summary?.status === 'error' ? toggleSummary($) : back($)
-      // From a row in Chats: that chat opens, with its summary over the lower part or the send box in the bar's row.
-      const dialog = where === 'chats' ? await cursorDialog($) : undefined
-      if (where === 'chats' && dialog === undefined) return
-      if (dialog !== undefined) await openThread($, dialog)
+      // From a row in Chats or For you: that chat opens, with its summary over the lower part or the send box in the bar's row.
+      const fromList = where === 'chats' || where === 'foryou'
+      const dialog = fromList ? await cursorDialog($) : undefined
+      if (fromList && dialog === undefined) return
+      if (dialog !== undefined) {
+        await applyWaiting($) // ── folders ── the cursor moves into the chat: what waits applies.
+        await openThread($, dialog)
+      }
       return id === 'summary' ? toggleSummary($) : toggleCompose($)
     }
     case 'record':
@@ -696,15 +738,14 @@ async function runKey($: $, id: RunKey): Promise<void> {
       await toggleDiff($)
       return ringCursor($)
     case 'foryou':
-      await toggleRanking($)
-      return ringCursor($)
+      return switchView($, { kind: 'foryou' }) // ── folders ──
     case 'search':
       return startSearch($)
-    case 'lenses':
-      return where === 'editor' ? saveLens($) : openLensEditor($)
     case 'edit':
+      if (where === 'foryou') return editAgentRow($) // ── folders ──
       return where === 'card' ? moveRing($, 'ap:tone') : openDraft($)
     case 'dismiss':
+      if (where === 'foryou' && (await cursorRow($))?.kind === 'agent') return dropAgentRow($) // ── folders ──
       if (where === 'card') return apNotice($, null)
       if (where === 'activity') return dismissEnded($)
       // The notice row's notice: a write's result, or what 0 stopped.
@@ -759,8 +800,6 @@ async function back($: $): Promise<void> {
     await update($, activity, () => null)
   } else if (where === 'diff') {
     await update($, bottest, value => ({ ...value, diff: null }))
-  } else if (where === 'editor') {
-    await update($, triage, value => ({ ...value, editor: null }))
   } else if (where === 'draft') {
     // It waits on: its notice says e: open.
     await update($, nav, value => ({ ...value, isDraftOpen: false }))
@@ -769,10 +808,20 @@ async function back($: $): Promise<void> {
   } else if (where === 'field') {
     await update($, nav, value => ({ ...value, isSearching: false }))
     await update($, bottest, value => ({ ...value, composing: false }))
-  } else {
+  } else if (where === 'chats' || where === 'foryou') {
+    // ── folders ── a search goes back to its folder; a folder or For you, up to every folder.
+    await backFromList($)
+  } else if (where === 'folders') {
+    // ── folders ── the top: back down to the chats it came from, as they are now.
+    await update($, nav, value => ({ ...value, view: 'dialogs' }))
+    await applyWaiting($)
+  } else if (where === 'chat') {
     const chosen = await read($, selection)
     if (chosen.ids.length > 0 || chosen.anchor !== null) await update($, selection, () => NO_SELECTION)
-    else if (where === 'chat') await update($, nav, value => ({ ...value, view: 'dialogs' }))
+    else {
+      await update($, nav, value => ({ ...value, view: 'dialogs' }))
+      await applyWaiting($) // ── folders ── the ring moves back to Chats: what waits applies.
+    }
   }
   await ringCursor($)
 }
@@ -785,23 +834,25 @@ async function startSearch($: $): Promise<void> {
 }
 
 /**
- * The search field's ⏎: a new query filters every chat and puts the cursor on
- * the first; the same one (⏎ on the field as it opened) only closes it, so the
+ * The search field's ⏎: a new query searches every chat (`tg dialogs --query`,
+ * §4.7) and puts the cursor on the first; an empty one goes back to the
+ * folder; the same one (⏎ on the field as it opened) only closes it, so the
  * cursor and its window stay where they were (§4.3 rule 1).
  */
 async function submitSearch($: $, query: string): Promise<void> {
   const asked = query.trim()
-  await update($, nav, value =>
-    asked === value.query ? { ...value, isSearching: false } : { ...value, view: 'dialogs', query: asked, dialogCursor: 0, isSearching: false },
-  )
-  await ringCursor($)
+  const where = await read($, nav)
+  await update($, nav, value => ({ ...value, isSearching: false }))
+  if (asked === where.query) return ringCursor($)
+  if (asked === '') return switchView($, where.list) // ── folders ──
+  await searchChats($, asked) // ── folders ──
 }
 
 async function openFromBand($: $): Promise<void> {
   const event = await read($, band)
   await update($, band, () => null)
   await setMode($, 'open')
-  const dialog = (loaded(await read($, dialogs)) ?? []).find(one => one.id === event?.dialogId)
+  const dialog = (await knownDialogs($)).find(one => one.id === event?.dialogId)
   if (dialog !== undefined) await openThread($, dialog)
 }
 
@@ -816,8 +867,9 @@ type Seating = { seat: Seat; width: number; rows: number; isFocused: boolean }
 
 /**
  * The pane for where the engine seated it (design §4.1, §7.3). The dock keeps
- * Chats on top and the open chat (or a card, the picker, a diff, the ledger)
- * below; inline shows one view at a time. Both end in the action bar.
+ * Chats on top (or the Folders list, or For you) and the open chat (or a card,
+ * the picker, a diff, the ledger) below; inline shows one view at a time. Both
+ * end in the action bar.
  */
 async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement> {
   const { seat, width, rows } = seating
@@ -829,20 +881,27 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const chosen = await read($, selection)
   // The marks ride the bar's row (T4b): `▪ 3 marked` leads it, and the verbs get what is left.
   const lead = !isMenu && where === 'chat' ? marksLead(chosen.ids.length) : null
-  const bar = actionBar(barContext, width - (lead === null ? 0 : lead.length + BAR_GAP))
+  // ── folders ── the Folders list's rows carry the digits: the bar says so after ⏎ (§4.6).
+  const digitsText = !isMenu && where === 'folders' ? await digitsLabel($) : null
+  const bar = actionBar(barContext, width - (lead === null ? 0 : lead.length + BAR_GAP) - (digitsText === null ? 0 : digitsText.length + BAR_GAP))
   const isBase = where === 'chats' || where === 'chat'
   // Inline Chats: the strip shares the header row; the dock gives it a row of its own.
   const isInlineChats = seat === 'inline' && where === 'chats' && !isMenu
   // The dock's strip draws `s: search` while the keys are Chats' or the chat's (s exists there only);
-  // over a layer its Button stays, without the hotkey, as the lens tabs keep theirs. The engine
-  // keeps the ring by its place among the Buttons (seen live on 2.1.296: closing the sheet put it
-  // one row above the cursor while `s` came back), so the strip draws the same Buttons in every view.
+  // over a layer its Button stays, without the hotkey. The engine keeps the ring by its place among
+  // the Buttons (seen live on 2.1.296: closing the sheet put it one row above the cursor while `s`
+  // came back), so the strip draws the same Buttons in every view under Chats.
   const search = seat === 'inline' ? 'none' : isBase ? 'key' : 'click'
-  const strip = isMenu || where === 'editor' || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search })
+  // ── folders ── the strip shows while Chats do: not over the Folders list or For you (§5.0, §5.3).
+  const isChatsOnTop = await chatsOnTop($)
+  const summary = await summaryOf($)
+  const stripWidth = seat === 'inline' ? inlineStripRoom(width, summary, seating.isFocused) : width
+  const strip = isMenu || !isChatsOnTop || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search, width: stripWidth })
   // ── running ── the dock's strip comes and goes as things start and stop, mostly while the cursor
   // stays: it draws no ring stop, and its row is kept whether it shows or not, so neither the stops
   // above the cursor nor the lists' windows change with it (§4.3 rule 1). Inline the header counts.
-  const running = seat === 'dock' && !isMenu ? await drawRunningStrip($, els, width) : null
+  // Over the Folders list or For you the folder strip is not drawn, so what waits rides this row.
+  const running = seat === 'dock' && !isMenu ? await drawRunningStrip($, els, width, !isChatsOnTop) : null
   const runningRows = seat === 'dock' ? RUNNING_ROWS : 0
   // Inline, the windows always leave a row for a notice (T4b): the frame fits its content, so the
   // row costs nothing while it is empty, and one arriving takes no row from a list.
@@ -864,31 +923,30 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
       : await drawInline($, els, where, width, room)
   const drawn = new Set(sheetBar === null && fieldBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
   if (strip !== null && search === 'key') drawn.add('s')
-  // Views that draw a key of the table themselves: the lens editor's save, the sheet's a, i and h.
-  if (!isMenu && where === 'editor') drawn.add('z')
+  // Views that draw a key of the table themselves: the sheet's a, i and h.
   if (sheetBar !== null && !isAsking) for (const key of ['a', 'i', 'h']) drawn.add(key)
   // A failed load draws its own `g: reload` (LoadState): the list's, or the chat's, where they show.
-  const isListShown = !isMenu && (seat === 'dock' ? where !== 'editor' : where === 'chats')
+  const isListShown = !isMenu && (seat === 'dock' || where === 'chats' || where === 'foryou')
   const isThreadShown = !isMenu && isBase && (seat === 'dock' || where === 'chat')
   if (await hasReloadRow($, isListShown, isThreadShown)) drawn.add('g')
   // The menu's own Buttons carry the keys of the view under it.
   if (isMenu) for (const section of menuSections(context)) for (const entry of section.entries) if (entry.def.hotkey !== null) drawn.add(entry.def.hotkey)
-  return Frame(els, {
-    rows,
-    header: Header(els, {
-      location: await locationOf($, where, isMenu, isInlineChats),
-      strip: isInlineChats ? strip : null,
-      summary: await summaryOf($),
-      chips: await chipsOf($),
-      isFocused: seating.isFocused,
-    }),
-    running,
-    strip: isInlineChats ? null : strip,
-    slot,
-    notice,
-    bar: sheetBar ?? fieldBar ?? ActionBar(els, { keys: bar, lead, isFocused: seating.isFocused, onKey }),
-    hidden: HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey }),
+  // ── folders ── digits pick a folder while the cursor is in Chats, the Folders list or For you (§4.7).
+  const isDigitsLive = !isMenu && (where === 'chats' || where === 'folders' || where === 'foryou')
+  const header = Header(els, {
+    location: await locationOf($, where, isMenu, isInlineChats),
+    strip: isInlineChats ? strip : null,
+    summary,
+    chips: await chipsOf($),
+    isFocused: seating.isFocused,
   })
+  const barRow = sheetBar ?? fieldBar ?? ActionBar(els, { keys: bar, lead, digits: digitsText, isFocused: seating.isFocused, onKey })
+  const hidden = HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey })
+  const digits = isDigitsLive ? await drawDigitKeys($, els) : null
+  // Every other letter and digit is caught, so none falls through to the prompt and takes the keys (the T9 review's M1).
+  const taken = hotkeysIn([header, running, strip, slot, notice, barRow, hidden, digits])
+  const stray = StrayKeys(els, { keys: STRAY_KEYS.filter(key => !taken.has(key)), onKey: key => say($, 'info', strayText(key, barContext)) })
+  return Frame(els, { rows, header, running, strip: isInlineChats ? null : strip, slot, notice, bar: barRow, hidden, digits, stray })
 }
 
 async function hasReloadRow($: $, isListShown: boolean, isThreadShown: boolean): Promise<boolean> {
@@ -904,6 +962,10 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
   switch (where) {
     case 'chats':
       return 'tg › chats'
+    case 'folders':
+      return 'tg › folders'
+    case 'foryou':
+      return 'tg › for you'
     case 'chat':
       return `tg › ${label}`
     case 'card':
@@ -920,8 +982,6 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
       return `tg › diff · ${label}`
     case 'activity':
       return 'tg › activity'
-    case 'editor':
-      return 'tg › lens'
     case 'summary':
       return `tg › summary · ${label}`
     case 'draft':
@@ -940,7 +1000,7 @@ async function summaryOf($: $) {
   const levels = pilot.running.map(id => pilot.dialogs[String(id)]?.level)
   const count = (level: string) => levels.filter(one => one === level).length
   const watched = new Set((await read($, triage)).watched.map(peer => peer.id))
-  const listed = loaded(await read($, dialogs)) ?? []
+  const listed = await knownDialogs($)
   const replyDraft = await read($, draft)
   return stateSummary({
     levels: [
@@ -957,31 +1017,6 @@ async function chipsOf($: $): Promise<{ text: string; color?: string }[]> {
   return recording === null ? [] : [{ text: `${GLYPH.unread} rec ${recording.steps.length}`, color: TOKEN.danger }]
 }
 
-async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key' | 'click' | 'none' }): Promise<RenderElement> {
-  const where = await read($, nav)
-  const state = await read($, triage)
-  return Strip(els, {
-    lens: where.lens,
-    lenses: state.lenses,
-    active: state.lens,
-    firstSavedDigit: FIRST_LENS_DIGIT,
-    isRanked: state.isRanked,
-    query: where.query,
-    isLive: props.isLive,
-    search: props.search,
-    onLens: async (lens: Lens) => {
-      await update($, nav, value => ({ ...value, view: 'dialogs', lens, dialogCursor: 0 }))
-      await selectSavedLens($, null)
-      await ringCursor($)
-    },
-    onSaved: async id => {
-      await selectSavedLens($, id)
-      await ringCursor($)
-    },
-    onSearch: () => startSearch($),
-  })
-}
-
 /**
  * The send box (`n`) or the search field (`s`), in the bar's row (T4b, as the
  * send sheet's Ask field): it adds no row, the lists under it are drawn
@@ -993,7 +1028,7 @@ async function drawFieldBar($: $, els: Els): Promise<RenderElement | null> {
   if (Input === undefined) return null
   const where = await read($, nav)
   if (where.isSearching) {
-    return <Input key="search" label="search" placeholder="title or @name; empty clears and closes" value={where.query} submitLabel="filter" onSubmit={value => submitSearch($, value)} />
+    return <Input key="search" label="search" placeholder="every chat: title or @name; empty goes back to the folder" value={where.query} submitLabel="search" onSubmit={value => submitSearch($, value)} />
   }
   const open = await read($, thread)
   return open === null ? null : SendBox(els, { peer: open.peer.label, onSend: text => sendText($, text) })
@@ -1011,38 +1046,39 @@ async function noticeNow($: $, width: number): Promise<Notice | null> {
   const stop = await stopNoticeNow($, width) // ── running ──
   if (stop !== null) return stop
   const replyDraft = await read($, draft) // ── routing ──
-  return replyDraft === null || replyDraft.step.kind === 'sent' ? null : { tone: 'warn', text: `${LEVEL_GLYPH.draft} draft for ${replyDraft.peer.label} waits · e: open` }
+  if (replyDraft !== null && replyDraft.step.kind !== 'sent') return { tone: 'warn', text: `${LEVEL_GLYPH.draft} draft for ${replyDraft.peer.label} waits · e: open` }
+  return passNotice($) // ── folders ──
 }
 
-/** Inline's notice row: one row the windows always leave free. */
+/** Inline's notice row: one row the windows always leave free; while no notice shows, what waits for the owner's move (§8 T9). */
 async function drawNoticeRow($: $, els: Els, width: number): Promise<RenderElement | null> {
-  const notice = await noticeNow($, width)
+  const notice = (await noticeNow($, width)) ?? (await movedNotice($))
   return notice === null ? null : NoticeRow(els, { notice })
 }
 
 /**
- * Dock: Chats on top, the open chat or a layer below. The list's height comes
- * from `listRoom`, the room without the sheet's rows: the engine keeps the
- * ring by its place among the Buttons,
- * so the chats above must not change in number when a layer opens or closes.
+ * Dock: Chats (or the Folders list, or For you) on top, the open chat or a
+ * layer below. The list's height comes from `listRoom`, the room without the
+ * sheet's rows: the engine keeps the ring by its place among the Buttons, so
+ * the rows above must not change in number when a layer opens or closes.
  */
 async function drawDock($: $, els: Els, where: Where, width: number, room: number, listRoom: number): Promise<RenderElement[]> {
   const open = await read($, thread)
-  const listLength = (await shownDialogs($)).length
-  const listRows = Math.min(Math.max(1, listLength), Math.max(3, Math.floor(listRoom * 0.4)))
+  // The Folders list has its pane-views line, For you its two section lines (── folders ──).
+  const at = await read($, nav)
+  const length = at.view === 'folders' ? (await folderItems($)).length + 1 : isForYou(at) ? (await listRows($)).length + 2 : (await listRows($)).length
+  const topRows = Math.min(Math.max(1, length), Math.max(3, Math.floor(listRoom * 0.4)))
   // Under the send box or the search field the list is drawn without ring stops (§4.3 rule 3).
-  const mode = where === 'chats' ? 'active' : where === 'field' ? 'static' : 'idle'
-  const list = where === 'editor' ? [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one])) : await drawDialogList($, els, width, listRows, mode)
-  if (where === 'editor') return list
-  const lower = Math.max(1, room - listRows - 1)
+  const mode = where === 'chats' || where === 'folders' || where === 'foryou' ? 'active' : where === 'field' ? 'static' : 'idle'
+  const list = await drawTop($, els, width, topRows, mode)
+  const lower = Math.max(1, room - topRows - 1)
   return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, 'dock', where, width, lower, open !== null))]
 }
 
 /** Inline: one view at a time; a field in the bar's row shows the column it works on, without ring stops. */
 async function drawInline($: $, els: Els, where: Where, width: number, room: number): Promise<RenderElement[]> {
-  if (where === 'chats') return drawDialogList($, els, width, room, 'active')
+  if (where === 'chats' || where === 'folders' || where === 'foryou') return drawTop($, els, width, room, 'active', 'inline')
   if (where === 'field' && (await read($, nav)).isSearching) return drawDialogList($, els, width, room, 'static')
-  if (where === 'editor') return [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one]))
   return drawLower($, els, 'inline', where, width, room, true)
 }
 
@@ -1077,6 +1113,8 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
     }
     case 'chats':
     case 'chat':
+    case 'folders':
+    case 'foryou':
     case 'field': {
       if (!isOpen) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
       // ── delegate ── the chat's task card, on top of its thread; a delegate chat keeps its rows (see drawChatTask).
@@ -1084,7 +1122,6 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
       const mode = where === 'chat' ? 'active' : where === 'field' ? 'static' : 'idle'
       return [...task.elements, ...(await drawThread($, els, width, Math.max(1, rows - task.rows), mode))]
     }
-    case 'editor':
     case 'menu':
     case 'band':
       return []
@@ -1114,8 +1151,8 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, mode:
   const open = await read($, thread)
   const waiting = LoadState(els, { load, now: at, rows, onReload: () => reload($) })
   if (waiting !== null) return [waiting]
-  const list = await visibleTriaged($, loaded(load) ?? [], where)
-  if (list.length === 0) return [(await emptySavedLens($, els)) ?? EmptyLens(els, where)]
+  const list = loaded(load) ?? []
+  if (list.length === 0) return [EmptyList(els, { text: await emptyText($) })] // ── folders ──
   const markOf = await watchMarks($)
   const pilotOf = await autopilotMarks($)
   const cursor = clamp(where.dialogCursor, list.length)
@@ -1123,9 +1160,11 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, mode:
   const start = edgeStart(where.dialogStart, cursor, rows, list.length)
   const shown = { start, items: windowAt(list, start, rows) }
   const pinned = new Set((await read($, pins)).map(pin => pin.peer.id))
+  const gen = (await read($, folders)).gen
   return shown.items.map((dialog, index) =>
     DialogRow(els, {
       dialog,
+      rowKey: rowKey(gen, { kind: 'chat', dialog }),
       isCursor: mode !== 'idle' && shown.start + index === cursor,
       isStatic: mode === 'static',
       isOpen: open?.peer.id === dialog.id,
@@ -1133,8 +1172,8 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, mode:
       width,
       now: at,
       onOpen: async () => {
-        await update($, nav, value => ({ ...value, dialogCursor: shown.start + index }))
-        await openThread($, dialog)
+        await update($, nav, value => ({ ...value, view: 'dialogs', dialogCursor: shown.start + index }))
+        await openAtCursor($)
       },
       mark: markOf(dialog.id),
       autopilot: pilotOf(dialog.id),
@@ -1185,17 +1224,14 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
 
 // ── triage ──
 // Live updates through the watch hub, watched dialogs in Hidden mode, saved
-// lenses, summaries and needs-you ranking (design §5 ideas 11–14). Every `$`
-// function of the triage phase is in this block; its pure rules are in
-// ./triage. Keys (./ui/keys): w watch, t summary, z lens editor, y needs-you,
-// 4–9 saved lenses.
+// summaries and needs-you ranking (design §5 ideas 11–14; the ranking orders
+// For you, ── folders ──). Every `$` function of the triage phase is in this
+// block; its pure rules are in ./triage. Keys (./ui/keys): w watch, t summary.
 // `On`, `MessageView` and `failureText` come from the bottest block's imports
 // (imports hoist; one module may import a name once).
 
 const triage = atom({ plugin: 'dialogs-pane', key: 'triage' } as const, EMPTY_TRIAGE)
 const STORE_WATCHED = 'triage.watched'
-const STORE_LENSES = 'triage.lenses'
-const STORE_RANKED = 'triage.ranked'
 const RANK_TIMEOUT_MS = 20_000
 const HUB_NAME = 'triage'
 
@@ -1221,17 +1257,8 @@ let summaryAbort: AbortController | null = null
 /** From pane-core's session.start: what $.store kept, then the watches it calls for. */
 async function startTriage($: $): Promise<void> {
   const watched = parseWatched(await $.store.get(STORE_WATCHED))
-  const lenses = parseLenses(await $.store.get(STORE_LENSES))
-  const isRanked = (await $.store.get(STORE_RANKED)) === true
   // After a reload the old subscriptions are gone, so their health is too.
-  await update($, triage, value => ({
-    ...value,
-    watched,
-    lenses,
-    isRanked,
-    health: {},
-    lens: lenses.some(lens => lens.id === value.lens) ? value.lens : null,
-  }))
+  await update($, triage, value => ({ ...value, watched, health: {} }))
   await syncWatches($)
 }
 
@@ -1265,7 +1292,7 @@ async function syncWatches($: $): Promise<void> {
   for (const id of [...listening.keys()]) {
     if (!wanted.has(id)) await stopListening($, id)
   }
-  const listed = loaded(await read($, dialogs)) ?? []
+  const listed = await knownDialogs($)
   for (const { peer, isBounded } of wanted.values()) {
     const current = listening.get(peer.id)
     if (current !== undefined && (current.isBounded === isBounded || current.hasFailed)) continue
@@ -1342,7 +1369,9 @@ async function onTriageEvent($: $, entry: Listening, event: WatchEvent, isReplay
   }
   if (event.event !== 'message') return
   const { message } = event
-  await update($, dialogs, value => (value.status === 'ok' ? { status: 'ok', value: applyToDialogs(value.value, peer.id, message) } : value))
+  // The row changes in place; in the module's map the chat also moves up in its folders, and that waits (── folders ──).
+  await update($, dialogs, value => (value.status === 'ok' ? { status: 'ok', value: applyToDialogs(value.value, peer.id, message).map(cutRow) } : value))
+  await patchHeld($, peer.id, message)
   if (isReplay || message.out) {
     await refreshStatus($)
     return
@@ -1381,8 +1410,7 @@ async function watchTarget($: $): Promise<PeerRef | undefined> {
   const where = await read($, nav)
   const open = await read($, thread)
   if (where.view === 'thread' && open !== null) return open.peer
-  const list = await shownDialogs($)
-  const dialog = list[clamp(where.dialogCursor, list.length)]
+  const dialog = await cursorDialog($)
   return dialog === undefined ? undefined : peerRefOf(dialog)
 }
 
@@ -1398,75 +1426,6 @@ async function bandLatency($: $, els: Els, event: BandEvent): Promise<RenderElem
   if (reply === null || reply.dialogId !== event.dialogId || reply.latencyMs === null) return null
   const { Text } = els
   return <Text color={reply.latencyMs > 3000 ? TOKEN.warn : undefined} dimColor={reply.latencyMs <= 3000}>{`${GLYPH.latency}${latencyText(reply.latencyMs)}`}</Text>
-}
-
-// --- saved lenses ---
-
-async function visibleTriaged($: $, list: readonly TgDialog[], where: Nav): Promise<TgDialog[]> {
-  return triageDialogs(list, where, await read($, triage), me ?? NO_ME)
-}
-
-async function selectSavedLens($: $, id: string | null): Promise<void> {
-  await update($, triage, value => ({ ...value, lens: id }))
-  await update($, nav, value => ({ ...value, view: 'dialogs', dialogCursor: 0 }))
-}
-
-async function openLensEditor($: $): Promise<void> {
-  const state = await read($, triage)
-  const saved = state.lenses.find(lens => lens.id === state.lens)
-  if (saved === undefined && state.lenses.length >= MAX_LENSES) {
-    $.ui.toast(`tg: ${MAX_LENSES} lenses at most; open one (4–9) and press z to edit or delete it.`)
-    return
-  }
-  const id = `lens-${(await $.clock.now()).toString(36)}`
-  const draft: LensDraft = saved === undefined ? { lens: draftFrom(await read($, nav), state.lenses, id), isNew: true } : { lens: saved, isNew: false }
-  await update($, triage, value => ({ ...value, editor: draft }))
-  await update($, nav, value => ({ ...value, view: 'dialogs' }))
-}
-
-async function editDraft($: $, change: (lens: SavedLens) => SavedLens): Promise<void> {
-  await update($, triage, value => (value.editor === null ? value : { ...value, editor: { ...value.editor, lens: change(value.editor.lens) } }))
-}
-
-async function saveLens($: $): Promise<void> {
-  const draft = (await read($, triage)).editor
-  if (draft === null) return
-  const lenses = upsertLens((await read($, triage)).lenses, draft.lens)
-  await update($, triage, value => ({ ...value, lenses, editor: null, lens: draft.lens.id }))
-  await update($, nav, value => ({ ...value, dialogCursor: 0 }))
-  await $.store.set(STORE_LENSES, lenses)
-}
-
-async function deleteLens($: $): Promise<void> {
-  const draft = (await read($, triage)).editor
-  if (draft === null) return
-  const lenses = (await read($, triage)).lenses.filter(lens => lens.id !== draft.lens.id)
-  await update($, triage, value => ({ ...value, lenses, editor: null, lens: value.lens === draft.lens.id ? null : value.lens }))
-  await $.store.set(STORE_LENSES, lenses)
-}
-
-/** The editor in place of the dialog list while it is open; null otherwise. */
-async function drawLensEditor($: $, els: Els, rows: number): Promise<RenderElement | null> {
-  const draft = (await read($, triage)).editor
-  if (draft === null) return null
-  return LensEditor(els, {
-    draft,
-    dialogs: loaded(await read($, dialogs)) ?? [],
-    rows,
-    onName: name => editDraft($, lens => ({ ...lens, name })),
-    onQuery: query => editDraft($, lens => ({ ...lens, query: query.trim() })),
-    onKind: group => editDraft($, lens => toggleGroup(lens, group)),
-    onUnread: () => editDraft($, lens => ({ ...lens, isUnreadOnly: !lens.isUnreadOnly })),
-    onPick: dialogId => editDraft($, lens => togglePicked(lens, dialogId)),
-    onSave: () => saveLens($),
-    onDelete: () => deleteLens($),
-  })
-}
-
-async function emptySavedLens($: $, els: Els): Promise<RenderElement | null> {
-  const state = await read($, triage)
-  const saved = state.lenses.find(lens => lens.id === state.lens)
-  return saved === undefined ? null : EmptySavedLens(els, { lens: saved })
 }
 
 /** The `◎` mark of each watched dialog's row, colored by its watch's health. */
@@ -1554,35 +1513,23 @@ async function hideSummary($: $): Promise<void> {
   await update($, triage, value => ({ ...value, summary: null }))
 }
 
-// --- needs-you ranking ---
+// --- needs-you ranking: For you's people (── folders ──) ---
 
-async function toggleRanking($: $): Promise<void> {
-  const isRanked = !(await read($, triage)).isRanked
-  await update($, triage, value => ({ ...value, isRanked }))
-  await update($, nav, value => ({ ...value, dialogCursor: 0 }))
-  await $.store.set(STORE_RANKED, isRanked)
-  if (isRanked) await scoreUnread($)
-}
-
-/** After each `tg dialogs`: drop verdicts for messages no longer on top, and score the new ones. */
-async function afterDialogs($: $): Promise<void> {
-  const list = loaded(await read($, dialogs)) ?? []
-  await update($, triage, value => ({ ...value, verdicts: pruneVerdicts(value.verdicts, list) }))
-  if ((await read($, triage)).isRanked) await scoreUnread($)
-}
-
-/** One scoring pass at a time; a second caller shares the one in flight. */
-function scoreUnread($: $): Promise<void> {
-  scoring ??= askModel($).finally(() => {
+/**
+ * One ranking call at a time, when For you opens (§5.3, §8 T9): the chats the
+ * heuristics leave open and the cache has no verdict for. Nothing outside For
+ * you asks the model.
+ */
+function scoreUnread($: $, candidates: readonly TgDialog[]): Promise<void> {
+  scoring ??= askModel($, candidates).finally(() => {
     scoring = null
   })
   return scoring
 }
 
-async function askModel($: $): Promise<void> {
-  me ??= await whoAmI($)
+async function askModel($: $, candidates: readonly TgDialog[]): Promise<void> {
   const state = await read($, triage)
-  const asked = toAsk(loaded(await read($, dialogs)) ?? [], me, state.verdicts, state.repliedToYou)
+  const asked = toAsk(candidates, me ?? NO_ME, state.verdicts, state.repliedToYou)
   if (asked.length === 0) return
   const result = await $.model.complete({
     model: TRIAGE_MODEL,
@@ -1592,7 +1539,7 @@ async function askModel($: $): Promise<void> {
     effort: 'low',
     timeoutMs: RANK_TIMEOUT_MS,
   })
-  // No answer: the heuristics rank alone, and the next pass asks again.
+  // No answer: the heuristics rank alone, and the next opening asks again.
   if (!result.isAnswered) return
   // A dialog the reply skipped counts as fyi, so it is not asked about again until a new message.
   const verdicts = { ...Object.fromEntries(asked.map(dialog => [verdictKey(dialog), 'fyi' as const])), ...parseVerdicts(result.text, asked) }
@@ -1978,7 +1925,7 @@ async function sheetFacts($: $, shown: Extract<Overlay, { kind: 'sheet' }>, inte
   const messages = await threadMessages($)
   const selected = selectedMessages(messages, shown.ids)
   const { known, toFetch } = parentsAtHand(selected, messages)
-  const peer = open === null ? null : peerOf(open.peer, loaded(await read($, dialogs)) ?? [])
+  const peer = open === null ? null : peerOf(open.peer, await knownDialogs($))
   // One redactor for the packet and the lines inspect shows, so their placeholders agree.
   const redactor = shown.isRedacted ? new Redactor() : null
   const packet =
@@ -2180,7 +2127,7 @@ async function sendPacket(
     },
     { known: input.known },
   )
-  const peer = peerOf(input.peer, loaded(await read($, dialogs)) ?? [])
+  const peer = peerOf(input.peer, await knownDialogs($))
   const { sender, isRedacted: redact, words } = input.how
   const before = (await read($, ledger)).length
   await Promise.all(
@@ -2239,7 +2186,7 @@ async function sendIds($: $, ids: readonly number[], legs: readonly Leg[], how: 
 /** The Hidden band's ⏎: the dialog's newest message to main, under the intent the band names. */
 async function bandToMain($: $): Promise<void> {
   const event = await read($, band)
-  const dialog = (loaded(await read($, dialogs)) ?? []).find(one => one.id === event?.dialogId)
+  const dialog = (await knownDialogs($)).find(one => one.id === event?.dialogId)
   // A watched reply names its own message (triage); otherwise the dialog's newest.
   const messageId = event === null ? null : ((await watchedReplyId($, event.dialogId)) ?? dialog?.last_id ?? null)
   if (event === null || dialog === undefined || messageId === null) {
@@ -2344,7 +2291,7 @@ async function onPinEvent($: $, peerId: number, event: WatchEvent): Promise<void
 /** Agent pins: the messages not delivered yet go out as one packet per dialog. */
 async function flushAgentPins($: $): Promise<void> {
   const redact = await read($, isRedacted)
-  const peers = loaded(await read($, dialogs)) ?? []
+  const peers = await knownDialogs($)
   const waiting = (await read($, pins)).filter(pin => pin.to.kind === 'agent' && pin.unsent.length > 0)
   await Promise.all(
     waiting.map(async pin => {
@@ -3127,7 +3074,7 @@ async function apAnswer($: $, rt: ApRuntime, turn: number): Promise<void> {
   } else {
     await apPatch($, rt.seq, { incoming, level: dialog.level })
   }
-  const peer = peerOf(rt.peer, loaded(await read($, dialogs)) ?? [])
+  const peer = peerOf(rt.peer, await knownDialogs($))
   const history = await apHistory($, rt, HISTORY_LIMIT)
   if (!alive()) return
 
@@ -3327,8 +3274,10 @@ async function apUndo($: $): Promise<void> {
 
 // --- drafts in the band ---
 
-async function apDraftOf($: $): Promise<ApDraft | null> {
-  return (await read($, autopilot)).drafts[0] ?? null
+/** The draft the band shows (the first), or one For you's row names by `seq` (── folders ──). */
+async function apDraftOf($: $, seq?: number): Promise<ApDraft | null> {
+  const drafts = (await read($, autopilot)).drafts
+  return (seq === undefined ? drafts[0] : drafts.find(one => one.seq === seq)) ?? null
 }
 
 async function apSetDraft($: $, seq: number, change: (draft: ApDraft) => ApDraft): Promise<void> {
@@ -3339,8 +3288,8 @@ async function apSetDraft($: $, seq: number, change: (draft: ApDraft) => ApDraft
  * ⏎ on a draft the band shows whole: the owner has read it, so it is their own
  * write and passes --yes (decision 9); BotFather stays read-only.
  */
-async function apSendDraft($: $): Promise<void> {
-  const draft = await apDraftOf($)
+async function apSendDraft($: $, seq?: number): Promise<void> {
+  const draft = await apDraftOf($, seq)
   if (draft === null || draft.state.kind === 'sending') return
   if (isBotFather(draft.peer.arg)) {
     await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) } }))
@@ -3370,8 +3319,8 @@ async function apSendDraft($: $): Promise<void> {
   await refreshStatus($)
 }
 
-async function apDropDraft($: $): Promise<void> {
-  const draft = await apDraftOf($)
+async function apDropDraft($: $, seq?: number): Promise<void> {
+  const draft = await apDraftOf($, seq)
   if (draft === null) return
   await update($, autopilot, value => ({
     ...value,
@@ -3390,7 +3339,7 @@ async function apUnfoldDraft($: $, draft: ApDraft): Promise<void> {
 /** `o` on a draft or a summary: the pane, on that dialog. */
 async function apOpen($: $, peer: PeerRef): Promise<void> {
   if ((await read($, mode)) === 'hidden') await setMode($, 'open')
-  const listed = (loaded(await read($, dialogs)) ?? []).find(one => one.id === peer.id)
+  const listed = (await knownDialogs($)).find(one => one.id === peer.id)
   await openThread($, listed ?? dialogOfPeer(peer))
 }
 
@@ -4344,7 +4293,7 @@ async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
   if (dialog === null) return
   const history = await runTg($, tg.read(task.peer.arg, { limit: HISTORY_LIMIT }))
   const messages = history.ok ? history.value : []
-  const peer = peerOf(task.peer, loaded(await read($, dialogs)) ?? [])
+  const peer = peerOf(task.peer, await knownDialogs($))
   const packet = buildPacket({ messages: messages.slice(-1), context: messages.slice(0, -1), peer, intent: { id: 'raw', text: '' }, redact: false, replay: false }).text
   const result = await $.model.complete({ model: speakerModel, system: delegateSystem(dialog), prompt: relayPrompt({ said, task, packet }), maxTokens: SPEAKER_MAX_TOKENS, timeoutMs: SPEAKER_TIMEOUT_MS })
   const at = await $.clock.now()
@@ -4560,10 +4509,12 @@ async function stopEverything($: $): Promise<StopReport> {
 }
 
 /** The dock's strip: what runs, `0: stop all` beside it; after `0`, what stopped. Null: nothing to say. */
-async function drawRunningStrip($: $, els: Els, width: number): Promise<RenderElement | null> {
+async function drawRunningStrip($: $, els: Els, width: number, withMoved: boolean): Promise<RenderElement | null> {
   const items = stripItems(await runRowsNow($))
   // A notice takes the row's left part; `0: stop all` keeps its place while something runs (T4b).
-  const notice = await noticeNow($, width - (items.length > 0 ? STOP_LABEL.length + 2 : 0))
+  // `withMoved`: no folder strip shows (the Folders list, For you), so what waits for the owner's move rides here (── folders ──).
+  const room = width - (items.length > 0 ? STOP_LABEL.length + 2 : 0)
+  const notice = (await noticeNow($, room)) ?? (withMoved ? await movedNotice($) : null)
   if (items.length === 0 && notice === null) return null
   return RunningStrip(els, { ...fitStrip(items, width), notice, isRunning: items.length > 0 })
 }
@@ -4658,3 +4609,796 @@ async function drawActivity($: $, els: Els, width: number, rows: number): Promis
   })
 }
 // ── /running ──
+
+// ── folders ──
+// dialogs-pane-ux.md §4.7 and §8 T9: the owner's Telegram folders, For you and
+// Bots in Chats' place, all from one pass (`tg folders --chats --json`). The
+// pass's rows stay in the module (`passHeld`); $.state holds only what is
+// drawn (the folder list, the view's rows cut to 120 characters); $.store the
+// list, the current view and its rows for the next session. A list on screen
+// changes in place while the cursor stays; what moves, joins or leaves waits
+// (`↑N`) for the owner's next move: ⏎ into a chat, h, a folder or view switch,
+// g, opening the pane (§4.3). Keys (./ui/keys): 1–9 folder, h up to the
+// Folders list, y For you, g reload. Pure rules in ./folders.
+import type { AgentItem, Folder, Folders, ForYouWhy, ListView, Nav, Notice as PaneNotice } from '../types'
+import { FoldersList, ForYouList, type FolderItem, type ForYouItem } from './folders/components'
+import {
+  HIDDEN_GAP_MS,
+  NO_PASS,
+  PASS_GAP_MS,
+  agentItems,
+  agentKey,
+  bump,
+  cutRow,
+  folderList,
+  forYouCandidates,
+  forYouPeople,
+  nextAllowed,
+  parseStored,
+  passMap,
+  passPlan,
+  recount,
+  sameView,
+  stripEntries,
+  stripWindow,
+  tabText,
+  viewRows,
+  waitingCount,
+  type PassMap,
+  type StoredFolders,
+} from './folders/folders'
+import { cells, dialogGlyph, shortTime } from './ui/model'
+
+const NO_FOLDERS: Folders = { list: null, gen: 0, agents: [], why: {}, isRanking: false, pass: NO_PASS }
+const folders = atom({ plugin: 'dialogs-pane', key: 'folders' } as const, NO_FOLDERS)
+const STORE_FOLDERS = 'folders'
+
+/** The last pass (§8 T9 a). A hot reload drops it; the next pass fills it again. */
+let passHeld: PassMap | null = null
+/** The next pass's timer (the cadence, a queued `g`, a flood wait's end), and the countdown a notice shows. */
+let passNext: Timer | null = null
+let passCountdown: Timer | null = null
+/** What this module last wrote to $.store, so an unchanged view is not written again. */
+let lastStored = ''
+/** Cells a For you row leaves for the text, as last drawn: ⏎ sends a draft only when it fit (decision 9). */
+let forYouRoom = 0
+
+/** One row in Chats' place: a chat, or one of For you's agent rows. */
+type ListRow = { kind: 'chat'; dialog: TgDialog } | { kind: 'agent'; item: AgentItem }
+
+const rowId = (row: ListRow) => (row.kind === 'chat' ? `chat:${row.dialog.id}` : `agent:${agentKey(row.item)}`)
+
+/** A row's key: the list's generation is part of it, so a reshaped list brings keys the old drawing lacks (§8 T9). */
+function rowKey(gen: number, row: ListRow): string {
+  return row.kind === 'chat' ? `dialog:${gen}:${row.dialog.id}` : `fy:${gen}:${agentKey(row.item)}`
+}
+
+async function startFolders($: $): Promise<void> {
+  // A pass running across a hot reload ended with the old module; its start still counts for the 60 s.
+  await update($, folders, value => ({ ...value, pass: { ...value.pass, isRunning: false } }))
+  await armNext($)
+}
+
+/** Every chat the pane knows: the view on screen, then the last pass. */
+async function knownDialogs($: $): Promise<TgDialog[]> {
+  const shown = loaded(await read($, dialogs)) ?? []
+  if (passHeld === null) return shown
+  const ids = new Set(shown.map(one => one.id))
+  return [...shown, ...[...passHeld.rows.values()].filter(one => !ids.has(one.id))]
+}
+
+const isForYou = (where: Pick<Nav, 'list' | 'query'>) => where.list.kind === 'foryou' && where.query === ''
+
+/** The rows in Chats' place as drawn: For you's agent rows first, then the chats. */
+async function listRows($: $): Promise<ListRow[]> {
+  const chats = (loaded(await read($, dialogs)) ?? []).map((dialog): ListRow => ({ kind: 'chat', dialog }))
+  if (!isForYou(await read($, nav))) return chats
+  return [...(await read($, folders)).agents.map((item): ListRow => ({ kind: 'agent', item })), ...chats]
+}
+
+async function cursorRow($: $): Promise<ListRow | undefined> {
+  const rows = await listRows($)
+  return rows[clamp((await read($, nav)).dialogCursor, rows.length)]
+}
+
+/** The dock's top shows Chats (and the strip) unless the Folders list or For you takes their place. */
+async function chatsOnTop($: $): Promise<boolean> {
+  const where = await read($, nav)
+  return where.view !== 'folders' && !isForYou(where)
+}
+
+// --- when passes run ---
+
+/** Opening the pane (§8 T9): the last list paints at once, from $.state or $.store, then a pass runs or waits its turn. */
+async function openFolders($: $): Promise<void> {
+  const state = await update($, folders, value => ({ ...value, pass: { ...value.pass, hasOpened: true } }))
+  // Who the owner is, for For you's mentions, so that opening For you runs no tg call (§8 T9).
+  if (me === null) {
+    whoAmI($)
+      .then(found => {
+        me ??= found
+      })
+      .catch(() => {
+        // Without it, For you finds mentions by Telegram's count alone.
+      })
+  }
+  if (state.list === null) {
+    const stored = parseStored(await $.store.get(STORE_FOLDERS))
+    if (stored !== null && stored.list.length > 0) {
+      await paintStored($, stored)
+    } else {
+      await update($, dialogs, () => ({ status: 'loading' }))
+      firstList($).catch(() => {
+        // The strip waits for the pass instead; the pass reports its own failure.
+      })
+    }
+  } else {
+    // Opening the pane moves the ring: what waits applies.
+    await applyWaiting($)
+  }
+  await requestPass($, 'open')
+}
+
+/** What the last session left: the folder list with its counts, the view, and its rows when it is a folder. */
+async function paintStored($: $, stored: StoredFolders): Promise<void> {
+  const isListed = stored.view.kind !== 'folder' || stored.list.some(folder => sameView({ kind: 'folder', id: folder.id }, stored.view))
+  const first = stored.list[0]
+  const view: ListView = isListed || first === undefined ? stored.view : { kind: 'folder', id: first.id }
+  await update($, folders, value => ({ ...value, list: stored.list, gen: value.gen + 1 }))
+  await update($, nav, value => ({ ...value, view: 'dialogs', list: view, query: '', dialogCursor: 0, dialogStart: 0 }))
+  await update($, dialogs, () => (view.kind === 'folder' && sameView(view, stored.view) ? { status: 'ok', value: stored.rows } : { status: 'loading' }))
+}
+
+/** A first open with nothing held: the strip from `tg folders` (0.66 s on the owner's account), on Telegram's first folder. */
+async function firstList($: $): Promise<void> {
+  const result = await runTg($, tg.folders())
+  if (!result.ok || (await read($, folders)).list !== null) return
+  await takeFirstList($, result.value)
+}
+
+async function takeFirstList($: $, list: readonly Folder[]): Promise<void> {
+  const first = list[0]
+  await update($, folders, value => ({ ...value, list: [...list] }))
+  if (first !== undefined) await update($, nav, value => ({ ...value, list: { kind: 'folder', id: first.id }, dialogCursor: 0, dialogStart: 0 }))
+}
+
+/**
+ * A reason to run a pass (./folders `passPlan`): it runs, queues the one pass
+ * `g` may queue (`refreshing in N s`), or waits for the cadence.
+ */
+async function requestPass($: $, reason: 'open' | 'g' | 'tick'): Promise<void> {
+  const at = await $.clock.now()
+  const state = (await read($, folders)).pass
+  const plan = passPlan(state, at, reason, (await read($, mode)) === 'open')
+  if (plan === 'run') {
+    runPass($).catch(() => {
+      // runPass records its own failures in state.
+    })
+  } else if (plan === 'queue') {
+    const when = Math.max(nextAllowed(state), at)
+    await update($, folders, value => ({ ...value, pass: { ...value.pass, queuedFor: when } }))
+    await armNext($)
+    await startCountdown($)
+  } else {
+    // Not now: the cadence's timer, armed for when it may.
+    await armNext($)
+  }
+}
+
+/**
+ * One timer for the next pass: the queued one, else the cadence's (60 s after
+ * the last start while the pane is open, 5 min while it is hidden after a
+ * first open), never before a flood wait ends. Armed again after every pass
+ * and whenever the pane opens or hides.
+ */
+async function armNext($: $): Promise<void> {
+  passNext?.cancel()
+  passNext = null
+  const state = (await read($, folders)).pass
+  const isOpen = (await read($, mode)) === 'open'
+  const cadence = state.startedAt === null ? null : isOpen ? state.startedAt + PASS_GAP_MS : state.hasOpened ? state.startedAt + HIDDEN_GAP_MS : null
+  const due = state.queuedFor ?? cadence
+  if (due === null || state.isRunning) return
+  const when = Math.max(due, state.floodUntil ?? 0)
+  const timer = $.clock.after(Math.max(0, when - (await $.clock.now())), () => {
+    if (passNext === timer) passNext = null
+    requestPass($, 'tick').catch(() => {
+      // A pass that could not start waits for the next arming: a pass's end, the pane opening or hiding, g.
+    })
+  })
+  passNext = timer
+}
+
+/** Ticks `now` each second while a notice counts down (a queued pass, a flood wait). */
+async function startCountdown($: $): Promise<void> {
+  const at = await $.clock.now()
+  await update($, now, () => at)
+  if (passCountdown !== null) return
+  const timer = $.clock.every(1000, () => {
+    countdownTick().catch(() => {
+      // A missed tick only holds the countdown one second.
+    })
+  })
+  passCountdown = timer
+  async function countdownTick(): Promise<void> {
+    const at = await $.clock.now()
+    await update($, now, () => at)
+    const pass = (await read($, folders)).pass
+    const isCounting = (pass.queuedFor !== null && pass.queuedFor > at) || (pass.floodUntil !== null && pass.floodUntil > at) || (await isRefreshShown($))
+    if (isCounting) return
+    timer.cancel()
+    if (passCountdown === timer) passCountdown = null
+  }
+}
+
+async function runPass($: $): Promise<void> {
+  const startedAt = await $.clock.now()
+  await update($, folders, value => ({ ...value, pass: { ...value.pass, startedAt, isRunning: true, queuedFor: null, error: null } }))
+  const result = await runTg($, tg.pass())
+  const at = await $.clock.now()
+  await update($, now, () => at)
+  if (!result.ok) {
+    await passFailed($, result.failure, at)
+    await armNext($)
+    return
+  }
+  const before = passHeld
+  const map = passMap(result.value)
+  passHeld = map
+  await update($, folders, value => ({ ...value, pass: { ...value.pass, isRunning: false, floodUntil: null, error: null } }))
+  const verdicts = (await read($, triage)).verdicts
+  const kept = pruneVerdicts(verdicts, [...map.rows.values()])
+  if (Object.keys(kept).length !== Object.keys(verdicts).length) await update($, triage, value => ({ ...value, verdicts: pruneVerdicts(value.verdicts, [...map.rows.values()]) }))
+  await landPass($, map)
+  // Hidden: a chat whose unread count grew since the last pass raises the band, as `tg dialogs` did.
+  const grown = before === null ? undefined : grownDialog([...before.rows.values()], [...map.rows.values()])
+  if (grown !== undefined && (await read($, mode)) === 'hidden') {
+    await update($, band, () => ({ dialogId: grown.id, label: dialogLabel(grown), kind: grown.kind, text: grown.last_text }))
+  }
+  await storeFolders($)
+  await refreshStatus($)
+  await armNext($)
+}
+
+/**
+ * Exit 5 keeps the pass and holds the next one until the wait is over, then
+ * retries; any other failure keeps it and says so with `g: retry`, and the
+ * cadence goes on (§8 T9). With no rows held, the list itself shows it.
+ */
+async function passFailed($: $, failure: TgFailure, at: number): Promise<void> {
+  const floodUntil = failure.kind === 'flood' ? at + failure.seconds * 1000 : null
+  await update($, folders, value => ({
+    ...value,
+    pass: { ...value.pass, isRunning: false, floodUntil: floodUntil ?? value.pass.floodUntil, queuedFor: floodUntil ?? value.pass.queuedFor, error: floodUntil === null ? failureText(failure, at) : null },
+  }))
+  if ((await read($, dialogs)).status !== 'ok') await update($, dialogs, () => failed(failure, at))
+  if (floodUntil !== null) await startCountdown($)
+  await refreshStatus($)
+}
+
+/**
+ * A pass landed. A list with nothing drawn fills at once; a drawn one changes
+ * in place (counts, mentions, the last message) and what moved waits. The
+ * folder list's counts change in place too; a folder added, removed or moved
+ * waits with the rest.
+ */
+async function landPass($: $, map: PassMap): Promise<void> {
+  const state = await read($, folders)
+  if (state.list === null) await takeFirstList($, folderList(map))
+  else await writeCounts($, map)
+  const drawn = loaded(await read($, dialogs))
+  const where = await read($, nav)
+  if (isForYou(where) && (drawn === undefined || drawn.length === 0)) {
+    await fillPeople($)
+  } else if (drawn === undefined || drawn.length === 0) {
+    await applyWaiting($, true)
+    if ((await read($, mode)) === 'open') await ringCursor($)
+  } else {
+    // In place: the same rows, each as the pass has it now. Rows that did not change are not written again.
+    const next = drawn.map(row => cutRow(map.rows.get(row.id) ?? row))
+    if (JSON.stringify(next) !== JSON.stringify(drawn)) await update($, dialogs, () => ({ status: 'ok', value: next }))
+  }
+}
+
+function countsIn(list: Folder[] | null, map: PassMap): Folder[] | null {
+  if (list === null) return null
+  return list.map(folder => ({ ...folder, unread: map.folders.find(one => one.id === folder.id)?.unread ?? folder.unread }))
+}
+
+/** The folder list's counts as the map has them, written only when one changed. */
+async function writeCounts($: $, map: PassMap): Promise<void> {
+  const list = (await read($, folders)).list
+  const next = countsIn(list, map)
+  if (JSON.stringify(next) !== JSON.stringify(list)) await update($, folders, value => ({ ...value, list: countsIn(value.list, map) }))
+}
+
+/** A watch event between passes (§8 T9): the row in the module's map, and the chat up in every folder that lists it. */
+async function patchHeld($: $, dialogId: number, message: MessageView): Promise<void> {
+  if (passHeld === null) return
+  const row = passHeld.rows.get(dialogId)
+  if (row === undefined) return
+  const patched = applyToDialogs([row], dialogId, message)[0]
+  if (patched === undefined) return
+  passHeld.rows.set(dialogId, patched)
+  const map = recount(bump(passHeld, dialogId))
+  passHeld = map
+  await writeCounts($, map)
+}
+
+/** $.store (§8 T9 d): the folder list with its counts, the current view, and its rows when it is a folder. */
+async function storeFolders($: $): Promise<void> {
+  const state = await read($, folders)
+  if (state.list === null) return
+  const view = (await read($, nav)).list
+  const rows = view.kind === 'folder' ? (loaded(await read($, dialogs)) ?? []) : []
+  const snapshot = { list: state.list, view, rows }
+  // A pass that changed nothing on screen writes nothing: $.store is a file every session shares.
+  const text = JSON.stringify(snapshot)
+  if (text === lastStored) return
+  lastStored = text
+  await $.store.set(STORE_FOLDERS, snapshot)
+}
+
+// --- what waits, and applying it ---
+
+/** The view as the pass and the live state have it now; null when nothing held can say (the Archive, a search). */
+async function viewTarget($: $): Promise<{ agents: AgentItem[]; rows: TgDialog[]; why: Record<string, ForYouWhy> } | null> {
+  const where = await read($, nav)
+  if (where.query !== '') return null
+  if (where.list.kind === 'foryou') {
+    const state = await read($, folders)
+    const people = passHeld === null || state.isRanking ? null : await rankedPeople($, passHeld)
+    return {
+      agents: await liveAgents($),
+      rows: people?.rows ?? loaded(await read($, dialogs)) ?? [],
+      why: people?.why ?? state.why,
+    }
+  }
+  const rows = viewRows(passHeld, where.list)
+  return rows === null ? null : { agents: [], rows, why: {} }
+}
+
+async function rankedPeople($: $, map: PassMap): Promise<{ rows: TgDialog[]; why: Record<string, ForYouWhy> }> {
+  const state = await read($, triage)
+  return forYouPeople(map.rows.values(), me ?? NO_ME, state.verdicts, state.repliedToYou)
+}
+
+/** `↑N`: the chats that moved, joined or left since the list was drawn (./folders `waitingCount`). */
+async function movedCount($: $): Promise<number> {
+  const target = await viewTarget($)
+  if (target === null) return 0
+  const drawn = (await listRows($)).map(rowId)
+  const next = [...target.agents.map(item => `agent:${agentKey(item)}`), ...target.rows.map(row => `chat:${row.id}`)]
+  return waitingCount(drawn, next)
+}
+
+/** Inline's notice row (and the dock's strip row over the Folders list or For you): `↑ 3 moved · g: apply`. */
+async function movedNotice($: $): Promise<PaneNotice | null> {
+  const count = await movedCount($)
+  return count === 0 ? null : { tone: 'info', text: `↑ ${count} moved · g: apply` }
+}
+
+/**
+ * What waits applies, at the owner's move: the view as it is now, under a new
+ * generation, so its row keys are new and `$.ui.focus` waits for the drawing
+ * that brings them; the cursor follows its chat wherever it moved. `isFill`: a
+ * list with nothing drawn yet, filled the same way.
+ */
+async function applyWaiting($: $, isFill = false): Promise<boolean> {
+  const target = await viewTarget($)
+  const state = await read($, folders)
+  const list = passHeld === null ? state.list : folderList(passHeld)
+  const isListSame = JSON.stringify(list?.map(one => [one.id, one.title, one.kind])) === JSON.stringify(state.list?.map(one => [one.id, one.title, one.kind]))
+  if (target === null) {
+    if (!isListSame) await update($, folders, value => ({ ...value, list, gen: value.gen + 1 }))
+    return !isListSame
+  }
+  const drawn = await listRows($)
+  const next: ListRow[] = [...target.agents.map((item): ListRow => ({ kind: 'agent', item })), ...target.rows.map((dialog): ListRow => ({ kind: 'chat', dialog }))]
+  const isSame = drawn.length === next.length && drawn.every((row, index) => { const other = next[index]; return other !== undefined && rowId(row) === rowId(other) })
+  if (isSame && isListSame && !isFill) return false
+  const where = await read($, nav)
+  const atCursor = drawn[clamp(where.dialogCursor, drawn.length)]
+  const found = atCursor === undefined ? -1 : next.findIndex(row => rowId(row) === rowId(atCursor))
+  const cursor = found >= 0 ? found : clamp(where.dialogCursor, next.length)
+  await update($, dialogs, () => ({ status: 'ok', value: target.rows.map(cutRow) }))
+  await update($, folders, value => ({ ...value, list, gen: value.gen + 1, agents: target.agents, why: target.why }))
+  await update($, nav, value => cursorTo(value, 'dialogs', cursor, next.length))
+  return true
+}
+
+/** A folder, the Archive or a pane view in Chats' place, from what the module holds: no tg call but the Archive's (§8 T9). */
+async function switchView($: $, view: ListView): Promise<void> {
+  await update($, nav, value => ({ ...value, view: 'dialogs', list: view, query: '', dialogCursor: 0, dialogStart: 0, isMenuOpen: false, isSearching: false }))
+  await update($, folders, value => ({ ...value, gen: value.gen + 1, agents: [], why: {}, isRanking: false }))
+  switch (view.kind) {
+    case 'folder':
+    case 'bots': {
+      const rows = viewRows(passHeld, view)
+      await update($, dialogs, () => (rows === null ? { status: 'loading' } : { status: 'ok', value: rows.map(cutRow) }))
+      // After a hot reload only the view that was on screen is held: the others wait for the next pass.
+      if (rows === null) await startCountdown($)
+      break
+    }
+    case 'archive':
+      await update($, dialogs, () => ({ status: 'loading' }))
+      loadArchive($).catch(() => {
+        // loadArchive records its own failure in the list.
+      })
+      break
+    case 'foryou':
+      await openForYou($)
+      break
+  }
+  await storeFolders($)
+  await ringCursor($)
+}
+
+/** The Archive (`tg dialogs --archived`), run when asked and not cached (§8 T9). */
+async function loadArchive($: $): Promise<void> {
+  const result = await runTg($, tg.dialogs({ isArchived: true }))
+  const at = await $.clock.now()
+  if ((await read($, nav)).list.kind !== 'archive') return
+  await update($, dialogs, () => (result.ok ? { status: 'ok', value: result.value.map(cutRow) } : failed(result.failure, at)))
+  await ringCursor($)
+}
+
+/** `s`: every chat whose title or @name matches (`tg dialogs --query`), as Telegram's search does (§4.7). */
+async function searchChats($: $, query: string): Promise<void> {
+  await update($, nav, value => ({ ...value, view: 'dialogs', query, dialogCursor: 0, dialogStart: 0 }))
+  await update($, folders, value => ({ ...value, gen: value.gen + 1 }))
+  await update($, dialogs, () => ({ status: 'loading' }))
+  const result = await runTg($, tg.dialogs({ query }))
+  const at = await $.clock.now()
+  if ((await read($, nav)).query !== query) return
+  await update($, dialogs, () => (result.ok ? { status: 'ok', value: result.value.map(cutRow) } : failed(result.failure, at)))
+  await ringCursor($)
+}
+
+/** `h` from Chats or For you: a search goes back to its folder; otherwise up to the Folders list, the current entry under the cursor. */
+async function backFromList($: $): Promise<void> {
+  const where = await read($, nav)
+  if (where.query !== '') return switchView($, where.list)
+  await applyWaiting($)
+  const items = await folderItems($)
+  const index = Math.max(0, items.findIndex(item => sameView(item.view, where.list)))
+  // The list opens from its top; the drawing scrolls it only if the current entry is past its window.
+  await update($, nav, value => ({ ...value, view: 'folders', folderCursor: index, folderStart: 0 }))
+}
+
+/** `g` on a list: what waits applies at once, the Archive or a search runs again, then a pass runs or queues (§8 T9). */
+async function reloadList($: $): Promise<void> {
+  const where = await read($, nav)
+  await applyWaiting($)
+  if (where.query !== '') await searchChats($, where.query)
+  else if (where.list.kind === 'archive') await switchView($, where.list)
+  await requestPass($, 'g')
+  await ringCursor($)
+}
+
+// --- the strip, the Folders list and the digits ---
+
+type FolderRowItem = FolderItem & { view: ListView }
+
+const viewId = (view: ListView) => (view.kind === 'folder' ? `f${view.id}` : view.kind)
+
+/** The Folders list: every folder, the Archive, then For you and Bots (§4.7). */
+async function folderItems($: $): Promise<FolderRowItem[]> {
+  const state = await read($, folders)
+  if (state.list === null) return []
+  const entries = stripEntries(state.list)
+  const item = (view: ListView, title: string, unread: number | null, digit: number | null, isFirstView: boolean, note: string): FolderRowItem => ({
+    key: `folder:${state.gen}:${viewId(view)}`,
+    view,
+    prefix: digit !== null ? `${digit}: ` : view.kind === 'foryou' ? 'y: ' : '   ',
+    title,
+    unread,
+    isFirstView,
+    note,
+  })
+  const folderRows = entries.filter(entry => entry.view.kind === 'folder').map(entry => item(entry.view, entry.isShared ? `${entry.title} · shared` : entry.title, entry.unread, entry.digit, false, ''))
+  const views = entries.filter(entry => entry.view.kind !== 'folder')
+  return [
+    ...folderRows,
+    item({ kind: 'archive' }, 'Archive', null, null, false, ''),
+    ...views.map((entry, index) => item(entry.view, entry.title, null, entry.digit, index === 0, entry.view.kind === 'foryou' ? 'agents, then people waiting' : 'every chat with a bot')),
+  ]
+}
+
+async function openFolderAt($: $, index: number): Promise<void> {
+  const item = (await folderItems($))[index]
+  if (item !== undefined) await switchView($, item.view)
+}
+
+/** `1-9: folder` after ⏎ in the Folders list's bar. */
+async function digitsLabel($: $): Promise<string | null> {
+  const count = stripEntries((await read($, folders)).list ?? []).filter(entry => entry.digit !== null).length
+  return count === 0 ? null : count === 1 ? '1: folder' : `1-${count}: folder`
+}
+
+async function drawDigitKeys($: $, els: Els): Promise<RenderElement> {
+  const entries = stripEntries((await read($, folders)).list ?? [])
+  return DigitKeys(els, {
+    digits: entries.flatMap(entry => (entry.digit === null ? [] : [{ digit: entry.digit, title: entry.title, onPress: () => switchView($, entry.view) }])),
+  })
+}
+
+/** Cells inline's header leaves the strip: the row less `tg`, the state summary and who holds the keys (§7.3). */
+function inlineStripRoom(width: number, summary: { levels: string; watched: string; forYou: string }, isFocused: boolean): number {
+  const parts = [summary.levels, summary.watched, summary.forYou].filter(part => part !== '')
+  const summaryCells = parts.reduce((sum, part) => sum + cells(part) + 3, 0)
+  return Math.max(10, width - 2 - 2 - summaryCells - 1 - (isFocused ? 6 : 16) - 2)
+}
+
+async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key' | 'click' | 'none'; width: number }): Promise<RenderElement> {
+  const state = await read($, folders)
+  const where = await read($, nav)
+  const entries = stripEntries(state.list ?? [])
+  const current = entries.findIndex(entry => sameView(entry.view, where.list))
+  const texts = entries.map((entry, index) => tabText(entry, index === current, props.isLive))
+  const waiting = props.search === 'none' ? 0 : await movedCount($)
+  const room = props.search === 'none' ? props.width : props.width - stripRight(where.query, waiting)
+  const shown = stripWindow(texts, Math.max(0, current), room)
+  return Strip(els, {
+    tabs: texts.slice(shown.start, shown.end).map((text, index) => ({ text, isCurrent: shown.start + index === current })),
+    before: shown.start,
+    after: Math.max(0, entries.length - shown.end),
+    query: where.query,
+    waiting,
+    isLoading: state.list === null || state.pass.isRunning,
+    search: props.search,
+    onSearch: () => startSearch($),
+  })
+}
+
+/** The top of the dock, or inline's body: the Folders list, For you, or the chats. */
+async function drawTop($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static', seat: Seat = 'dock'): Promise<RenderElement[]> {
+  const where = await read($, nav)
+  if (where.view === 'folders') {
+    const items = await folderItems($)
+    if (items.length === 0) {
+      const loading = LoadState(els, { load: { status: 'loading' }, now: 0, rows, onReload: () => reload($) })
+      return loading === null ? [] : [loading]
+    }
+    const columns = seat === 'inline' ? 2 : 1
+    // Inline the second column starts after the first's rows; the pane-views line takes a row of one of them.
+    const perColumn = Math.max(1, rows)
+    windowRows.folders = Math.max(1, perColumn * columns - 1)
+    const cursor = clamp(where.folderCursor, items.length)
+    const start = edgeStart(where.folderStart, cursor, windowRows.folders, items.length)
+    return FoldersList(els, { items, cursor, start, rows: perColumn, columns, width, mode: mode === 'static' ? 'static' : 'active', onOpen: index => openFolderAt($, index) })
+  }
+  if (isForYou(where)) return drawForYou($, els, width, rows, mode)
+  return drawDialogList($, els, width, rows, mode)
+}
+
+// --- For you (§5.3) ---
+
+async function liveAgents($: $): Promise<AgentItem[]> {
+  const pilot = await read($, autopilot)
+  const reply = await read($, draft)
+  return agentItems(pilot.drafts, reply !== null && reply.step.kind !== 'sent', pilot.undo, Math.max(pilot.now, await $.clock.now()))
+}
+
+/**
+ * `y`: the agents' items at once, then people from the pass, ranked with why
+ * by today's ranking call, which runs only here and only when the view opens.
+ */
+async function openForYou($: $): Promise<void> {
+  const agents = await liveAgents($)
+  await update($, folders, value => ({ ...value, agents, why: {} }))
+  await update($, dialogs, () => (passHeld === null ? { status: 'loading' } : { status: 'ok', value: [] }))
+  if (passHeld === null) return startCountdown($)
+  const map = passHeld
+  const state = await read($, triage)
+  const unsure = toAsk(forYouCandidates(map.rows.values()).filter(row => row.mentions === 0), me ?? NO_ME, state.verdicts, state.repliedToYou)
+  if (unsure.length === 0) return fillPeople($)
+  await update($, folders, value => ({ ...value, isRanking: true }))
+  scoreUnread($, unsure)
+    .catch(() => {
+      // Without verdicts the heuristics rank alone.
+    })
+    .finally(() => {
+      fillPeople($).catch(() => {
+        // The rows stay as they are; g applies the ranked ones.
+      })
+    })
+}
+
+/** For you's people land under its agent rows: rows below the cursor's, so nothing above it moves. */
+async function fillPeople($: $): Promise<void> {
+  const where = await read($, nav)
+  if (!isForYou(where) || passHeld === null) return
+  const people = await rankedPeople($, passHeld)
+  const wasEmpty = (await listRows($)).length === 0
+  await update($, folders, value => ({ ...value, why: people.why, isRanking: false }))
+  await update($, dialogs, () => ({ status: 'ok', value: people.rows.map(cutRow) }))
+  if (wasEmpty && (await read($, mode)) === 'open') await ringCursor($)
+}
+
+async function forYouRowKind($: $): Promise<'chat' | 'draft' | 'reply' | 'undo' | null> {
+  const row = await cursorRow($)
+  return row === undefined ? null : row.kind === 'chat' ? 'chat' : row.item.kind
+}
+
+async function agentPeer($: $, item: AgentItem): Promise<PeerRef | undefined> {
+  const pilot = await read($, autopilot)
+  switch (item.kind) {
+    case 'draft':
+      return (pilot.drafts.find(one => one.seq === item.seq) ?? pilot.ledger.find(one => one.seq === item.seq))?.peer
+    case 'reply':
+      return (await read($, draft))?.peer
+    case 'undo':
+      return pilot.ledger.find(one => one.seq === item.seq)?.peer
+  }
+}
+
+/**
+ * ⏎ on an agent's row: a draft whose whole text is on screen sends with
+ * --yes (the owner read it, decision 9); one cut short shows whole first, and
+ * the next ⏎ sends. Routing's drafted reply opens as its layer; an undo
+ * window's row opens its chat.
+ */
+async function pressAgentRow($: $, item: AgentItem): Promise<void> {
+  switch (item.kind) {
+    case 'draft': {
+      const one = await apDraftOf($, item.seq)
+      if (one === null) return
+      const isWhole = one.state.kind === 'unfolded' || (!one.text.includes('\n') && cells(one.text) + 2 <= forYouRoom)
+      if (isWhole) return apSendDraft($, item.seq)
+      return apSetDraft($, item.seq, value => ({ ...value, state: { kind: 'unfolded' } }))
+    }
+    case 'reply':
+      return openDraft($)
+    case 'undo': {
+      const peer = await agentPeer($, item)
+      if (peer === undefined) return
+      await applyWaiting($)
+      return openThread($, (await knownDialogs($)).find(one => one.id === peer.id) ?? dialogOfPeer(peer))
+    }
+  }
+}
+
+/** `e` on a draft row: the row becomes its field, in the row's place, so the ring stays there. */
+async function editAgentRow($: $): Promise<void> {
+  const row = await cursorRow($)
+  if (row?.kind !== 'agent') return
+  if (row.item.kind === 'reply') return openDraft($)
+  if (row.item.kind === 'draft') {
+    await apSetDraft($, row.item.seq, value => ({ ...value, state: { kind: 'editing' } }))
+    await ringCursor($)
+  }
+}
+
+/** `d` on an agent's row: drops the draft or closes the undo window; the row stays, drawn done, until the list reshapes. */
+async function dropAgentRow($: $): Promise<void> {
+  const row = await cursorRow($)
+  if (row?.kind !== 'agent') return
+  if (row.item.kind === 'draft') await apDropDraft($, row.item.seq)
+  else if (row.item.kind === 'reply') await update($, draft, () => null)
+  else await apCloseUndo($, { state: 'expired' })
+  await ringCursor($)
+}
+
+/** For you's rows as drawn: each agent row read live (done once it is gone), each person's with why. */
+async function forYouItems($: $, gen: number): Promise<ForYouItem[]> {
+  const pilot = await read($, autopilot)
+  const reply = await read($, draft)
+  const why = (await read($, folders)).why
+  const at = Math.max(pilot.now, await $.clock.now())
+  return (await listRows($)).map((row): ForYouItem => {
+    const key = rowKey(gen, row)
+    if (row.kind === 'chat') {
+      const { glyph, color } = dialogGlyph(row.dialog.kind)
+      const unread = row.dialog.unread === 0 ? '' : `${row.dialog.muted ? '·' : ''}${row.dialog.unread}`
+      return { key, section: 'people', glyph, glyphColor: color, name: dialogLabel(row.dialog), label: why[String(row.dialog.id)] ?? '', text: row.dialog.last_text, isWhole: false, isEditing: false, right: `${unread.padStart(4)} ${shortTime(row.dialog.last_date, at).padStart(9)}`, isGone: false }
+    }
+    const item = row.item
+    if (item.kind === 'draft') {
+      const one = pilot.drafts.find(value => value.seq === item.seq)
+      const entry = pilot.ledger.find(value => value.seq === item.seq)
+      if (one === undefined) {
+        const label = entry?.outcome.kind === 'sent' ? `${GLYPH.done} sent` : entry?.outcome.kind === 'dropped' ? 'dropped' : 'done'
+        return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: entry?.peer.label ?? '', label, text: entry?.reply ?? '', isWhole: false, isEditing: false, right: '', isGone: true }
+      }
+      const label = one.state.kind === 'sending' ? `${GLYPH.working} sending` : one.state.kind === 'failed' ? `${GLYPH.error} failed` : 'draft'
+      const right = one.state.kind === 'failed' ? one.state.reason : one.confidence === null ? '' : `conf ${one.confidence.toFixed(2)}`
+      return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: one.peer.label, label, text: one.text, isWhole: one.state.kind === 'unfolded', isEditing: one.state.kind === 'editing', right, isGone: false }
+    }
+    if (item.kind === 'reply') {
+      const isLive = reply !== null && reply.step.kind !== 'sent'
+      return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: reply?.peer.label ?? '', label: isLive ? 'draft reply' : 'done', text: reply?.text ?? '', isWhole: false, isEditing: false, right: isLive ? 'e: open' : '', isGone: !isLive }
+    }
+    const undo = pilot.undo !== null && pilot.undo.seq === item.seq && at < pilot.undo.until ? pilot.undo : null
+    const entry = pilot.ledger.find(value => value.seq === item.seq)
+    return {
+      key,
+      section: 'agents',
+      glyph: LEVEL_GLYPH.auto,
+      name: undo?.peer.label ?? entry?.peer.label ?? '',
+      label: undo === null ? 'sent' : 'sent',
+      text: undo?.text ?? entry?.reply ?? '',
+      isWhole: false,
+      isEditing: false,
+      right: undo === null ? '' : `u: undo ${Math.max(0, Math.ceil((undo.until - at) / 1000))}s`,
+      isGone: undo === null,
+    }
+  })
+}
+
+async function drawForYou($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static'): Promise<RenderElement[]> {
+  const state = await read($, folders)
+  const where = await read($, nav)
+  const load = await read($, dialogs)
+  const items = await forYouItems($, state.gen)
+  if (items.length === 0) {
+    const waiting = LoadState(els, { load, now: await read($, now), rows, onReload: () => reload($) })
+    if (waiting !== null) return [waiting]
+    if (!state.isRanking) return [EmptyList(els, { text: 'Nothing waits for you in any folder. h: folders' })]
+  }
+  // Two rows always go to the section lines, so a section that appears does not move the window.
+  const window = Math.max(1, rows - 2)
+  windowRows.dialogs = window
+  forYouRoom = Math.max(10, width - 2 - 2 - 14 - 13 - 1)
+  const cursor = clamp(where.dialogCursor, items.length)
+  const start = edgeStart(where.dialogStart, cursor, window, items.length)
+  return ForYouList(els, {
+    items,
+    cursor,
+    start,
+    rows: window,
+    width,
+    mode,
+    isRanking: state.isRanking,
+    onPress: async index => {
+      await update($, nav, value => ({ ...value, view: 'dialogs', dialogCursor: index }))
+      await openAtCursor($)
+    },
+    onSave: async (index, text) => {
+      const row = (await listRows($))[index]
+      if (row?.kind !== 'agent' || row.item.kind !== 'draft') return
+      await apSetDraft($, row.item.seq, value => ({ ...value, text: text.trim() === '' ? value.text : text, state: { kind: 'ready' } }))
+    },
+  })
+}
+
+// --- notices and empty lists ---
+
+/** A pass that cannot run now (§7.4): a flood wait counting down, a failure with `g: retry`, a queued pass. */
+async function passNotice($: $): Promise<PaneNotice | null> {
+  const pass = (await read($, folders)).pass
+  const at = Math.max(await read($, now), await $.clock.now())
+  const seconds = (until: number) => Math.max(0, Math.ceil((until - at) / 1000))
+  if (pass.floodUntil !== null && pass.floodUntil > at) return { tone: 'warn', text: `Telegram asks to wait ${seconds(pass.floodUntil)} s · retrying` }
+  if (pass.error !== null && (await read($, dialogs)).status === 'ok') return { tone: 'danger', text: `${pass.error} · g: retry` }
+  if (pass.queuedFor !== null && pass.queuedFor > at) return { tone: 'info', text: `refreshing in ${seconds(pass.queuedFor)} s` }
+  if (await isRefreshShown($)) return { tone: 'info', text: `refreshing in ${seconds(nextAllowed(pass))} s` }
+  return null
+}
+
+/** After a hot reload, a view the module no longer holds shows `…` rows until the next pass (§8 T9 c). */
+async function isRefreshShown($: $): Promise<boolean> {
+  const where = await read($, nav)
+  return passHeld === null && (await read($, folders)).pass.hasOpened && (await read($, dialogs)).status === 'loading' && where.list.kind !== 'archive' && where.query === ''
+}
+
+/** One sentence and one key (§7.4). */
+async function emptyText($: $): Promise<string> {
+  const where = await read($, nav)
+  if (where.query !== '') return `No chats match "${where.query}". h: back to the folder`
+  switch (where.list.kind) {
+    case 'archive':
+      return 'Nothing in the Archive. h: folders'
+    case 'bots':
+      return 'No chats with bots. h: folders'
+    case 'foryou':
+      return 'Nothing waits for you in any folder. h: folders'
+    case 'folder': {
+      const id = where.list.id
+      const folder = (await read($, folders)).list?.find(one => one.id === id)
+      const scan = folder?.kind === 'all' ? ' among the latest 500 chats' : ''
+      return `No chats in ${folder?.title ?? 'this folder'}${scan}. h: folders`
+    }
+  }
+}
+// ── /folders ──

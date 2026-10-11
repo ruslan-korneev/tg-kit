@@ -3,13 +3,12 @@
 // how `h` treats function components. Handlers come in as closures.
 import type { ElementTable, RenderElement } from 'claude-code'
 
-import type { Lens, Load, TgDialog, TgMessage } from '../../types'
+import type { Load, TgDialog, TgMessage } from '../../types'
 import {
   GLYPH,
   TOKEN,
   dialogGlyph,
   dialogLabel,
-  emptyLensText,
   failureColor,
   failureText,
   isErrorText,
@@ -47,6 +46,8 @@ export function DialogRow(
   { Box, Button, Text }: Els,
   props: {
     dialog: TgDialog
+    /** `dialog:<gen>:<id>`: the list's generation is part of it, so a reshaped list brings new keys (§8 T9). */
+    rowKey: string
     isCursor: boolean
     /** Drawn without its ring stop while a field in the bar's row holds the ring (§4.3 rule 3); ▸ shows. */
     isStatic?: boolean
@@ -64,7 +65,8 @@ export function DialogRow(
   const { dialog } = props
   const { glyph, color } = dialogGlyph(dialog.kind)
   const isUnread = dialog.unread > 0
-  const badge = isUnread ? String(dialog.unread) : ''
+  // A muted chat's count is dim and marked `·14`: muted ones would bury the rest (§4.7, §5).
+  const badge = isUnread ? `${dialog.muted ? '·' : ''}${dialog.unread}` : ''
   const time = shortTime(dialog.last_date, props.now)
   const marks = isReadOnlyPeer(dialog) ? 'ro' : props.isPinned ? GLYPH.pinned : ''
   // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left; an autopilot mark takes its own.
@@ -74,10 +76,10 @@ export function DialogRow(
     <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : props.isOpen ? `${GLYPH.open} ` : '  '}</Text>,
     pilot === undefined ? null : <Text color={TOKEN.accent}>{pilot.glyph} </Text>,
     <Text color={color}>{glyph} </Text>,
-    <Text bold={isUnread || props.isOpen} underline={props.isOpen}>
+    <Text bold={(isUnread && !dialog.muted) || props.isOpen} underline={props.isOpen}>
       {pad(dialogLabel(dialog), nameWidth)}
     </Text>,
-    <Text bold>{badge.padStart(3)} </Text>,
+    <Text bold={!dialog.muted} dimColor={dialog.muted}>{badge.padStart(3)} </Text>,
     <Text dimColor>{time.padStart(9)} </Text>,
     <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>,
     props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>,
@@ -86,14 +88,14 @@ export function DialogRow(
   ]
   if (props.isStatic === true) {
     return (
-      <Box key={`dialog:${dialog.id}`} flexDirection="row">
+      <Box key={props.rowKey} flexDirection="row">
         {...cells}
       </Box>
     )
   }
   return (
     // The cursor row takes the ring whenever the pane takes the keys: ⏎ acts on it at once.
-    <Button key={`dialog:${dialog.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onOpen}>
+    <Button key={props.rowKey} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onOpen}>
       {...cells}
     </Button>
   )
@@ -203,10 +205,11 @@ export function LoadState<T>(
   )
 }
 
-export function EmptyLens({ Text }: Els, props: { lens: Lens; query: string }): RenderElement {
+/** An empty list: one sentence and one key (§7.4). */
+export function EmptyList({ Text }: Els, props: { text: string }): RenderElement {
   return (
     <Text key="empty" dimColor wrap="wrap">
-      {emptyLensText(props.lens, props.query)}
+      {props.text}
     </Text>
   )
 }

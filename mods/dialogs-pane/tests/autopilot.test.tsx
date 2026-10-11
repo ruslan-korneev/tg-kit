@@ -7,7 +7,7 @@ import type { CommandSpec, ModelCompleteInput, ModelCompleteResult, On, ProcessR
 import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
 
 import type { TgMessage } from '../types'
-import { DIALOGS } from './fixtures'
+import { DIALOGS, findChat, folderRun } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -105,6 +105,7 @@ function world(
     seen.runs.push(ran)
     const [, cmd] = e.argv
     if (cmd === 'dialogs') return { value: json(DIALOGS) }
+    if (cmd === 'folders') return { value: folderRun(e.argv, json(DIALOGS)) }
     if (cmd === 'read') return { value: json(seen.history) }
     if (cmd === 'allow') return { value: json((options.allow ?? [GROUP]).map(id => ({ id }))) }
     if (cmd === 'send') {
@@ -452,6 +453,56 @@ describe('draft and listen', () => {
     await ui.unmount()
   })
 
+  test('For you: the draft is an agent row first; ⏎ sends it with --yes when its whole text shows, and the row stays, sent', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: 'Tomorrow is packed, after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
+    const { ui, child } = await handOver($, clock, seen, '2')
+    watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    await ui.press({ key: 'key:back' })
+    await ui.press({ key: 'key:foryou' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
+    const row = (await ui.findAll({ type: 'Button' })).find(one => one.key?.startsWith('fy:') === true)
+    expect(row?.text).toContain('Tomorrow is packed, after 18?')
+    expect(row?.props.autoFocus).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /agents wait · 1/ })).toBeDefined()
+    expect((await ui.find({ key: 'bar' }))?.text).toContain('⏎ send draft')
+    await ui.press({ key: 'key:senddraft' })
+    expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: 'Tomorrow is packed, after 18?' }])
+    // The row stays where it was, drawn sent, until the owner's next move reshapes the list.
+    expect((await ui.find({ key: row?.key ?? '' }))?.text).toContain('✓ sent')
+    await ui.unmount()
+  })
+
+  test('For you: a draft cut short shows whole on ⏎ and sends nothing; the next ⏎ sends it; d drops another', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const long = 'Tomorrow is packed with reviews until late, but I can write after 18 or call on Friday morning.'
+    const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: long, confidence: 0.62, topics: ['dates'], reason: '' }) })
+    const { ui, child } = await handOver($, clock, seen, '2')
+    watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    await ui.press({ key: 'key:back' })
+    await ui.press({ key: 'key:foryou' })
+    await ui.press({ key: 'key:senddraft' })
+    expect(sends(seen)).toEqual([])
+    expect(await ui.find({ type: 'Text', text: `"${long}"` })).toBeDefined()
+    await ui.press({ key: 'key:senddraft' })
+    expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: long }])
+    // A new draft for the chat: it waits behind ↑ (the sent row leaves, the new one joins), and g brings it; d drops it.
+    watchMessage(child, message(501, 'And on Friday?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    expect((await ui.find({ key: 'running' }))?.text).toContain('↑ 2 moved · g: apply')
+    await ui.press({ key: 'key:reload' })
+    expect((await ui.find({ key: 'key:dismiss' }))?.text).toBe('drop')
+    await ui.press({ key: 'key:dismiss' })
+    expect(sends(seen)).toHaveLength(1)
+    expect((await ui.findAll({ type: 'Button' })).find(one => one.key?.startsWith('fy:') === true)?.text).toContain('dropped')
+    await ui.unmount()
+  })
+
   test('listen: a summary in the band, nothing written', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { model: () => ({ isAnswered: true, text: 'Release moved to Friday.', usage: USAGE }) })
@@ -514,7 +565,8 @@ describe('kill switch', () => {
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(child?.isKilled).toBe(true)
-    expect(await zeros()).toEqual([])
+    // Nothing runs: 0 stops nothing, and only the catch-all keeps it from the prompt (T9 review M1).
+    expect(await zeros()).toEqual(['stray:0'])
     await ui.unmount()
   })
 
@@ -534,8 +586,8 @@ describe('kill switch', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const { ui, child } = await handOver($, clock, seen, '3')
-    expect((await ui.find({ key: 'dialog:1002' }))?.text).toContain('⟳ # Dev Team')
-    expect((await ui.find({ key: 'dialog:1002' }))?.text).toContain('auto 0/50')
+    expect((await findChat(ui, 1002))?.text).toContain('⟳ # Dev Team')
+    expect((await findChat(ui, 1002))?.text).toContain('auto 0/50')
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(child?.isKilled).toBe(true)

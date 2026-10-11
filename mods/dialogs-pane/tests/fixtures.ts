@@ -1,5 +1,8 @@
 // Placeholder chats only (repo rule): @example_bot, a made-up group, Saved Messages.
-import type { TgDialog, TgMessage } from '../types'
+import type { ProcessRunResult } from 'claude-code'
+import type { ElementQuery, FoundElement } from 'claude-code/testing'
+
+import type { FolderKind, TgDialog, TgMessage } from '../types'
 
 export const DIALOGS: TgDialog[] = [
   {
@@ -8,6 +11,9 @@ export const DIALOGS: TgDialog[] = [
     title: 'Example Bot',
     username: 'example_bot',
     unread: 2,
+    mentions: 0,
+    pinned: false,
+    muted: false,
     last_id: 677792,
     last_date: '2026-10-10T11:02:00Z',
     last_text: 'Main menu',
@@ -18,6 +24,9 @@ export const DIALOGS: TgDialog[] = [
     title: 'Dev Team',
     username: null,
     unread: 5,
+    mentions: 0,
+    pinned: false,
+    muted: false,
     last_id: 500,
     last_date: '2026-10-10T10:58:00Z',
     last_text: 'deploy is green',
@@ -28,6 +37,9 @@ export const DIALOGS: TgDialog[] = [
     title: 'Saved Messages',
     username: null,
     unread: 0,
+    mentions: 0,
+    pinned: false,
+    muted: false,
     last_id: 42,
     last_date: '2026-10-09T08:20:00Z',
     last_text: 'note',
@@ -76,8 +88,8 @@ export const MESSAGES: TgMessage[] = [
 
 // A person, a group with a member and the bot, a channel: §4.6's senders.
 export const MORE_DIALOGS: TgDialog[] = [
-  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, last_id: 92, last_date: '2026-10-10T10:49:00Z', last_text: 'Can we call tomorrow at 10?' },
-  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, last_id: 7, last_date: '2026-10-10T09:19:00Z', last_text: 'release 2.0 is out' },
+  { id: 1004, kind: 'user', title: 'Contact A', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 92, last_date: '2026-10-10T10:49:00Z', last_text: 'Can we call tomorrow at 10?' },
+  { id: 1005, kind: 'channel', title: 'Announcements', username: null, unread: 0, mentions: 0, pinned: false, muted: false, last_id: 7, last_date: '2026-10-10T09:19:00Z', last_text: 'release 2.0 is out' },
 ]
 
 const contact = { id: 1004, kind: 'user', username: null, name: 'Contact A' } as const
@@ -110,4 +122,53 @@ export function messagesFor(peer: string | undefined): TgMessage[] {
     default:
       return MESSAGES
   }
+}
+
+/** A placeholder Telegram folder: its chats in its order, its pins first. */
+export type FolderSpec = { id: number; title: string; kind: FolderKind; chats: number[]; pinned?: number[] }
+
+/**
+ * What tg answers to `folders` (`--chats` for the pass) on a placeholder
+ * account whose chats are what `listed` (its `tg dialogs` answer) holds: the
+ * folders given, then All chats with every chat, as an account without
+ * folders has it. A failed `listed` fails the same way.
+ */
+export function folderRun(argv: readonly string[], listed: ProcessRunResult, folders: readonly FolderSpec[] = []): ProcessRunResult {
+  if (listed.exitCode !== 0) return listed
+  const rows: TgDialog[] = JSON.parse(listed.stdout)
+  const all: FolderSpec = { id: 0, title: 'All chats', kind: 'all', chats: rows.map(row => row.id) }
+  const specs = [...folders, ...(folders.some(one => one.kind === 'all') ? [] : [all])]
+  const unread = (spec: FolderSpec) => rows.filter(row => spec.chats.includes(row.id) && row.unread > 0 && !row.muted).length
+  const value = argv.includes('--chats')
+    ? {
+        at: '2026-10-10T12:00:00+00:00',
+        scan: 500,
+        folders: specs.map(spec => ({ id: spec.id, title: spec.title, kind: spec.kind, unread: unread(spec), pinned: spec.pinned ?? [], chats: spec.chats })),
+        dialogs: rows.filter(row => specs.some(spec => spec.chats.includes(row.id))),
+      }
+    : specs.map(spec => ({ id: spec.id, title: spec.title, kind: spec.kind }))
+  return { exitCode: 0, stdout: JSON.stringify(value), stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+}
+
+/** What the helpers below need of a mounted pane. */
+type Finder = { findAll: (query: ElementQuery) => Promise<FoundElement[]>; find: (query: ElementQuery) => Promise<FoundElement | undefined> }
+
+/**
+ * The key a chat's row is drawn under now, `dialog:<gen>:<id>`: the list's
+ * generation is part of it and goes up as the list reshapes (§8 T9). A row
+ * not drawn gets a key nothing has.
+ */
+export async function chatKey(ui: Finder, id: number): Promise<string> {
+  const drawn = [...(await ui.findAll({ type: 'Button' })), ...(await ui.findAll({ type: 'Box' }))]
+  return drawn.find(one => one.key?.startsWith('dialog:') === true && one.key.endsWith(`:${id}`))?.key ?? `dialog:none:${id}`
+}
+
+/** The chat's row as drawn, if it is. */
+export async function findChat(ui: Finder, id: number): Promise<FoundElement | undefined> {
+  return ui.find({ key: await chatKey(ui, id) })
+}
+
+/** The chat ids of `dialog:<gen>:<id>` keys, in order. */
+export function chatIds(keys: readonly (string | undefined)[]): number[] {
+  return keys.flatMap(key => (key?.startsWith('dialog:') === true ? [Number(key.split(':')[2])] : []))
 }

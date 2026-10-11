@@ -1,14 +1,12 @@
 // The pure triage rules: watch lines and restarts, live merges, latency,
-// lenses, needs-you heuristics and the model prompts. Placeholder data only.
+// needs-you heuristics and the model prompts. Placeholder data only.
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { TgDialog, Triage } from '../../types'
+import type { TgDialog } from '../../types'
 import { ME, REPLY, SENT, msg } from '../packet/fixtures'
-import { draftFrom, lensMatches, parseLenses, toggleGroup, togglePicked, upsertLens } from './lenses'
-import { EMPTY_TRIAGE, applyToDialogs, applyToMessages, hiddenStatus, latencyOf, repliesToYou, reportReply } from './live'
+import { applyToDialogs, applyToMessages, hiddenStatus, latencyOf, repliesToYou, reportReply } from './live'
 import { heuristic, parseVerdicts, rank, rankPrompt, toAsk, verdictKey } from './needs'
 import { summaryPrompt } from './summary'
-import { triageDialogs } from './view'
 import { parseWatched } from './watch'
 
 const dialog = (over: Partial<TgDialog> & Pick<TgDialog, 'id'>): TgDialog => ({
@@ -16,6 +14,9 @@ const dialog = (over: Partial<TgDialog> & Pick<TgDialog, 'id'>): TgDialog => ({
   title: `Contact ${over.id}`,
   username: null,
   unread: 1,
+  mentions: 0,
+  pinned: false,
+  muted: false,
   last_id: 10,
   last_date: '2026-10-10T12:00:00Z',
   last_text: 'hello',
@@ -44,9 +45,9 @@ describe('live merges', () => {
   })
 
   test('the dialog row takes the live message; incoming counts as unread, yours clears it', () => {
-    const rows = [dialog({ id: 1001, unread: 1, last_id: 677790 }), dialog({ id: 2 })]
+    const rows = [dialog({ id: 1001, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 677790 }), dialog({ id: 2 })]
     const after = applyToDialogs(rows, 1001, REPLY)
-    expect(after[0]).toMatchObject({ unread: 2, last_id: 677791, last_text: '⚠ Something went wrong' })
+    expect(after[0]).toMatchObject({ unread: 2, mentions: 0, pinned: false, muted: false, last_id: 677791, last_text: '⚠ Something went wrong' })
     expect(after[1]).toBe(rows[1])
     expect(applyToDialogs(after, 1001, msg({ id: 677792, out: true, sender: ME }))[0]?.unread).toBe(0)
     // Replay of a message the row already has changes nothing.
@@ -72,46 +73,6 @@ describe('live merges', () => {
     expect(hiddenStatus(load, band, reply)).toBe('tg ● 2 unread · ◆ example_bot replied 1.0s')
     expect(hiddenStatus(load, band, { ...reply, latencyMs: null })).toBe('tg ● 2 unread · ◆ example_bot replied')
     expect(hiddenStatus(load, null, reply)).toBe('tg ● 2 unread')
-  })
-})
-
-describe('saved lenses', () => {
-  const lens = { id: 'l1', name: 'Mine', kinds: [], isUnreadOnly: false, query: '', dialogs: [] }
-
-  test('every filter that is set must match', () => {
-    const bot = dialog({ id: 1, kind: 'bot', username: 'example_bot', unread: 0 })
-    expect(lensMatches(lens, bot)).toBe(true)
-    expect(lensMatches(toggleGroup(lens, 'bots'), bot)).toBe(true)
-    expect(lensMatches(toggleGroup(lens, 'groups'), bot)).toBe(false)
-    expect(lensMatches({ ...lens, isUnreadOnly: true }, bot)).toBe(false)
-    expect(lensMatches({ ...lens, query: 'EXAMPLE' }, bot)).toBe(true)
-    expect(lensMatches(togglePicked(lens, 2), bot)).toBe(false)
-  })
-
-  test('a kind group toggles all its kinds; a new lens starts from the view', () => {
-    const groups = toggleGroup(lens, 'groups')
-    expect(groups.kinds).toEqual(['group', 'supergroup'])
-    expect(toggleGroup(groups, 'groups').kinds).toEqual([])
-    expect(draftFrom({ lens: 'bots', query: 'ex' }, [lens], 'l2')).toMatchObject({ name: 'Lens 2', kinds: ['bot'], query: 'ex' })
-  })
-
-  test('saving replaces by id or appends; names are trimmed and kept short', () => {
-    expect(upsertLens([lens], { ...lens, name: '  Work  ' })).toEqual([{ ...lens, name: 'Work' }])
-    expect(upsertLens([lens], { ...lens, id: 'l2', name: '' }).map(one => one.name)).toEqual(['Mine', 'Lens'])
-  })
-
-  test('lenses from $.store drop what does not parse', () => {
-    expect(parseLenses([lens, { id: 1 }, { ...lens, id: 'l2', kinds: ['bot', 'robot'], dialogs: [1, 'x'] }])).toEqual([
-      lens,
-      { ...lens, id: 'l2', kinds: ['bot'], dialogs: [1] },
-    ])
-  })
-
-  test('a saved lens replaces the built-in one, and the search still applies', () => {
-    const list = [dialog({ id: 1, kind: 'bot', title: 'Alpha' }), dialog({ id: 2, title: 'Beta' }), dialog({ id: 3, kind: 'bot', title: 'Gamma' })]
-    const state: Triage = { ...EMPTY_TRIAGE, lenses: [toggleGroup(lens, 'bots')], lens: 'l1' }
-    expect(triageDialogs(list, { lens: 'unread', query: '' }, state, NOBODY).map(d => d.id)).toEqual([1, 3])
-    expect(triageDialogs(list, { lens: 'all', query: 'gam' }, state, NOBODY).map(d => d.id)).toEqual([3])
   })
 })
 
