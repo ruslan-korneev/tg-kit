@@ -162,39 +162,73 @@
         "surface": "surface2"
       },
       "adjusted": {
-        "mention": {
-          "from": "#FE640B",
-          "to": "#E45401"
+        "roles": {
+          "mention": {
+            "from": "#FE640B",
+            "to": "#E45401"
+          },
+          "held": {
+            "from": "#DF8E1D",
+            "to": "#B87518"
+          },
+          "saved": {
+            "from": "#DF8E1D",
+            "to": "#B87518"
+          },
+          "ok": {
+            "from": "#40A02B",
+            "to": "#3C9628"
+          },
+          "channel": {
+            "from": "#04A5E5",
+            "to": "#038DC4"
+          },
+          "bot": {
+            "from": "#EA76CB",
+            "to": "#E23FB6"
+          }
         },
-        "held": {
-          "from": "#DF8E1D",
-          "to": "#B87518"
+        "senders": {
+          "2": {
+            "from": "#7287FD",
+            "to": "#6178FD"
+          },
+          "3": {
+            "from": "#40A02B",
+            "to": "#3C9628"
+          },
+          "4": {
+            "from": "#04A5E5",
+            "to": "#038DC4"
+          },
+          "6": {
+            "from": "#EA76CB",
+            "to": "#E23FB6"
+          }
         },
-        "saved": {
-          "from": "#DF8E1D",
-          "to": "#B87518"
-        },
-        "ok": {
-          "from": "#40A02B",
-          "to": "#3C9628"
-        },
-        "channel": {
-          "from": "#04A5E5",
-          "to": "#038DC4"
-        },
-        "bot": {
-          "from": "#EA76CB",
-          "to": "#E23FB6"
+        "topics": {
+          "FFD67E": {
+            "from": "#DF8E1D",
+            "to": "#B87518"
+          },
+          "8EEE98": {
+            "from": "#40A02B",
+            "to": "#3C9628"
+          },
+          "FF93B2": {
+            "from": "#EA76CB",
+            "to": "#E23FB6"
+          }
         }
       },
       "senders": [
         "#E64553",
         "#FE330B",
-        "#7287FD",
-        "#40A02B",
-        "#04A5E5",
+        "#6178FD",
+        "#3C9628",
+        "#038DC4",
         "#1E66F5",
-        "#EA76CB"
+        "#E23FB6"
       ],
       "senderNames": [
         "maroon",
@@ -207,16 +241,16 @@
       ],
       "topics": {
         "6FB9F0": "#1E66F5",
-        "FFD67E": "#DF8E1D",
+        "FFD67E": "#B87518",
         "CB86DB": "#8839EF",
-        "8EEE98": "#40A02B",
-        "FF93B2": "#EA76CB",
+        "8EEE98": "#3C9628",
+        "FF93B2": "#E23FB6",
         "FB6F5F": "#E64553"
       },
       "variant256": {
         "roles": {
-          "held": "#B8751A",
-          "saved": "#B8751A"
+          "saved": "#B8751A",
+          "held": "#B8751A"
         },
         "senders": {},
         "topics": {}
@@ -409,6 +443,14 @@
         "text": "light1",
         "surface": "dark2"
       },
+      "adjusted": {
+        "topics": {
+          "FB6F5F": {
+            "from": "#CC241D",
+            "to": "#E1332C"
+          }
+        }
+      },
       "senders": [
         "#FB3447",
         "#D65D0E",
@@ -433,7 +475,7 @@
         "CB86DB": "#D3869B",
         "8EEE98": "#B8BB26",
         "FF93B2": "#B16286",
-        "FB6F5F": "#CC241D"
+        "FB6F5F": "#E1332C"
       },
       "variant256": {
         "roles": {
@@ -488,17 +530,19 @@
         "surface": "nord3"
       },
       "adjusted": {
-        "dim": {
-          "from": "#4C566A",
-          "to": "#77849E"
-        },
-        "unread": {
-          "from": "#BF616A",
-          "to": "#C56F77"
-        },
-        "channel": {
-          "from": "#5E81AC",
-          "to": "#6A8AB2"
+        "roles": {
+          "dim": {
+            "from": "#4C566A",
+            "to": "#77849E"
+          },
+          "unread": {
+            "from": "#BF616A",
+            "to": "#C56F77"
+          },
+          "channel": {
+            "from": "#5E81AC",
+            "to": "#6A8AB2"
+          }
         }
       },
       "senders": [

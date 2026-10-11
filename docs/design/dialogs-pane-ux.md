@@ -2182,8 +2182,9 @@ is also the CLI's name):
 
   The 256 cells are kept apart by `variant256.senders`.
 - `topics`: one per Telegram `icon_color`, keyed by its hex.
-- `adjusted`: the roles whose colour is not upstream's, each `{"from": upstream, "to": used}`
-  (`catppuccin-latte` and `nord`, below). `roleNames` keeps the upstream name.
+- `adjusted`: the values that are not upstream's, as `{"roles": {…}, "senders": {"2": …},
+  "topics": {…}}`, each entry `{"from": upstream, "to": used}` (`catppuccin-latte`, `nord`,
+  `gruvbox-dark`, below). `roleNames` and `senderNames` keep the upstream names.
 - `variant256`: only the entries `<name>256` changes. The file has the key only when the theme
   needs a 256 variant.
 - `background` and `foreground` feed `tg themes`' preview and the contrast check. They are not
@@ -2201,8 +2202,12 @@ The test checks:
 - no sender equals `unread`, `mention` or `accent` in hex, and after `variant256` no sender
   shares a 256 cell with them or with a sender of different hex;
 - no topic shares a 256 cell with `unread` unless its hex is `unread`'s (the single-red themes).
-- every data role (all but `surface`) reaches 3:1 on the theme's `background`;
-- every `adjusted` entry's `to` is that role's value, and its `from` differs from it.
+- every data role (all but `surface`), every sender and every topic reaches 3:1 on the theme's
+  `background`;
+- every `adjusted` entry's `to` is the value in `roles`, `senders` or `topics`, and its `from`
+  differs from it;
+- the sender rule bans both the `from` and the `to` of an adjusted `unread`, `mention` or
+  `accent`.
 
 **Themes and sources.** Each uses the upstream's own published hex, read from the file named in
 `source.url` on 2026-10-11:
@@ -2292,7 +2297,7 @@ known gap as `theme`.
 
 Every data role now passes. Upstream, two themes failed, and the owner had their roles moved in
 lightness only, hue and saturation kept, until they reach 3.3:1 (3.5 for the two that sat on the
-edge). Each move is in `adjusted` (decision 9):
+edge). Each move is in `adjusted.roles` (decision 9):
 
 | Theme | Role | Upstream | Used | Contrast before → after |
 | --- | --- | --- | --- | --- |
@@ -2307,9 +2312,22 @@ edge). Each move is in `adjusted` (decision 9):
 
 Latte's roles get darker, on a light background. Nord's get lighter, on a dark one: the owner's
 "darken" read as "toward contrast". Still borderline but passing: `dim` in `rose-pine-moon` (3.03)
-and `dracula` (3.03, also its `subtext`). Senders and topics are not roles, so they keep upstream's
-values (and their own 3:1 check only where a sender is hue-shifted). Latte's senders and topics
-stay as faint as upstream's.
+and `dracula` (3.03, also its `subtext`).
+
+Senders and topics are data too: a sender's name is how one reads who wrote. So every sender and
+topic colour under 3:1, in any theme, moves the same way to 3.3:1, into `adjusted.senders` and
+`adjusted.topics` (tg-kit-25, 2026-10-11). Hue-shifted senders already keep 3:1. The moves:
+
+| Theme | Value | Upstream | Used |
+| --- | --- | --- | --- |
+| `catppuccin-latte` | violet sender | lavender `#7287FD` | `#6178FD` |
+| `catppuccin-latte` | green sender, green topic | green `#40A02B` | `#3C9628` |
+| `catppuccin-latte` | cyan sender | sky `#04A5E5` | `#038DC4` |
+| `catppuccin-latte` | pink sender, rose topic | pink `#EA76CB` | `#E23FB6` |
+| `catppuccin-latte` | yellow topic | yellow `#DF8E1D` | `#B87518` |
+| `gruvbox-dark` | red topic | neutral_red `#CC241D` | `#E1332C` |
+
+The other six themes need none.
 
 The sender rule compares against both values of an adjusted role. A sender still at upstream's
 colour would look like the role it was taken from: Latte's peach sender stays shifted, and Nord's
