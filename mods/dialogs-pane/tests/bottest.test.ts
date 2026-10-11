@@ -463,10 +463,10 @@ describe('recorder', () => {
       const { ui, clock, runs, seen, saved } = await recordPress($, on, { allow: [], ask: answer })
       await ui.press({ key: 'rec:hand' })
       await clock.settle()
-      expect((await ui.find({ key: 'sheet' }))?.text).toContain('⏎ asks first: @example_bot is not in allow.toml')
+      expect((await ui.find({ key: 'sheet' }))?.text).toContain('⏎ asks first: Example Bot · @example_bot is not in allow.toml')
       await ui.press({ key: 'sheet:intent:test' })
       await clock.settle()
-      expect(seen.questions).toEqual([expect.stringContaining('An agent replaying this recording writes to @example_bot on its own')])
+      expect(seen.questions).toEqual([expect.stringContaining('An agent replaying this recording writes to Example Bot · @example_bot on its own')])
       expect(seen.questions[0]).toContain('tg allow add @example_bot --yes')
       // The add outlives this hand-off: the question says it is kept (T7).
       expect(seen.questions[0]).toContain('(kept for later: tg allow remove takes it out)')
@@ -475,11 +475,11 @@ describe('recorder', () => {
         expect(added).toEqual([])
         expect(seen.prompts).toEqual([])
         expect(await ui.find({ key: 'sheet' })).toBeDefined()
-        expect((await ui.find({ key: 'notice' }))?.text).toContain('Not sent: @example_bot stays out of allow.toml')
+        expect((await ui.find({ key: 'notice' }))?.text).toContain('Not sent: Example Bot stays out of allow.toml')
       } else {
         expect(added.map(run => run.argv)).toEqual([['tg', 'allow', 'add', '@example_bot', '--yes']])
         // Activity keeps the audit trail of who changed allow.toml.
-        expect(JSON.stringify(saved.autopilot)).toContain("allow.toml + @example_bot (@example_bot), your Yes · for a recording's replay")
+        expect(JSON.stringify(saved.autopilot)).toContain("allow.toml + Example Bot (@example_bot), your Yes · for a recording's replay")
         expect(seen.prompts.at(-1)).toContain('<recording')
       }
       await ui.unmount()

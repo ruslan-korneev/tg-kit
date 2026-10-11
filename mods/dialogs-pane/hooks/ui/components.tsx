@@ -1,31 +1,30 @@
 // The §4 components, each a plain function over the surface's element table:
-// called as `DialogRow(els, props)`, never as a JSX tag, so nothing depends on
+// called as `ChatRow(els, colors, props)`, never as a JSX tag, so nothing depends on
 // how `h` treats function components. Handlers come in as closures.
 import type { ElementTable, RenderElement } from 'claude-code'
 
-import type { Load, TgDialog, TgMessage } from '../../types'
+import type { Load, TgMessage } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { DRAFT_INDENT, type DraftView, type VerdictTone } from './drafts'
+import { cutCells } from '../folders/folders'
 import {
   GLYPH,
   TOKEN,
-  dialogGlyph,
-  dialogLabel,
-  failureColor,
+  cells,
+  failureRole,
   failureText,
   isErrorText,
-  isReadOnlyPeer,
+  labelCells,
   mediaTag,
   oneLine,
+  peerConfirmLabel,
+  rowWidths,
   senderLabel,
-  shortTime,
 } from './model'
+import type { Colors, Role } from './palette'
 import { clockOf, fixedCells, type MessageLook } from './thread'
 
 export type Els = ElementTable
-
-const pad = (text: string, width: number) =>
-  text.length >= width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width)
 
 /** A column exactly `width` wide: cut with … only when the text is longer (`bot` fills a 3-column sender). */
 const fit = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width))
@@ -43,72 +42,81 @@ export function edgeStart(start: number, cursor: number, rows: number, length: n
   return Math.min(Math.max(0, moved), Math.max(0, length - room))
 }
 
-/** A dialog row's cells besides the name (§7.3): cursor 2, level 2, kind 2, watch 2, unread 4, time 10. */
-const DIALOG_FIXED = 22
-
 /** The rows of `list` a window of `rows` from `start` shows. */
 export function windowAt<T>(list: readonly T[], start: number, rows: number): T[] {
   return list.slice(start, start + Math.max(1, rows))
 }
 
-export function DialogRow(
+/** A role's colour, or the surface's own for none. */
+const tint = (colors: Colors, role: Role | undefined) => (role === undefined ? undefined : colors[role])
+
+/** `text` cut by cells to `width` with …, then padded to exactly `width` cells. */
+function fitCells(text: string, width: number): string {
+  const cut = cutCells(text, width)
+  return cut + ' '.repeat(Math.max(0, width - cells(cut)))
+}
+
+/**
+ * One chat in Chats, FOR YOU, the compact card and Topics (§10.4), exactly
+ * `width` cells: cursor 1 · time 6 · glyph · name · preview · symbol 3, a space
+ * between each. The name keeps its room and the preview gives way first.
+ */
+export function ChatRow(
   { Box, Button, Text }: Els,
+  colors: Colors,
   props: {
-    dialog: TgDialog
     /** `dialog:<gen>:<id>`: the list's generation is part of it, so a reshaped list brings new keys (§8 T9). */
     rowKey: string
-    isCursor: boolean
-    /** Drawn without its ring stop while a field in the bar's row holds the ring (§4.3 rule 3); ▸ shows. */
-    isStatic?: boolean
-    isOpen: boolean
-    isPinned: boolean
+    /** The cells the row may use: a card's inner width. */
     width: number
-    now: number
-    onOpen: () => void
-    /** The watch column's glyph (◎, colored by the watch's health); BotFather's `ro` takes the column instead. */
-    mark?: { text: string; color?: string }
-    /** The autopilot's level glyph in the level column, and `auto 3/50` after the name; `warn` (red): ── delegate ── skipped hard stops. */
-    autopilot?: { glyph: string; tail: string; warn?: string }
+    isCursor: boolean
+    /** The open chat's row while the cursor is elsewhere (dock). */
+    isOpen: boolean
+    /** The keys are elsewhere: ▸ and › dim (§10.5). */
+    isDim?: boolean
+    /** `rowTime`'s text. */
+    time: string
+    glyph: { text: string; role: Role }
+    name: string
+    /** The name bold in `text`; a read chat's name stays plain, not dim. */
+    isUnread: boolean
+    /** Dim unless a role is given (FOR YOU's `draft: …` is `held`). */
+    preview: { text: string; role?: Role }
+    symbol: { text: string; role: Role } | null
+    /** Drawn without its ring stop (a field holds the ring, §4.3 rule 3; a card of text); ▸ shows. */
+    isStatic?: boolean
+    /** ⏎ on the row; without it the row is text. */
+    onPress?: () => void
   },
 ): RenderElement {
-  const { dialog } = props
-  const { glyph, color } = dialogGlyph(dialog.kind)
-  const isUnread = dialog.unread > 0
-  // A muted chat's count is dim and marked `·14`: muted ones would bury the rest (§4.7, §5).
-  const badge = isUnread ? `${dialog.muted ? '·' : ''}${dialog.unread}` : ''
-  const time = shortTime(dialog.last_date, props.now)
-  const pilot = props.autopilot
-  // §7.3: cursor 2 · level 2 · kind 2 · name · watch 2 · unread 4 · time 10. The level column is always drawn,
-  // so a name does not shift when an agent starts; a follow is the ladder's first level (decision 2), so ⌁ sits there too.
-  const level = pilot !== undefined ? pilot.glyph : props.isPinned ? GLYPH.pinned : ' '
-  // The watch column: `ro` on BotFather (read-only, nothing to watch there), else the watch mark.
-  const watch = isReadOnlyPeer(dialog) ? { text: 'ro', color: TOKEN.warn } : props.mark
-  const tail = pilot === undefined ? 0 : pilot.tail.length + 1 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)
-  const nameWidth = Math.max(8, props.width - DIALOG_FIXED - tail)
-  const cells = [
-    <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : props.isOpen ? `${GLYPH.open} ` : '  '}</Text>,
-    <Text color={TOKEN.accent}>{`${level} `}</Text>,
-    <Text color={color}>{glyph} </Text>,
-    <Text bold={(isUnread && !dialog.muted) || props.isOpen} underline={props.isOpen}>
-      {pad(dialogLabel(dialog), nameWidth)}
+  const room = rowWidths(props.width)
+  const mark = props.isCursor ? GLYPH.cursor : props.isOpen ? GLYPH.open : ' '
+  const symbol = props.symbol
+  const cellsOf = [
+    <Text color={props.isDim === true ? colors.dim : colors.accent}>{mark}</Text>,
+    <Text color={colors.dim}>{`${props.time.padStart(6)} `}</Text>,
+    <Text color={colors[props.glyph.role]}>{props.glyph.text}</Text>,
+    <Text> </Text>,
+    <Text color={props.isUnread ? colors.text : undefined} bold={props.isUnread}>
+      {fitCells(props.name, room.name)}
     </Text>,
-    pilot === undefined ? null : <Text dimColor>{`${pilot.tail} `}</Text>,
-    pilot?.warn === undefined ? null : <Text color={TOKEN.danger}>{`${pilot.warn} `}</Text>,
-    <Text color={watch?.color}>{(watch?.text ?? '').padEnd(2)}</Text>,
-    <Text bold={!dialog.muted} dimColor={dialog.muted}>{badge.padStart(4)}</Text>,
-    <Text dimColor>{time.padStart(10)}</Text>,
+    // A name-only row keeps the preview's space as padding, so the row stays `width` cells.
+    <Text color={colors[props.preview.role ?? 'dim']}>{` ${room.preview === 0 ? '' : fitCells(oneLine(props.preview.text, props.width), room.preview)}`}</Text>,
+    // ⚡ is two cells (§10.3), so the column pads by cells.
+    <Text color={symbol === null ? undefined : colors[symbol.role]}>{` ${' '.repeat(Math.max(0, 3 - labelCells(symbol?.text ?? '')))}${symbol?.text ?? ''}`}</Text>,
   ]
-  if (props.isStatic === true) {
+  const onPress = props.onPress
+  if (props.isStatic === true || onPress === undefined) {
     return (
       <Box key={props.rowKey} flexDirection="row">
-        {...cells}
+        {...cellsOf}
       </Box>
     )
   }
   return (
     // The cursor row takes the ring whenever the pane takes the keys: ⏎ acts on it at once.
-    <Button key={props.rowKey} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onOpen}>
-      {...cells}
+    <Button key={props.rowKey} plain autoFocus={props.isCursor ? true : undefined} onPress={onPress}>
+      {...cellsOf}
     </Button>
   )
 }
@@ -122,6 +130,7 @@ export function DialogRow(
  */
 export function MessageCard(
   els: Els,
+  colors: Colors,
   props: {
     message: TgMessage
     isCursor: boolean
@@ -156,12 +165,12 @@ export function MessageCard(
   // Beside the text the chips start at the thread's chips column, and the stamp and id follow them; elsewhere they end the row.
   const tail = isOnRow ? props.chipsAt.column + 1 + props.chipsAt.tail : (stamp === null ? 0 : stamp.text.length + 1) + (id === '' ? 0 : id.length + 1)
   const textWidth = Math.max(10, props.width - fixedCells(props.sender) - tail)
-  const color = isErrorText(message.text) ? TOKEN.danger : undefined
+  const color = isErrorText(message.text) ? colors.unread : undefined
   // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.
   const mark = props.isSelected ? GLYPH.marked : props.isAnchor ? 'v' : ' '
   const sender = senderLabel(message)
   const head = [
-    <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
+    <Text color={colors.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
     <Text dimColor> {clockOf(message.date).padEnd(5)} </Text>,
     // The bot token is the ◆ glyph's alone (§7.1): the sender column stays plain.
     <Text>{fit(sender, props.sender.width)}</Text>,
@@ -169,7 +178,7 @@ export function MessageCard(
     <Text color={color}>{fit(oneLine(body, textWidth), textWidth)}</Text>,
   ]
   const right = [
-    stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>,
+    stamp === null ? null : <Text color={stamp.isSlow ? colors.held : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>,
     id === '' ? null : <Text dimColor> {id}</Text>,
   ]
   const line = isOnRow ? head : [...head, ...right]
@@ -217,6 +226,7 @@ export function MessageCard(
  */
 export function LoadState<T>(
   { Box, Text, Button }: Els,
+  colors: Colors,
   props: { load: Load<T>; now: number; rows: number; onReload: () => void },
 ): RenderElement | null {
   const { load } = props
@@ -234,7 +244,7 @@ export function LoadState<T>(
   }
   return (
     <Box key="failure" flexDirection="column">
-      <Text color={failureColor(load.failure)} wrap="wrap">
+      <Text color={tint(colors, failureRole(load.failure))} wrap="wrap">
         {failureText(load.failure, props.now, load.retryAt)}
       </Text>
       {load.failure.kind === 'flood' ? null : (
@@ -266,7 +276,7 @@ export function Divider({ Text }: Els, props: { label: string; width: number; ri
   )
 }
 
-const VERDICT_COLOR: Record<VerdictTone, string | undefined> = { ok: TOKEN.ok, danger: TOKEN.danger, dim: undefined }
+const VERDICT_ROLE: Record<VerdictTone, Role | undefined> = { ok: 'ok', danger: 'unread', dim: undefined }
 
 /**
  * A draft as a row of its chat's thread (§5.4, §8 T3): its head is the ring
@@ -277,16 +287,18 @@ const VERDICT_COLOR: Record<VerdictTone, string | undefined> = { ok: TOKEN.ok, d
  */
 export function DraftCard(
   els: Els,
+  colors: Colors,
   props: { draft: DraftView; isCursor: boolean; isStatic?: boolean; width: number; onPress: () => void; onSave: (text: string) => void },
 ): RenderElement {
   const { Box, Button, Text } = els
   const Input = 'Input' in els ? els.Input : undefined
   const { draft } = props
+  const to = peerConfirmLabel(draft.peer)
   const head = [
-    <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}  `}</Text>,
-    <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} draft to ${draft.peer.label}`}</Text>,
+    <Text color={colors.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}  `}</Text>,
+    <Text color={colors.held}>{`${LEVEL_GLYPH.draft} draft to ${to}`}</Text>,
     // One line: a Button's row does not cut its text, so the head is cut to the pane's width here.
-    <Text dimColor>{` · ${oneLine(draft.why, Math.max(4, props.width - DRAFT_INDENT - 14 - draft.peer.label.length - 3))}`}</Text>,
+    <Text dimColor>{` · ${oneLine(draft.why, Math.max(4, props.width - DRAFT_INDENT - 14 - to.length - 3))}`}</Text>,
   ]
   const indent = ' '.repeat(DRAFT_INDENT)
   return (
@@ -308,7 +320,7 @@ export function DraftCard(
           <Text wrap="wrap">{draft.text}</Text>
         </Box>
       )}
-      <Text key={`verdict:${draft.key}`} color={VERDICT_COLOR[draft.verdict.tone]} dimColor={draft.verdict.tone === 'dim'} wrap="truncate-end">
+      <Text key={`verdict:${draft.key}`} color={tint(colors, VERDICT_ROLE[draft.verdict.tone])} dimColor={draft.verdict.tone === 'dim'} wrap="truncate-end">
         {`${indent}${draft.verdict.text}`}
       </Text>
     </Box>

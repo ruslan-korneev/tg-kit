@@ -69,8 +69,8 @@ describe('live merges', () => {
   test('the band reports a watched reply with its sender, and the bot reply with its latency', () => {
     const { band, reply } = reportReply({ id: 1001, label: '@example_bot', kind: 'bot' }, REPLY, [SENT], 'bot')
     expect(band).toEqual({ dialogId: 1001, label: '@example_bot', kind: 'bot', text: '⚠ Something went wrong', sender: 'bot' })
-    expect(replyText(reply)).toBe('◆ example_bot replied 1.0s')
-    expect(replyText({ ...reply, latencyMs: null })).toBe('◆ example_bot replied')
+    expect(replyText(reply)).toBe('⬡ example_bot replied 1.0s')
+    expect(replyText({ ...reply, latencyMs: null })).toBe('⬡ example_bot replied')
   })
 })
 
