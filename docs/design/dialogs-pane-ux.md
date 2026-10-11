@@ -1078,6 +1078,10 @@ from where the owner is: the repo of the session's working directory, web read-o
 checks, until done. `↓` walks the fields; Selects change them; `e` edits the repos. Skipping hard
 stops lives in `o` → danger zone, with the typed confirmation as built.
 
+Whatever `commands` says, the Worker never runs tg and never reaches tg-kit's config directory
+(decision 11). The guard refuses both, as it refuses a path into the owner's checkout, and the
+`commands` Select reads `any but tg (permission rules decide)`.
+
 ```text
 Flow 5 · Wide · 5: delegate asks once per chat
 ┌────────────────────────────────────────────────────────────────┐
@@ -1764,13 +1768,13 @@ Made with the owner (2026-10-10):
    (`tg allow add 1004 --yes`). On Yes the card runs that command, reads the allowlist again and
    starts the level. No, a dismissed dialog, or a session with no one to ask (`-p`) runs nothing.
    Only the owner's key in the pane raises the dialog: never a band item, an event, or anything an
-   agent's output can reach. No agent ever changes allow.toml. `a 4 ⏎ 2`: 4 keys, since `2` picks
-   Yes in the dialog and a stray ⏎ picks No. Amended by the owner on 2026-10-11, after T3's live
-   run. The first way had ⏎ fill `! tg allow add PEER --yes` for the owner to run (7 keys).
-   `$.prompt.fill` cannot put the box in shell mode, so the filled line went to the model as a
-   prompt. Typing `!` by hand made it 9 keys, and the owner chose the dialog, on which the click
-   is still theirs. What changes, as the first choice noted, is who writes allow.toml: the pane
-   does, on that Yes.
+   agent's output can reach. No agent ever changes allow.toml; for the Worker, decision 11 holds
+   it. `a 4 ⏎ 2`: 4 keys, since `2` picks Yes in the dialog and a stray ⏎ picks No. Amended by the
+   owner on 2026-10-11, after T3's live run. The first way had ⏎ fill `! tg allow add PEER --yes`
+   for the owner to run (7 keys). `$.prompt.fill` cannot put the box in shell mode, so the filled
+   line went to the model as a prompt. Typing `!` by hand made it 9 keys, and the owner chose the
+   dialog, on which the click is still theirs. What changes, as the first choice noted, is who
+   writes allow.toml: the pane does, on that Yes.
 2. **Pin becomes ladder level 1, follow.** One level per chat, so a chat that follows main is not
    also on auto; today both can run at once.
 
@@ -1818,6 +1822,28 @@ Decided by the owner during the build (2026-10-11):
     hard stops, where a cosmetic rewrite would widen what must be trusted. Deferred: a small plugin
     of its own, `dialogs-pane-transcript`, if the long rows start to bother the owner. Task T5
     carries it.
+11. **The Worker never runs tg and never reaches tg-kit's config, in either commands mode.** The
+    Speaker is the only voice in the chat. allow.toml changes only on the owner's Yes (decision 1).
+    The Worker's task is not the owner's other chats, so tg's reads go too. Under `commands: any`
+    the grant passed all of it to the permission rules, which a bypass session answers yes; under
+    `checks`, a redirect attached to its path got through as well. The guard now refuses a
+    Worker's Bash command in both modes, before it reads the mode, when one of its simple
+    commands, after the wrappers, `sh -c` and `eval` the grant already reads:
+    - runs tg: a program named `tg` at any path; the same behind a launcher (`uv run`,
+      `uv tool run`, `uvx`, `pipx run`, with their options); or Python on tg-kit's code
+      (`python -m tg_kit…`, or a `-c` text that names `tg_kit`);
+    - names a path inside TG_KIT_CONFIG_DIR (`~/.config/tg-kit` by default) that is outside the
+      Worker's own worktrees, which live there. Any position counts: an operand, an option's
+      value (`--output=…`, `-o…`), or a redirect target, attached (`>>~/.config/tg-kit/allow.toml`)
+      or not. `~`, `$HOME` and `$TG_KIT_CONFIG_DIR` are resolved for it. Reads count too, since a
+      Bash word does not say which it is.
+
+    Edit, Write and Read already stay inside the worktrees. This is a refusal, not a hard stop:
+    there is no dialog and nothing to skip. The Worker is told to go on without it or to end with
+    `FAIL: …`, as for the grant's other refusals. The limit, said plainly: under `any` the rule
+    stops the plain ways, not code the Worker writes and runs, such as a script or an encoded
+    command. Only a sandbox outside the mod would stop that. Decision 9's list of what allow.toml
+    gates loses the Worker: its words reach the chat only through the Speaker.
 
 ## 10. Rejected
 
