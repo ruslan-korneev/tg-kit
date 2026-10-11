@@ -1133,6 +1133,50 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
     })
   }
 
+  /** Ring stops inside the header: its text changes as the thread scrolls, so it must hold none (§4.3 rule 1). */
+  async function headerStops(ui: Ui): Promise<number> {
+    let count = 0
+    const walk = (node: unknown) => {
+      if (typeof node !== 'object' || node === null) return
+      const one = node as { type?: unknown; children?: unknown }
+      if (one.type === 'Button' || one.type === 'Input' || one.type === 'Select') count += 1
+      if (Array.isArray(one.children)) for (const child of one.children) walk(child)
+    }
+    walk(await ui.find({ key: 'header' }))
+    return count
+  }
+
+  for (const seat of SEATS) {
+    test(`${seat.name}, a 40-message bot thread over two days: k to the top; the header names the top row's day once its divider scrolled off, and no stop comes with it (T7)`, async ($, on) => {
+      const { ui } = await openPane($, on, seat.props, chipped)
+      await openChat(ui, 1001)
+      const named = new Set<string>()
+      for (let move = 0; move < CHIPPED.length; move++) {
+        const first = Number((await rows(ui, 'msg:'))[0]?.slice('msg:'.length))
+        const index = CHIPPED.findIndex(one => one.id === first)
+        // Ten messages of the day before, then thirty of today, a divider before the first of each: the header names a day
+        // only while the window's top row is past the divider of its day.
+        const day = index === 0 || index === 10 ? null : index < 10 ? 'yesterday' : 'today'
+        const header = (await ui.find({ key: 'header' }))?.text ?? ''
+        if (day === null) expect(header).not.toContain('tg › @example_bot · ')
+        else {
+          expect(header).toContain(`tg › @example_bot · ${day}`)
+          named.add(day)
+        }
+        expect(await headerStops(ui)).toBe(0)
+        const before = { first, stops: await threadStops(ui) }
+        await ui.press({ key: 'key:up' })
+        const after = { first: Number((await rows(ui, 'msg:'))[0]?.slice('msg:'.length)), stops: await threadStops(ui) }
+        if (after.first === before.first) expect(after.stops).toEqual(before.stops)
+      }
+      expect([...named].sort()).toEqual(['today', 'yesterday'])
+      // At the top the first divider is drawn, so the header names no day.
+      expect((await rows(ui, 'msg:'))[0]).toBe(`msg:${CHIPPED[0]?.id}`)
+      expect((await ui.find({ key: 'header' }))?.text).not.toContain('tg › @example_bot · ')
+      await ui.unmount()
+    })
+  }
+
   for (const seat of SEATS) {
     const inline = seat.props.placement === 'inline'
     test(`${seat.name}, the cursor on the newest of 40 messages: x, n (send, empty), s, t, a draft landing; nothing above the cursor moves`, async ($, on) => {

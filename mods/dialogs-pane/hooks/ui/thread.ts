@@ -94,6 +94,20 @@ export function dayDividers(messages: readonly Pick<TgMessage, 'id' | 'date'>[],
   return dividers
 }
 
+/**
+ * The day of the window's top row for the header (`tg › @example_bot · 10-08`),
+ * once the divider that names it has scrolled off: null while that divider is
+ * the window's first row, and when no divider was drawn before it (a thread of
+ * today alone has none to lose).
+ */
+export function topDay(messages: readonly Pick<TgMessage, 'id' | 'date'>[], topId: number, now: number): string | null {
+  const dividers = dayDividers(messages, now)
+  const top = messages.findIndex(message => message.id === topId)
+  if (top === -1 || dividers.has(topId)) return null
+  const named = messages.slice(0, top).findLast(message => dividers.has(message.id))
+  return named === undefined ? null : (dividers.get(named.id) ?? null)
+}
+
 /** The cells of a message row that are not text: cursor, mark, time, the sender column, and a cell spare so nothing wraps. */
 export function fixedCells(sender: { width: number; gap: number }): number {
   // cursor(1) mark(1) space time(5) space, the sender and its gap, one cell spare.

@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { ME, msg } from '../packet/fixtures'
-import { CHIPS_ON_ROW_FROM, chipLabels, chipsCells, clockOf, dayDividers, dayLabel, messageLooks, messageRows, senderColumn } from './thread'
+import { CHIPS_ON_ROW_FROM, chipLabels, chipsCells, clockOf, dayDividers, dayLabel, messageLooks, messageRows, senderColumn, topDay } from './thread'
 
 /** Local times, so the day boundaries hold in any time zone the tests run in. */
 const at = (day: number, hour: number, minute = 0) => new Date(2026, 9, day, hour, minute).toISOString()
@@ -70,5 +70,23 @@ describe('a message’s buttons on its own row from 90 columns (§7.3)', () => {
     expect(chipsCells([['Retry', 'Back']])).toBe(17)
     // `1: A  ·  2: B`.
     expect(chipsCells([['A'], ['B']])).toBe(13)
+  })
+})
+
+describe('the header names the top row’s day once its divider scrolled off (§7.3, T7)', () => {
+  const thread = [msg({ id: 1, date: at(8, 10) }), msg({ id: 2, date: at(8, 11) }), msg({ id: 3, date: at(10, 20) }), msg({ id: 4, date: at(10, 21) }), msg({ id: 5, date: at(11, 9) })]
+
+  test('the day of the divider above the top row; none while that divider is the top row', () => {
+    expect(topDay(thread, 1, NOW)).toBeNull()
+    expect(topDay(thread, 2, NOW)).toBe('10-08')
+    expect(topDay(thread, 3, NOW)).toBeNull()
+    expect(topDay(thread, 4, NOW)).toBe('yesterday')
+    expect(topDay(thread, 5, NOW)).toBeNull()
+  })
+
+  test('a thread of today alone draws no divider, so the header names no day', () => {
+    const today = [msg({ id: 6, date: at(11, 8) }), msg({ id: 7, date: at(11, 9) })]
+    expect(topDay(today, 7, NOW)).toBeNull()
+    expect(topDay(thread, 99, NOW)).toBeNull()
   })
 })

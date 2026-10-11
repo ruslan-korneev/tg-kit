@@ -78,7 +78,7 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
-import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, fixedCells, messageLooks, senderColumn, type MessageLook } from './ui/thread'
+import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
@@ -546,6 +546,8 @@ async function toNewest($: $): Promise<void> {
  */
 const windowRows = { dialogs: 0, messages: 0, folders: 0 }
 let threadHeights: number[] = []
+/** The day the drawn thread's top row belongs to, once its divider scrolled off (./ui/thread `topDay`); null otherwise. Set while drawing, read by the header. */
+let shownTopDay: string | null = null
 
 /**
  * The cursor of one list moved by a step: its window start is first settled
@@ -963,6 +965,8 @@ type Seating = { seat: Seat; width: number; rows: number; isFocused: boolean }
  */
 async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement> {
   const { seat, width, rows } = seating
+  // The thread's drawing below sets it when its top row's day divider has scrolled off; the header reads it.
+  shownTopDay = null
   const where = await underWhere($)
   const isMenu = (await read($, nav)).isMenuOpen
   const context = await keyContext($, seat, where)
@@ -1065,7 +1069,7 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
     case 'foryou':
       return 'tg › for you'
     case 'chat':
-      return `tg › ${label}`
+      return `tg › ${label}${dayPart()}`
     case 'card': {
       // ── autopilot ── the card's step after its chat: delegate's warning and grant, `o`'s options.
       const view = (await read($, autopilot)).view
@@ -1078,22 +1082,27 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
       if (shown.kind === 'broadcast') return `tg › several agents · ${label}`
       if (shown.kind === 'sheet' && shown.step === 'targets') return `tg › send to · ${label}`
       if (shown.kind === 'sheet' && shown.step === 'inspect') return `tg › inspect · ${label}`
-      return `tg › ${label}`
+      return `tg › ${label}${dayPart()}`
     }
     case 'diff':
       return `tg › diff · ${label}`
     case 'recorded':
-      return `tg › ${label}`
+      return `tg › ${label}${dayPart()}`
     case 'activity':
       return 'tg › activity'
     case 'summary':
       return `tg › summary · ${label}`
     case 'field':
-      return (await read($, nav)).isSearching ? 'tg › search' : `tg › ${label}`
+      return (await read($, nav)).isSearching ? 'tg › search' : `tg › ${label}${dayPart()}`
     case 'menu':
     case 'band':
       return 'tg'
   }
+}
+
+/** ` · 10-08`: the top row's day, while the thread under the header has scrolled its divider off. */
+function dayPart(): string {
+  return shownTopDay === null ? '' : ` · ${shownTopDay}`
 }
 
 /** §4.5: agents by level, new messages in watched chats, what waits for the owner. One summary: the header, the footer label, `/tg status`. */
@@ -1316,6 +1325,9 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
   const layout = await threadLayout($, width, rows)
   windowRows.messages = rows
   threadHeights = layout.heights
+  // The header names the top row's day once its divider has scrolled off (text only: no ring stop, §4.3 rule 1).
+  const topMessage = layout.items.slice(0, layout.start + 1).findLast(item => item.kind === 'message')
+  shownTopDay = topMessage?.kind === 'message' ? topDay(messages, topMessage.message.id, at) : null
   lastThread = { width, rows } // ── footer ──
   const bt = await bottestCards($, open.peer, messages, layout.look, width, mode)
   return layout.shown.map((item, index) => {
@@ -1364,14 +1376,14 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
  * holds whole, from where it starts. The drawing and the band (which leaves
  * out a draft the pane draws) read the same answer.
  */
-async function threadLayout($: $, width: number, rows: number): Promise<{ shown: ThreadRow[]; start: number; cursor: number; heights: number[]; look: ThreadLook }> {
+async function threadLayout($: $, width: number, rows: number): Promise<{ items: ThreadRow[]; shown: ThreadRow[]; start: number; cursor: number; heights: number[]; look: ThreadLook }> {
   const items = await threadItems($)
   const where = await read($, nav)
   const look = await threadLook($, width)
   const heights = items.map(item => rowHeight(item, width, look.looks))
   const cursor = clamp(where.messageCursor, items.length)
   const start = windowStart(where.messageStart, cursor, heights, rows)
-  return { shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights, look }
+  return { items, shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights, look }
 }
 
 type ThreadLook = { sender: { width: number; gap: number }; looks: Map<number, MessageLook> }
