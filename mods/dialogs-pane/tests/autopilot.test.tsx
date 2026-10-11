@@ -621,6 +621,26 @@ describe('draft and listen', () => {
     await ui.unmount()
   })
 
+  test('a draft the guard refuses (readonly = true) sends nothing on ⏎: the rule is held at the write itself (the T3 review\'s L1)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const refused = run(0, JSON.stringify({ action: 'send', target: {}, steps: [], guard: { allowed: false, reason: 'readonly = true in config.toml: every write is refused' } }))
+    const seen = world(on, { model: () => answer({ action: 'reply', text: 'After 18?', confidence: 0.62, topics: ['dates'], reason: '' }), dryRun: async () => refused })
+    const { ui, child } = await handOver($, clock, seen, '2')
+    await ui.press({ key: await chatKey(ui, GROUP) })
+    watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    await ui.press({ key: 'key:down' })
+    expect(await ui.find({ type: 'Text', text: '   ✗ the guard refuses: readonly = true in config.toml: every write is refused' })).toBeDefined()
+    const checks = seen.runs.filter(one => one.argv.includes('--dry-run')).length
+    await ui.press({ key: (await draftRow(ui))?.key ?? '' })
+    await ui.press({ key: 'key:senddraft' })
+    // ⏎ asks the guard again instead: no tg send without --dry-run ever runs.
+    expect(sends(seen)).toEqual([])
+    expect(seen.runs.filter(one => one.argv.includes('--dry-run')).length).toBe(checks + 2)
+    await ui.unmount()
+  })
+
   test('For you: the draft is an agent row first; ⏎ sends it with --yes when its whole text shows, and the row stays, sent', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: 'Tomorrow is packed, after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })

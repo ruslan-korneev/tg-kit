@@ -2474,23 +2474,24 @@ async function checkDraft($: $): Promise<void> {
   await setDraftStep($, current, { kind: 'planned', ...plan })
 }
 
-/** send reply: only after a check the guard allowed, and the same argv minus --dry-run. */
-async function sendDraft($: $): Promise<void> {
+/** send reply: only after a check the guard allowed, and the same argv minus --dry-run. Answers whether it tried (false: no allowed verdict, nothing ran). */
+async function sendDraft($: $): Promise<boolean> {
   const current = await read($, draft)
-  if (current === null || current.step.kind !== 'planned' || !current.step.isAllowed) return
+  if (current === null || current.step.kind !== 'planned' || !current.step.isAllowed) return false
   await setDraftStep($, current, { kind: 'sending' })
   const ran = await runDraft($, current, false)
-  if (ran === null) return
+  if (ran === null) return true
   const ids = ran.exitCode === 0 ? parseSent(ran.stdout) : null
   if (ids === null) {
     const failure = failureOf(ran.exitCode, ran.stderr)
     await setDraftStep($, current, { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failure.kind })
-    return
+    return true
   }
   await setDraftStep($, current, { kind: 'sent', ids })
   // The thread again, with the reply in it: the draft's row was the cursor's, and the sent message takes it.
   const open = await read($, thread)
   if (open?.peer.id === current.peer.id) await loadThread($, open.peer)
+  return true
 }
 // ── /routing ──
 
@@ -3425,15 +3426,16 @@ async function apCheckDraft($: $, seq: number): Promise<void> {
 
 /**
  * Sends a draft the owner read whole: their own write, so --yes (decision 9),
- * and only once the guard's verdict allows it. Its row leaves the thread; the
- * sent message takes the next one.
+ * and only once the guard's verdict allows it: the rule is held here, at the
+ * write. Its row leaves the thread; the sent message takes the next one.
+ * Answers whether it tried (false: no allowed verdict, nothing ran).
  */
-async function apSendDraft($: $, seq?: number): Promise<void> {
+async function apSendDraft($: $, seq?: number): Promise<boolean> {
   const draft = await apDraftOf($, seq)
-  if (draft === null || draft.state.kind === 'sending' || draft.check.kind !== 'planned' || !draft.check.isAllowed) return
+  if (draft === null || draft.state.kind === 'sending' || draft.check.kind !== 'planned' || !draft.check.isAllowed) return false
   if (isBotFather(draft.peer.arg)) {
     await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) } }))
-    return
+    return true
   }
   await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'sending' } }))
   const rt = apRuntimes.get(draft.peer.id)
@@ -3447,7 +3449,7 @@ async function apSendDraft($: $, seq?: number): Promise<void> {
   if (!result.ok) {
     const reason = writeFailure(result, draft.peer, await $.clock.now())
     await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'failed', reason } }))
-    return
+    return true
   }
   const sent = result.sent.map(one => one.id)
   for (const id of sent) rt?.sentIds.add(id)
@@ -3459,6 +3461,7 @@ async function apSendDraft($: $, seq?: number): Promise<void> {
     })),
   )
   await refreshStatus($)
+  return true
 }
 
 async function apDropDraft($: $, seq?: number): Promise<void> {
@@ -3499,9 +3502,9 @@ async function enterDraft($: $, ref: DraftRef): Promise<void> {
   const view = await draftViewOf($, ref)
   if (view === undefined || view.isEditing) return
   if (view.isBusy) return say($, 'info', `${LEVEL_GLYPH.draft} ${view.verdict.text}`)
-  if (!view.canSend) return checkDraftRef($, ref)
-  if (ref.kind === 'autopilot') await apSendDraft($, ref.seq)
-  else await sendDraft($) // ── routing ──
+  // The send paths hold the rule themselves (the guard's verdict allows this text): one that sends nothing is checked again.
+  const isSent = ref.kind === 'autopilot' ? await apSendDraft($, ref.seq) : await sendDraft($) // ── routing ──
+  if (!isSent) await checkDraftRef($, ref)
 }
 
 async function checkDraftRef($: $, ref: DraftRef): Promise<void> {
