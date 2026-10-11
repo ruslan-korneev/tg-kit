@@ -105,8 +105,14 @@ export function failureOf(exitCode: number, stderr: string): TgFailure {
   }
 }
 
+/**
+ * tg's reason: its `error:` line. A refusal prints the plan before it
+ * (`refused; nothing was sent. The plan was:` and the plan's JSON), so the
+ * first line alone would hide the guard's reason (§7.4: `readonly = true`).
+ */
 function firstLine(stderr: string): string {
-  const line = stderr.split('\n').find(one => one.trim() !== '') ?? ''
+  const lines = stderr.split('\n')
+  const line = lines.find(one => one.startsWith('error:')) ?? lines.find(one => one.trim() !== '') ?? ''
   return line.replace(/^error:\s*/, '').trim() || 'tg failed'
 }
 

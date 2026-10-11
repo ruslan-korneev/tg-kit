@@ -52,6 +52,13 @@ describe('tg adapter', () => {
     })
   })
 
+  test("a refusal's reason is tg's error: line, not the plan printed before it (§7.4)", () => {
+    const stderr = 'refused; nothing was sent. The plan was:\n{"action": "send"}\nerror: readonly = true in config.toml: every write is refused\n  fix: ask the account owner\n'
+    expect(failureOf(7, stderr)).toEqual({ kind: 'error', message: 'readonly = true in config.toml: every write is refused' })
+    // Without an error: line, the first one still speaks.
+    expect(failureOf(1, 'boom\n')).toEqual({ kind: 'error', message: 'boom' })
+  })
+
   test('a run that never finished is `missing`; bad output is an error', () => {
     expect(settle(tg.dialogs(), undefined)).toEqual({ ok: false, failure: { kind: 'missing' } })
     expect(settle(tg.dialogs(), ok('not json')).ok).toBe(false)
