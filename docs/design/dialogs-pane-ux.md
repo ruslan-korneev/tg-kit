@@ -1627,7 +1627,8 @@ it).
   position; a refused chat in no list and no row; the same Telegram calls as `--counts` (counted
   by a fake client); `scan` and `at`; the text line.
 
-**T9 — folders and For you in the pane** (1 day; after T1, T8 and T8b).
+**T9 — folders and For you in the pane** (1 day; after T1, T8, T8b and T4b, whose notice row
+carries the inline `↑ N moved`).
 - The strip replaces `LensBar`: Telegram's order, the current folder, `+N`, digits while the
   cursor is in Chats; `s` searches every chat.
 - The Folders list (`h` from Chats): counts, `shared`, Archive, the pane views; two columns inline.
@@ -1644,8 +1645,18 @@ it).
   `$.state`, so a hot reload keeps the 60 s too.
 - Between passes, watch events (the open chat, watched chats) patch the rows they touch (`unread`,
   `mentions`, the last message) in the module's map and in the view on screen, and move the chat
-  to the top of the unpinned part of each folder that has it. Nothing else changes until the next
-  pass.
+  to the top of the unpinned part of each folder that has it, in the module's map. Nothing else
+  changes until the next pass. On screen, a move waits as the next bullet says.
+- The list on screen keeps §4.3's ring rules. While the cursor stays, its rows update in place:
+  unread counts, mentions, badges, the last message. A chat that moves, joins or leaves (a watch
+  event, a pass) waits, counted dim: on the folder strip in the dock (`↑3`, before `s: search`),
+  in the notice row inline (`↑ 3 moved · g: apply`, while no notice shows). What waits applies at
+  the next moment the owner moves the ring: ⏎ into a chat, `h`, a folder or view switch, `g`. A
+  pass on its own never reshapes the list, since it lands while the cursor stays. When the list
+  reshapes, its rows get new keys: the list's generation is part of each row's key
+  (`dialog:<gen>:<id>`). So `$.ui.focus` waits for the drawing that brings them, and the ring lands
+  on the cursor's chat wherever it moved. `g` applies what waits at once, then queues its pass as
+  above.
 - Kept where. On the owner's account a pass is 467 KB and 621 chats, and a `$.state` value
   crosses to the host as JSON on every write and on every read while drawing, so the pass is
   never kept there whole:
@@ -1679,7 +1690,16 @@ it).
   does not run; `g` inside the 60 s queues one that runs when they are up, and a second `g` adds
   none; a hot reload keeps the 60 s; `$.state` holds no row of a view off screen, and no
   `last_text` over 120 characters; exit 5 keeps the pass and holds the next one; a watch event
-  moves its chat up in every folder that has it.
+  moves its chat up in every folder that has it, in the module's map.
+- Ring tests, at 30–33 dock rows and inline, in a 60-chat folder:
+  - With the cursor in Chats, a watch event that would move a chat above the cursor leaves the
+    cursor's chat, its stop and the window's first row as they were; `↑1` shows; counts change in
+    place.
+  - A pass landing while the cursor is in Chats changes counts in place only.
+  - ⏎ into a chat, `h`, a folder switch (with a chat that is in both folders) and `g` each apply
+    what waits: the generation in the row keys goes up, and the ring target is the cursor's chat.
+  - Appendix A's live check, with a watched chat writing while the cursor is in Chats: the
+    inverse ring stays on ▸.
 
 Conflict points between parallel tasks: `keys.ts` (each task adds its rows), the Pane render's
 slots (T1 makes them), `types/index.d.ts` (marked blocks, as today).
