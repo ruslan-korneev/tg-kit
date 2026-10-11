@@ -2788,6 +2788,17 @@ Compact · the pane closed, 100 columns · nothing in the band's queue
   `⏎ open · q: hide`. The owner's `▾ hide` is drawn as `q: hide`, because the engine draws a
   Button's hotkey before its label (§1) and `q` already means hide (§6). No digits, as §11 has it
   for the band.
+- **A known limit: the keys after ⏎ when statuspane is installed** (decision 10).
+  - Without statuspane, ⏎ opens Wide and the keys go to the pane. T15 saw this live: `● keys`
+    showed, and `k` moved ▸.
+  - With statuspane installed, the keys stay with the band, and the owner presses ctrl+x tab
+    once more. Engine 2.1.296 refuses a pane's `focus` while an element of the band holds the
+    keys. statuspane's `▾ hide` Button stays in the band after our card leaves, so the band
+    still holds them.
+  - No plugin API moves the keys from the band to a pane: `$.ui.focus` is denied in a site that
+    does not hold them, and there is no blur. So there is no workaround in the mod, and none is
+    attempted.
+  - Appendix A re-checks it after every engine upgrade.
 - **Rows** are text in the band's ring: the row under the band's cursor is the one Button that
   draws (`autoFocus`), and the other is text. The card adds no ring stops above the prompt beyond
   the band's own.
@@ -3163,6 +3174,14 @@ Asked by the owner on 2026-10-11, through tg-kit-25:
      edge). Each move is recorded in `adjusted`, from upstream to used, so no one takes those
      values for upstream's (§10.2).
 
+Accepted by the owner through tg-kit-25 (2026-10-11), after T15's live run:
+
+10. **With statuspane installed, ⏎ in the compact card opens Wide but leaves the keys in the
+    band**, and the owner presses ctrl+x tab once more (§10.7). Engine 2.1.296 refuses the pane's
+    `focus` while a band element holds the keys, and no plugin API can move them. Rejected: focus
+    hacks (the owner's option 1 was "no focus hacks"), since a workaround would have to reach into
+    another plugin's drawing or lean on engine behaviour the docs do not promise.
+
 ## 11. Rejected
 
 - **Engine tabs for views** (several panes): the probe showed the tab strip, but reaching a tab
@@ -3219,6 +3238,10 @@ Asked by the owner on 2026-10-11, through tg-kit-25:
 - Sizes: with `window-size latest` and another tmux client attached, `new-session -x -y` is
   ignored and the session takes that client's size (T11 got 180×51 for every lab). Run
   `tmux resize-window -t <session> -x 100 -y 40` after the start and check `#{window_width}`.
+- After every engine upgrade, with statuspane installed and the pane closed: ctrl+x tab, then ⏎ in
+  the compact card. Today the keys stay in the band (§10.7, decision 10). If the pane shows
+  `● keys` and `k` moves ▸, the engine now lets a pane take the keys from the band, and §10.7's
+  limit can go.
 - After every engine upgrade, with the pane holding the keys and the menu closed: `j` moves the
   cursor, `p` in a bot chat puts `⌁1` in the header (`p` again stops it), `q` hides the pane. If
   one does nothing, the engine no longer presses hidden Buttons (§1, §6).
