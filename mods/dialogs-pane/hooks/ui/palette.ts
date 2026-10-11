@@ -4,30 +4,42 @@
 // element table does, never through module state. Pure: tests read it directly.
 import type { Color, ThemeKey } from 'claude-code'
 
-export const PALETTE_NAMES = ['theme', 'mocha', 'mocha256', 'ansi'] as const
-/** `theme` follows Claude Code's theme; `mocha` is Catppuccin Mocha; `mocha256` keeps it apart in tmux's 256 colours; `ansi` is for 16 colours (decision 8). */
-export type Palette = (typeof PALETTE_NAMES)[number]
+import { CATALOGUE } from './themes'
 
-export const ROLES = [
-  'accent',
-  'unread',
-  'mention',
-  'held',
-  'ok',
-  'person',
-  'group',
-  'channel',
-  'bot',
-  'saved',
-  'dim',
-  'subtext',
-  'text',
-  'surface',
-] as const
+/** §10.2's 14 roles, in the catalogue's order. */
+export const ROLES = CATALOGUE.roles
 export type Role = (typeof ROLES)[number]
 
 /** What a component is handed: each role's colour; `undefined` is the terminal's own foreground (`ansi`'s `text`). */
 export type Colors = Readonly<Record<Role, Color | undefined>>
+
+type Catalogue = typeof CATALOGUE.themes
+/** A theme of the catalogue (palettes/themes.json, decision 9). */
+export type ThemeName = keyof Catalogue
+/** A theme with a `variant256`: only those have a `<name>256`. */
+type With256 = { [Name in ThemeName]: Catalogue[Name] extends { variant256: unknown } ? Name : never }[ThemeName]
+
+/**
+ * `theme` follows Claude Code's theme; `ansi` is for 16 colours; a catalogue name draws
+ * that theme's hex; `<name>256` moves the few that would share a cell in tmux's 256
+ * colours (§10.2, decisions 8 and 9).
+ */
+export type Palette = 'theme' | 'ansi' | ThemeName | `${With256}256`
+
+/** What palette.ts reads of a theme in palettes/themes.json (its schema is pinned by tests/unit/test_themes_shared.py). */
+type Theme = {
+  readonly roles: Readonly<Record<Role, string>>
+  readonly topics: Readonly<Record<string, string>>
+  readonly variant256?: {
+    readonly roles: Readonly<Partial<Record<Role, string>>>
+    readonly topics: Readonly<Record<string, string>>
+  }
+}
+const THEMES: Readonly<Record<ThemeName, Theme>> = CATALOGUE.themes
+const THEME_NAMES = Object.keys(THEMES) as ThemeName[] // Object.keys widens to string[]
+
+/** Decision 9: the pane's default, as the CLI's. */
+export const DEFAULT_PALETTE = 'tokyo-night' satisfies Palette
 
 // §10.2's role table, column by column. `theme` names typed ThemeKeys only (P6, decision 7).
 const THEME = {
@@ -46,35 +58,6 @@ const THEME = {
   text: 'text',
   surface: 'subtle',
 } as const satisfies Record<Role, ThemeKey>
-
-const MOCHA = {
-  accent: '#CBA6F7', // mauve
-  unread: '#F38BA8', // red
-  mention: '#FAB387', // peach
-  held: '#F9E2AF', // yellow
-  ok: '#A6E3A1', // green
-  person: '#89B4FA', // blue
-  group: '#94E2D5', // teal
-  channel: '#89DCEB', // sky
-  bot: '#F5C2E7', // pink
-  saved: '#F9E2AF', // yellow
-  dim: '#6C7086', // overlay
-  subtext: '#A6ADC8', // subtext
-  text: '#CDD6F4', // text
-  surface: '#45475A', // surface
-} as const satisfies Record<Role, string>
-
-// tmux draws 256 colours by `16 + 36·r + 6·g + b`, each channel round(v / 51) (P7):
-// five of mocha's values move so that every role but held/saved lands on a cell of its own.
-const MOCHA256 = {
-  ...MOCHA,
-  unread: '#F37AA8', // 211
-  mention: '#FAAF7A', // 216
-  held: '#F9E6AF', // 229
-  person: '#7AAFFA', // 111
-  channel: '#7ADCEB', // 117
-  saved: '#F9E6AF', // 229
-} as const satisfies Record<Role, string>
 
 // The 16 names, chosen so no two roles merge at 16 colours (T11's measure, §10.2):
 // cyanBright would be cyan, so channel is blueBright; borders are gray, never a black.
@@ -95,34 +78,60 @@ const ANSI = {
   surface: 'gray',
 } as const satisfies Record<Role, string | undefined>
 
-export const PALETTES = {
-  theme: THEME,
-  mocha: MOCHA,
-  mocha256: MOCHA256,
-  ansi: ANSI,
-} as const satisfies Record<Palette, Colors>
+// Telegram's six `icon_color` values, keyed as the catalogue's `topicKeys` (6FB9F0, …).
+const topicKey = (iconColor: number) => iconColor.toString(16).toUpperCase().padStart(6, '0')
+
+// `theme` and `ansi` have no hex, so their topics stay here (§10.2's topic table). Red
+// is redBright (91) apart from unread's red (31); theme's only red key is `error`,
+// unread's own (a known gap, §10.2).
+const CODE_TOPICS = {
+  theme: { '6FB9F0': THEME.person, FFD67E: THEME.held, CB86DB: THEME.accent, '8EEE98': THEME.ok, FF93B2: THEME.bot, FB6F5F: 'error' },
+  ansi: { '6FB9F0': ANSI.person, FFD67E: ANSI.held, CB86DB: ANSI.accent, '8EEE98': ANSI.ok, FF93B2: ANSI.bot, FB6F5F: 'redBright' },
+} as const satisfies Record<'theme' | 'ansi', Record<(typeof CATALOGUE.topicKeys)[number], Color>>
+
+/** What a palette draws: its roles, and its forum topics keyed by `icon_color` (§10.2). */
+type Drawn = { readonly roles: Colors; readonly topics: Readonly<Record<string, Color>> }
+
+// Each theme, then its `<name>256`: the theme with its `variant256` entries over it.
+const FROM_CATALOGUE = THEME_NAMES.flatMap((name): [Palette, Drawn][] => {
+  const { roles, topics, variant256 } = THEMES[name]
+  if (variant256 === undefined) return [[name, { roles, topics }]]
+  // `variant256` is set, so `name` is one of With256, which the type cannot narrow to.
+  const variant = `${name}256` as Palette
+  return [
+    [name, { roles, topics }],
+    [variant, { roles: { ...roles, ...variant256.roles }, topics: { ...topics, ...variant256.topics } }],
+  ]
+})
+
+const DRAWN = Object.fromEntries([
+  ['theme', { roles: THEME, topics: CODE_TOPICS.theme }],
+  ['ansi', { roles: ANSI, topics: CODE_TOPICS.ansi }],
+  ...FROM_CATALOGUE,
+]) as Readonly<Record<Palette, Drawn>> // one entry per Palette: theme, ansi, and FROM_CATALOGUE's
+
+/** The `palette` option's values, as plugin.json lists them: theme, ansi, then each theme and its 256 variant. */
+export const PALETTE_NAMES = Object.keys(DRAWN) as readonly Palette[]
+
+export const PALETTES: Readonly<Record<Palette, Colors>> = Object.fromEntries(PALETTE_NAMES.map(name => [name, DRAWN[name].roles])) as Record<Palette, Colors>
 
 /**
- * A forum topic's `icon_color` (Telegram has six) in each palette (§10.2). Red is
- * maroon, so a topic's dot never reads as an unread count. Any other value draws `dim`.
+ * A forum topic's colour, keyed by palette and then by `icon_color` (Telegram has six).
+ * A catalogue theme's red topic is its second red where it has one, so the dot never
+ * reads as an unread count.
  */
-export const TOPIC_COLOR: Readonly<Record<number, Readonly<Record<Palette, Color>>>> = {
-  0x6fb9f0: { theme: THEME.person, mocha: MOCHA.person, mocha256: MOCHA256.person, ansi: ANSI.person },
-  0xffd67e: { theme: THEME.held, mocha: MOCHA.held, mocha256: MOCHA256.held, ansi: ANSI.held },
-  0xcb86db: { theme: THEME.accent, mocha: MOCHA.accent, mocha256: MOCHA256.accent, ansi: ANSI.accent },
-  0x8eee98: { theme: THEME.ok, mocha: MOCHA.ok, mocha256: MOCHA256.ok, ansi: ANSI.ok },
-  0xff93b2: { theme: THEME.bot, mocha: MOCHA.bot, mocha256: MOCHA256.bot, ansi: ANSI.bot },
-  // Maroon is its own cell (217) in tmux, apart from unread's 211; redBright (91) is apart from red (31).
-  0xfb6f5f: { theme: 'error', mocha: '#EBA0AC', mocha256: '#EBA0AC', ansi: 'redBright' },
-}
+export const TOPIC_COLOR: Readonly<Record<Palette, Readonly<Record<string, Color>>>> = Object.fromEntries(
+  PALETTE_NAMES.map(name => [name, DRAWN[name].topics]),
+) as Record<Palette, Record<string, Color>>
 
+/** A topic's colour in a palette; any `icon_color` outside Telegram's six draws `dim`. */
 export function topicColor(palette: Palette, iconColor: number): Color | undefined {
-  return TOPIC_COLOR[iconColor]?.[palette] ?? PALETTES[palette].dim
+  return TOPIC_COLOR[palette][topicKey(iconColor)] ?? PALETTES[palette].dim
 }
 
 const isPalette = (value: unknown): value is Palette => PALETTE_NAMES.some(name => name === value)
 
-/** The `palette` option as read in `register`; anything else is the default, `theme`. */
+/** The `palette` option as read in `register`; anything else is the default, `tokyo-night`. */
 export function readPalette(value: unknown): Palette {
-  return isPalette(value) ? value : 'theme'
+  return isPalette(value) ? value : DEFAULT_PALETTE
 }

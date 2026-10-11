@@ -106,7 +106,7 @@ import {
   type TitlePart,
 } from './ui/frame'
 import { dockLayout, inlineCardRows, type DockLayout } from './ui/layout'
-import { PALETTES, readPalette, type Colors, type Role } from './ui/palette'
+import { DEFAULT_PALETTE, PALETTES, readPalette, type Colors, type Role } from './ui/palette'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
@@ -222,7 +222,7 @@ const now = atom({ plugin: 'dialogs-pane', key: 'now' } as const, 0)
  * The mod option `palette` (§10.2), read at each load: what each role draws. A
  * component takes it as an argument, beside the element table.
  */
-let colors: Colors = PALETTES.theme
+let colors: Colors = PALETTES[DEFAULT_PALETTE]
 
 export const register: Register = (on, options) => {
   colors = PALETTES[readPalette(options.palette)]

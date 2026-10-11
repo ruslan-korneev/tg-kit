@@ -56,6 +56,10 @@ claude plugin install dialogs-pane-guard@tg-kit
 The pane needs `tg` v0.2.0 or later on PATH (it uses `tg watch` and `tg folders`) and a
 logged-in account (see Log in). `tg folders --help` tells you whether yours has them.
 
+The pane's colours are its `palette` option, a row of `/config`: `tokyo-night` by default, any
+theme `tg themes` shows (see Themes), `NAME256` for tmux, `theme` to follow Claude Code's own
+theme, or `ansi` for a terminal with 16 colours.
+
 ### First run
 
 Type `/tg` in a session. The pane opens on your first Telegram folder. In fullscreen, from 110

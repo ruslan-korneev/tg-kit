@@ -7,6 +7,7 @@
 import type { On, ProcessRunResult, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-code/testing'
 
+import { DEFAULT_PALETTE, PALETTES } from '../hooks/ui/palette'
 import type { TgDialog } from '../types'
 import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, chatIds, chatKey, cornerOf, currentTabOf, findChat, folderRun, legendOf, tabsOf, titleOf, type FolderSpec } from './fixtures'
 
@@ -213,8 +214,8 @@ describe('the CHATS title\'s tabs and the Folders list (§4.7, §10.5)', () => {
     await ui.press({ key: 'digit:4' })
     const channel = await findChat(ui, 1005)
     expect(channel?.text).toMatch(/ 14$/)
-    expect(JSON.stringify(channel)).toContain('"color":"inactive"')
-    expect(JSON.stringify(channel)).not.toContain('"color":"error"')
+    expect(JSON.stringify(channel)).toContain(`"color":"${PALETTES[DEFAULT_PALETTE].dim}"`)
+    expect(JSON.stringify(channel)).not.toContain(`"color":"${PALETTES[DEFAULT_PALETTE].unread}"`)
     await ui.unmount()
   })
 
