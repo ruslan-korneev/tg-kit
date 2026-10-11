@@ -5,7 +5,7 @@ How the dialogs pane should look and respond, from the first `/tg` to `delegate`
 keymap (§4) and modes (§2). The engines stay as built: the packet, the watch hub, the Speaker, the
 Worker and the guard do not change. What changes is how a person finds them and drives them.
 
-Status: design. Nothing here is built yet; §8 splits the work into tasks.
+Status: design; §8 splits the work into tasks, built one at a time.
 
 ## 0. The new model in one paragraph
 
@@ -31,13 +31,15 @@ above the prompt.
 - Live: the mods from this branch under `claude --plugin-dir`, the installed copies switched off
   with `--settings`, a fake `tg` on PATH (placeholder chats only: @example_bot, Dev Team, Contact
   A/B, Announcements, BotFather), in two terminals: fullscreen 180×50 (the pane docks at 64
-  columns) and the main screen at 100×40 (the pane sits inline, 12 rows). Appendix A has the set-up.
+  columns) and the main screen at 100×40 (the pane sits inline, up to 12 rows). Appendix A has the
+  set-up.
 - Second pass (what goes where, folders): every key checked against the kinds of chat it can work
   in, in the code; and the owner's account read once, read-only, and counted, never named:
   `tg raw messages.GetDialogFilters` (the folder list, without titles) and `tg dialogs --limit 50`
   and `--limit 200` (kinds and unread). The pane's store files were read for which keys hold
   anything. §2.2 and §4.6–4.7 have the counts.
-- A throwaway probe mod checked the engine surfaces this design leans on. All five worked:
+- Throwaway probe mods checked the engine surfaces this design leans on. All six worked; the last
+  row is T1's probe:
 
 | Surface | Result |
 | --- | --- |
@@ -46,6 +48,7 @@ above the prompt.
 | `UserMessage` | a packet the pane sent draws as one row; ctrl+o still shows the whole `<tg-packet>` |
 | `Pane` `isFocused` | flips on ctrl+x tab and redraws, so the pane can say who holds the keys |
 | `Select` | draws `web: read-only ▾`; focused, it opens a list; ⏎ picks |
+| `Button` `hotkey` in a Box drawn `display: "none"` | pressed while the pane holds the keys, as a drawn one is; so is one in a 0×0 Box. The engine's docs do not promise it (the Button doc says only "while the plugin's site holds the focus"), so it is an assumption: §6 leans on it, Appendix A checks it after every engine upgrade |
 
 ## 2. Audit of today's UX
 
@@ -202,8 +205,8 @@ nearly everything; and the owner's own way of sorting Telegram, folders, is not 
    bar when it does not.
 6. **Calm by default.** Dim text for state, color only for what needs attention, the yellow status
    line only for alarms.
-7. **The engine decides the seat; the pane fits it.** No mode to pick: dock gets two columns,
-   inline gets one, closed is Hidden.
+7. **The engine decides the seat; the pane fits it.** No mode to pick: the dock shows Chats above
+   the open chat, inline one view at a time, closed is Hidden.
 8. **Telegram's own order first.** The owner's folders, in the order Telegram keeps them, are the
    way into chats; the pane's own views come after them, never instead of them.
 
@@ -343,8 +346,10 @@ Why the dashes:
   the `--wait` and privacy reasons still hold there. Bot testing in groups can come later, when the
   owner asks for it.
 
-**The action bar, by context** (dock; seven at most; `0` joins while something runs, from the
-running strip in the dock):
+**The action bar, by context** (dock). Seven keys at most, `0` and `m` included. While something
+runs, `0: stop all` joins before `m: menu`; when that makes eight, the last verb moves to the menu
+(never ⏎, `h`, `u`, `0` or `m`). In the dock the running strip carries `0` instead (§5.6), never
+both: one Button per hotkey.
 
 | Context | Action bar |
 | --- | --- |
@@ -560,8 +565,11 @@ Wide · the same pane while the prompt holds the keys
 └────────────────────────────────────────────────────────────────┘
 ```
 
+The compact mockups, here and in the flows below, draw the whole 12-row room. The pane itself is
+only as tall as what it holds (§7.3), so their empty rows are not drawn.
+
 ```text
-Compact · inline, 100 columns, 12 rows · chats in the Work folder
+Compact · inline, 100 columns, up to 12 rows · chats in the Work folder
 ╭───────────────────────────────────────────────────────────────────────────────────────────────✕─╮
 │ tg  1: Personal  2: ‹Work 3›  3: Clients  4: Family  5: News  +10     ⟳1 ↯1 · 2 for you   ● keys │
 │ ▸ ⟳ # Dev Team                                                                ◎     5      20:59 │
@@ -574,7 +582,7 @@ Compact · inline, 100 columns, 12 rows · chats in the Work folder
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│ ⏎ open  h: folders  s: search  t: summary  w: watch  a: agent  0: stop all  m: menu              │
+│ ⏎ open  h: folders  s: search  t: summary  w: watch  0: stop all  m: menu                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -592,7 +600,7 @@ Compact · a bot thread (chips sit on the message row from 90 columns)
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│ ⏎ send…  1-2: press  n: write  r: rec  x: mark  a: agent  h: chats  m: menu                      │
+│ ⏎ send…  1-2: press  n: write  r: rec  x: mark  h: chats  m: menu                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -857,7 +865,7 @@ Flow 2 · Compact · recording, latency on each reply
 │                                                                                                  │
 │                                                                                                  │
 │ pressed Retry → edited in place · the bot said "Saved"                                           │
-│ ⏎ send…  1: press  n: write  r: stop rec  f: diff  x: mark  h: chats  m: menu                    │
+│ ⏎ send…  1: press  n: write  r: stop rec  f: diff  h: chats  m: menu                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1073,7 +1081,7 @@ Flow 5 · Wide · a task runs: one line in the strip, the card on top of its thr
 │  … edit src/pay/webhook.py                                     │
 │  chat: "on it, will send a PR link today" (14:10)              │
 │   14:09 Contact B could you add a payment provider?            │
-│⏎ send…  a: agent  l: activity  0: stop all  m: menu            │
+│⏎ send…  a: agent  l: activity  m: menu                         │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1143,7 +1151,7 @@ Flow 6 · Compact · 0: stop all sits in the action bar while anything runs
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│ ⏎ open  h: folders  s: search  t: summary  w: watch  a: agent  0: stop all  m: menu              │
+│ ⏎ open  h: folders  s: search  t: summary  w: watch  0: stop all  m: menu                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1211,6 +1219,13 @@ In the pane; the band uses the same letters for the same things.
 | `l` | activity: running and log | chats |
 | `g` | reload, retry after an error | error rows |
 | `c` | not bound (kept free) | — |
+
+Keys the action bar does not show stay live: the frame keeps their Buttons in a Box drawn
+`display: "none"`, so `j`, `q` or `p` work without opening the menu, and the menu teaches them.
+The engine presses hidden Buttons, but its docs do not promise it (§1). If a release stops, those
+keys work from the menu only until the frame draws them on a dim second row under the bar.
+Appendix A's check after every engine upgrade finds that; no unit test can, since
+`claude-code/testing` presses a Button by its key, not by its hotkey.
 
 Band (after ctrl+x tab): ⏎ the item's action · `e` edit · `d` drop or dismiss · `o` open in the
 pane · `u` undo · `j` `k` next and previous item.
@@ -1281,7 +1296,8 @@ titles, never a second row, and `s: search` moves to the action bar.
 
 Budgets: the dock spends at most three rows on chrome (header, folder strip while in Chats, action
 bar) plus what is temporary (running strip, a sheet, one notice). Inline spends two (header with
-the strip, action bar).
+the strip, action bar). Inline, the frame is as tall as what it holds, up to the room
+(`scroll.bodyRows`): the engine fits an inline frame to its tree, and `height` does not pad it.
 Cards align their labels in a 7-column left column (`brief`, `limits`, `asks`, `writes`, `grant`,
 `stops`, `guard`).
 
@@ -1305,8 +1321,9 @@ Cards align their labels in a 7-column left column (`brief`, `limits`, `asks`, `
 
 Tasks for builder agents, each on its own branch from `design/pane-ux` (the doc is its spec), in
 its own worktree, with the repo's checks (`tsc -p mods/dialogs-pane`, `claude plugin validate`,
-`claude plugin test`, `uv run pytest`) and a live run on the fake tg at 64-column dock and 100×12
-inline. Each keeps its `$` code in its marked block of `register.tsx` as today.
+`claude plugin test`, `uv run pytest`) and a live run on the fake tg at a 64-column dock and a
+100-column inline pane (up to 12 rows). Each keeps its `$` code in its marked block of
+`register.tsx` as today.
 
 ```text
 T0a fake tg          ─┐
@@ -1321,9 +1338,11 @@ T1 frame, keys, menu, focus ──┬─▶ T2 send sheet ──┬─▶ T6 bot
                               └─▶ T9 folders, For you (needs T8b) ─────┘
 ```
 
-With one builder at a time: T0b, T0c, T0d, T1, T4, T2, T8, T8b, T9, T5, T3, T6, T7. Safety first,
-then the flow the owner uses most (send), then the owner's folders, then what runs at a glance,
-then the agent card.
+With one builder at a time, after T0b, T0c, T0d, T8, T8b and T1: T2, T4, T9, T5, T3, T6, T7.
+Safety came first. Send is next, the flow the owner uses most: T0b and T1 already stop every
+autopilot and Worker (`0`, `/tg stop`), and what T4 adds (the running strip, names, follows in `0`,
+Activity) touches no Telegram write, so it can follow T2, which needs nothing from T4. Then the
+owner's folders, what runs at a glance, the agent card.
 
 **T0a — a fake tg for live runs** (½ h, optional). `mods/dialogs-pane/dev/fake-tg` answering
 `dialogs`, `read`, `msg`, `whoami`, `allow list`, `send` (with `--dry-run`), `press`, `delete` and
@@ -1366,9 +1385,9 @@ BotFather runs nothing.
 - `hooks/ui/frame.tsx`: Header (location, the §4.5 summary, `● keys` from `e.props.isFocused`),
   ActionBar (replaces HintsRow), Notice, Menu, and slots for the sheet, card, activity and diff that
   T2–T6 fill.
-- Layout by `e.props.placement`: dock (two columns) and inline (one view), sized by `bodyColumns`
-  and `scroll.bodyRows`. Remove the mode cycle; `/tg` opens, `q` and ✕ hide; `/tg wide|compact`
-  stay as aliases of `/tg`, `/tg hidden` of `/tg hide`.
+- Layout by `e.props.placement`: dock (Chats above the open chat) and inline (one view), sized by
+  `bodyColumns` and `scroll.bodyRows`. Remove the mode cycle; `/tg` opens, `q` and ✕ hide;
+  `/tg wide|compact` stay as aliases of `/tg`, `/tg hidden` of `/tg hide`.
 - The ring stays on the cursor row after every action; only the active column's digits are
   hotkeys; the always-on tray goes (a one-row marks line shows while messages are marked).
 - Until T2 lands, ⏎ on a message opens today's route picker.
@@ -1386,7 +1405,8 @@ BotFather runs nothing.
   people template next to the bot one; Draft reply only where the owner can write and a person
   reads.
 - `a`: targets from the radar, + new agent, ⇉ several (legs on digits; `0` is no longer "+ new
-  agent"). `i`: inspect (packet facts, masks, a per-packet redaction toggle).
+  agent"). `i`: inspect (packet facts, masks, a per-packet redaction toggle); the sheet's digits
+  replace any intent cycling T1's interim picker kept on `i`.
 - `▪` marks; "mark the whole loaded thread" in the menu; the band's ⏎ names its intent.
 - Tests: `⏎ 1` sends one Fix packet to main; `⏎ ⏎` repeats the last intent; Ask + words; `⏎ a 2 4`;
   a person's message offers Do it, Explain, Draft reply, Ask, and a channel post no Draft reply;
@@ -1421,7 +1441,8 @@ BotFather runs nothing.
 
 **T4 — running, activity, the kill switch** (1 day; after T1).
 - `0` stops every follow, autopilot and Worker, drawn red only while something runs.
-- On top of T0b: `/tg stop` answers with what stopped, by name, and `0` moves into the frame.
+- On top of T0b and T1: `/tg stop` answers with what stopped, by name. T1 draws `0` in the action
+  bar in both seats; in the dock it moves to the running strip (§4.6), never on both.
 - The running strip (dock, one row) and counts (inline); task cards leave the top of the pane: one
   line in the strip, the full card on top of their chat's thread.
 - Activity (`l`): running rows (⏎ opens their card or task) and one log merged by time (packets,
@@ -1679,3 +1700,6 @@ Decided by the owner after the second pass (2026-10-10):
   `folders [--counts | --chats] --json` and `dialogs --folder ID --limit N --json`, with
   placeholder folders.
 - Driving it: `tmux send-keys`, `tmux capture-pane -p` (`-e` shows the ring as inverse).
+- After every engine upgrade, with the pane holding the keys and the menu closed: `j` moves the
+  cursor, `p` in a bot chat puts `⌁1` in the header (`p` again stops it), `q` hides the pane. If
+  one does nothing, the engine no longer presses hidden Buttons (§1, §6).
