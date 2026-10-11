@@ -1758,6 +1758,26 @@ carries the inline `↑ N moved`).
   - Appendix A's live check, with a watched chat writing while the cursor is in Chats: the
     inverse ring stays on ▸.
 
+**T10 — hard stops see through launchers** (½ day; after the delegate guard).
+In both `stops.ts` copies (under `mods/dialogs-pane` and `mods/dialogs-pane-guard`).
+The grant's reader was taught to follow `uv run`, `uvx`, `pipx run`, `sh -c`, `eval`, `find -exec`
+and `git rebase -x` (decision 11, X3), but the hard-stop reader (`callHits` → `bashHits`) was not:
+it still reads one command's own words. So a publish, share or delete behind a launcher does not
+ask. `uv run gh pr merge`, `uvx --from … gh pr merge` and `sh -c 'gh pr merge'` raise no `publish`
+stop today; the `share` check also misses an input redirect (`mail you@host < secret`) and a send
+behind a launcher.
+- `bashHits` reads each simple command the way the grant does: reuse `readCommand` and the
+  launcher unwrapping (`launched`) from `shell.ts`, so `gh pr merge` behind a launcher is the
+  command the forge list sees. Keep it one reader, used by both the grant and the stops.
+- The `share` check reads a file named after `<`, `<<` or `<<<` as it reads one after `>`: a
+  redirect target is a path either way (`mail … < ~/.ssh/id_rsa`).
+- Tests: `uv run gh pr merge`, `uvx gh pr merge`, `sh -c 'gh pr merge'` and `git push` behind a
+  launcher each raise their stop; `mail you@host < secret` raises `share`; a plain local command
+  behind a launcher (`uv run pytest`) raises none.
+- Out of scope, the same as decision 11's `any` limit: a launcher nested past the reader's depth,
+  and code the Worker writes and runs. Those fail closed in the grant (`isTooDeep`); the stops
+  should fail the same way — an unreadable command that could publish or share asks.
+
 Conflict points between parallel tasks: `keys.ts` (each task adds its rows), the Pane render's
 slots (T1 makes them), `types/index.d.ts` (marked blocks, as today).
 
@@ -1831,14 +1851,20 @@ Decided by the owner during the build (2026-10-11):
     `checks`, a redirect attached to its path got through as well. The guard now refuses a
     Worker's Bash command in both modes, before it reads the mode, when one of its simple
     commands, after the wrappers, `sh -c` and `eval` the grant already reads:
-    - runs tg: a program named `tg` at any path; the same behind a launcher (`uv run`,
+    - runs tg: a program named `tg` at any path; the same after a wrapper (`sudo`, `env`, `xargs`
+      and the like), whose own value-taking options are read past so the command behind them is
+      seen (`xargs -I {} tg …`, `xargs -E end tg …`); the same behind a launcher (`uv run`,
       `uv tool run`, `uvx`, `pipx run`, with their options); or Python on tg-kit's code
       (`python -m tg_kit…`, or a `-c` text that names `tg_kit`);
     - names a path inside TG_KIT_CONFIG_DIR (`~/.config/tg-kit` by default) that is outside the
       Worker's own worktrees, which live there. Any position counts: an operand, an option's
       value (`--output=…`, `-o…`), or a redirect target, attached (`>>~/.config/tg-kit/allow.toml`)
       or not. `~`, `$HOME` and `$TG_KIT_CONFIG_DIR` are resolved for it. Reads count too, since a
-      Bash word does not say which it is.
+      Bash word does not say which it is;
+    - makes a symbolic link out of the Worker's reach: an `ln` (with or without `-s`) whose link
+      target or whose new link name resolves outside the worktrees. The check cannot follow a
+      link (the hooks have no file system), so a write through one would see only the link's own
+      path; refusing the link where it is made closes that at the source.
 
     The grant reads every place a command can name a path, in both modes (the T3 review's X3).
     The checkout rule (both modes), the worktree rule (`checks`) and the config rule above all
@@ -1858,10 +1884,17 @@ Decided by the owner during the build (2026-10-11):
 
     Edit, Write and Read already stay inside the worktrees. This is a refusal, not a hard stop:
     there is no dialog and nothing to skip. The Worker is told to go on without it or to end with
-    `FAIL: …`, as for the grant's other refusals. The limit, said plainly: under `any` the rule
-    stops the plain ways, not code the Worker writes and runs, such as a script or an encoded
-    command. Only a sandbox outside the mod would stop that. Decision 9's list of what allow.toml
-    gates loses the Worker: its words reach the chat only through the Speaker.
+    `FAIL: …`, as for the grant's other refusals. Decision 9's list of what allow.toml gates loses
+    the Worker: its words reach the chat only through the Speaker.
+
+    The limit, said plainly. Under `checks` the reader fails closed: a word it cannot resolve (an
+    expansion, an unknown command) is refused, so tg and the config directory are shut tight
+    there. Under `any` it does not — anything it cannot resolve is the permission rules' call, a
+    bypass session's yes. So the "both modes" closure of tg and the config directory holds for a
+    path written out or built from `~`, `$HOME` or `$TG_KIT_CONFIG_DIR`; a path through another
+    variable (`$XDG_CONFIG_HOME/tg-kit`), code the Worker writes and runs, or an encoded command
+    can still reach them under `any`. Only a sandbox outside the mod would stop that. Appendix A
+    lists what stays the rules' call under `any`.
 
 ## 10. Rejected
 
@@ -1917,3 +1950,20 @@ Decided by the owner during the build (2026-10-11):
   empty: `a 4 ⏎`, then ⏎ in the dialog (No). The pane holds the keys and the ring is on the card's
   ⏎. Then ⏎ `2` (Yes): `⟳1` in the strip, and the ring on ▸. If the header reads `ctrl+x tab:
   keys` after either, the keys fell to the prompt (§1, §5.4).
+
+What the guard does not stop under `commands: any` (decision 11), so the owner knows the edge of
+the "both modes" closure. The guard reads the Bash command as text, not a running shell, and under
+`any` what it cannot resolve is the permission rules' call. These reach tg or tg-kit's config even
+so, and only a sandbox outside the mod would close them:
+
+- A path built from a variable the guard does not know (`$XDG_CONFIG_HOME/tg-kit/allow.toml`): it
+  is not `~`, `$HOME` or `$TG_KIT_CONFIG_DIR`, so the guard cannot tell where it lands. Under
+  `checks` the unresolved expansion is refused.
+- Code the Worker writes and then runs: a script it saved, a `python -c` that builds the name
+  `tg` from pieces, an `echo … | sh`. The guard reads one command's words, not a program's effect.
+- A symbolic link the Worker makes by something other than `ln` (a program, a language's own
+  call), then writes through: the guard refuses `ln` out of the worktree, but cannot follow a link
+  it did not see made.
+
+Under `checks` all three are refused: the reader fails closed on an unknown command or an
+unresolved expansion. The grant defaults to `checks`.
