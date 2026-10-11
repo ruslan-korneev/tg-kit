@@ -243,6 +243,10 @@ A numeric id needs an access hash. tg looks it up in the local entity cache firs
 scans the latest 500 dialogs once. If it's still missing, the command exits 4 and suggests
 resolving by `@username`.
 
+A bare positive id that is not a known user is also tried as the channel `-100<id>` and the basic
+group `-<id>`, so the "peer id" a Telegram app shows for a group or channel works as typed. A
+user wins; if a channel and a group both match, tg refuses (exit 2) and lists the marked ids.
+
 ## Output
 
 The default is compact, one line per message, with buttons on indented lines below it:

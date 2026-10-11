@@ -109,8 +109,9 @@ tg watch PEER… [--jsonl] [--since 2h] [--idle-exit 60s] [--topic ID]   # live 
 ```
 
 PEER is any of: `me` (Saved Messages), `@username`, `t.me/name`, `t.me/c/123/45`, a numeric id
-(`-100…` for channels), `+phone` (contacts only), or `title:Chat Name`. Add `--json` when you need
-to parse the output; stdout is then a single JSON document.
+(`-100…` for channels; the bare id a Telegram app shows works too), `+phone` (contacts only), or
+`title:Chat Name`. Add `--json` when you need to parse the output; stdout is then a single JSON
+document.
 
 **Forums** (supergroups with topics; `"forum": true` in `tg dialogs --json`) are one stream
 until you pick a topic. `tg topics PEER` lists them; General is always topic `1`. Each message
