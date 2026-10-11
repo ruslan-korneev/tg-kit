@@ -215,3 +215,27 @@ describe('what runs and the kill switch (§4.6, §5.6, T4)', () => {
     for (const id of ['down', 'up'] as const) expect(exists(keyDef(id), at('activity', null))).toBe(true)
   })
 })
+
+describe('rows that come and go (T4b)', () => {
+  test('the layers: the summary closes with t or h, a drafted reply with h, a field with h', () => {
+    expect(ids(actionBar(at('summary', 'person', { summary: 'ok' })))).toEqual(['summary', 'back', 'menu'])
+    expect(actionBar(at('summary', 'person', { summary: 'ok' })).find(one => one.id === 'back')?.label).toBe('close')
+    expect(ids(actionBar(at('draft', 'person')))).toEqual(['back', 'menu'])
+    // A field holds every printable key; its bar row is the field itself, so only what the ring reaches lives.
+    expect(ids(hiddenKeys(at('field', 'person', { isRunning: true }), new Set()))).toEqual(['back', 'hide', 'stop'])
+  })
+
+  test('e opens a drafted reply from the chats or a chat, and is not listed while none waits', () => {
+    expect(exists(keyDef('edit'), at('chat', 'person'))).toBe(true)
+    expect(ids(hiddenKeys(at('chat', 'person', { hasDraft: true }), new Set()))).toContain('edit')
+    expect(ids(hiddenKeys(at('chat', 'person'), new Set()))).not.toContain('edit')
+    expect(menu(at('chat', 'person')).flatMap(section => section.entries).some(entry => entry.def.id === 'edit')).toBe(false)
+    expect(menu(at('chats', null, { hasDraft: true })).flatMap(section => section.entries).find(entry => entry.def.id === 'edit')?.label).toBe('open draft')
+  })
+
+  test('an open range shows its end on the bar, after ⏎; d dismisses a notice from the chats too', () => {
+    expect(ids(actionBar(at('chat', 'bot', { isRangeOpen: true, marks: 1 }))).slice(0, 2)).toEqual(['send', 'range'])
+    expect(actionBar(at('chat', 'bot', { isRangeOpen: true, marks: 1 })).find(one => one.id === 'range')?.label).toBe('range end')
+    expect(ids(hiddenKeys(at('chats', null, { hasNotice: true }), new Set()))).toContain('dismiss')
+  })
+})

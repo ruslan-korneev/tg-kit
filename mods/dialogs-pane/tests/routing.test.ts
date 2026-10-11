@@ -765,6 +765,9 @@ describe('drafted reply', () => {
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
+    // The draft waits behind its notice (T4b); e opens it.
+    expect((await ui.find({ key: 'notice' }))?.text).toMatch(/^✎ draft for (Contact A|@BotFather) waits · e: open$/)
+    await ui.press({ key: 'key:edit' })
     return { ui, seen }
   }
 
@@ -844,6 +847,8 @@ describe('drafted reply', () => {
     if (second !== 1004) await ui.press({ key: `dialog:${second}` })
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-2' })
+    // The first draft waits behind its notice (T4b); e opens it.
+    await ui.press({ key: 'key:edit' })
     return { ui, seen }
   }
 

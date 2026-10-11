@@ -6,7 +6,7 @@ import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-
 
 import { KEYS, hotkeyTable } from '../hooks/ui/keys'
 import type { TgDialog, TgMessage } from '../types'
-import { DIALOGS, MESSAGES, messagesFor } from './fixtures'
+import { DIALOGS, MESSAGES, PERSON_MESSAGES, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -76,6 +76,8 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
   })
   on('ui.panes', () => ({ value: [] }))
   on('ui.focus', () => ({}))
+  // `t`'s summary: the model's answer, the same for every chat.
+  on('model.complete', () => ({ value: { isAnswered: true, text: '- they ask to call\n- at 10 tomorrow', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } }))
   on('ui.status', (_$, e) => {
     seen.status.push(e.text)
     return { value: undefined }
@@ -350,6 +352,17 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
       ]
     }),
     { name: 'search', props: DOCK, steps: ['key:search'] },
+    // T4b's layers: the send box and the search field in the bar's row, the summary over the lower part, marks on the bar.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        { name: `send box ${seat}`, props, steps: ['dialog:1001', 'key:write'] },
+        { name: `search from a chat ${seat}`, props, steps: ['dialog:1001', 'key:search'] },
+        { name: `summary ${seat}`, props, steps: ['dialog:1004', 'key:summary'] },
+        { name: `summary menu ${seat}`, props, steps: ['dialog:1004', 'key:summary', 'key:menu'] },
+        { name: `marked, range open ${seat}`, props, steps: ['dialog:1001', 'key:mark', 'key:up', 'key:range'] },
+      ]
+    }),
     { name: 'lens editor', props: DOCK, steps: ['key:lenses'] },
     { name: 'lens editor inline', props: INLINE, steps: ['key:lenses'] },
   ]
@@ -493,11 +506,9 @@ describe('a layer opening or closing keeps the ring stops above the chat (the ri
 
   test('the sheet and each of its steps, and the card, open and close over the same stops', async ($, on) => {
     const { ui } = await openPane($, on, DOCK, many)
-    // The search field is up (it sits on top), so the rows on top count as well as the strip.
-    await ui.press({ key: 'key:search' })
+    // Since T4b nothing rides on top of the list: the search field is a layer in the bar's row.
     await openChat(ui, 1001)
     const base = await stopsAbove(ui)
-    expect(await ui.find({ key: 'search' })).toBeDefined()
     for (const steps of [['msg:677792'], ['msg:677792', 'key:agent'], ['msg:677792', 'key:inspect'], ['msg:677792', 'sheet:intent:raw'], ['key:agent']]) {
       for (const key of steps) await ui.press({ key })
       expect(await stopsAbove(ui)).toBe(base)
@@ -626,6 +637,147 @@ describe('Activity (l, §5.7)', () => {
     expect(await ui.find({ key: 'msg:92' })).toBeDefined()
     await ui.unmount()
   })
+})
+
+describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () => {
+  /** Contact A's thread, 40 messages long, theirs: Draft reply is one of its intents. */
+  const PERSON_LONG: TgMessage[] = LONG.map(message => ({ ...message, chat_id: 1004, sender: fixture(PERSON_MESSAGES[1]).sender, out: false }))
+  const stable = (argv: readonly string[]) =>
+    argv[1] === 'read'
+      ? json(argv[2] === '1004' ? PERSON_LONG : LONG)
+      : argv[1] === 'dialogs'
+        ? json(MANY)
+        : argv[1] === 'send'
+          ? failure(1, 'error: the fake refuses sends')
+          : happy(argv)
+
+  // Several heights of each seat: the windows' rounding hides a lost row at some of them.
+  const SEATS = [
+    ...[30, 31, 32, 33].map(bodyRows => ({ name: `dock ${bodyRows} rows`, props: { ...DOCK, scroll: { offset: 0, bodyRows } } })),
+    ...[11, 12, 13].map(bodyRows => ({ name: `inline ${bodyRows} rows`, props: { ...INLINE, scroll: { offset: 0, bodyRows } } })),
+  ]
+
+  /** The pane with main and its turns answered beneath it. */
+  async function openStable($: Engine, on: On, props: RenderPropsOf['Pane']) {
+    on('prompt.submit', (_$, e) => ({ text: e.text }))
+    on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
+    on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+    on('turn.complete', (_$, e) => ({ text: e.answer }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    return openPane($, on, props, stable)
+  }
+
+  /** The ring's place: the cursor row's key, the stops before it, and the first row of each window. */
+  async function place(ui: Ui) {
+    const buttons = (await ui.findAll({ type: 'Button' })).map(one => ({ key: String(one.props.key ?? ''), isFocus: one.props.autoFocus === true }))
+    const key = buttons.find(one => one.isFocus && (one.key.startsWith('msg:') || one.key.startsWith('dialog:')))?.key ?? ''
+    return { key, before: await stopsBefore(ui, key), message: (await rows(ui, 'msg:'))[0], chat: (await rows(ui, 'dialog:'))[0] }
+  }
+
+  /** Under a layer that holds the ring no row of a list is a ring stop; `alsoChats`: the list's rows too. */
+  async function expectStatic(ui: Ui, alsoChats: boolean): Promise<void> {
+    const keys = (await ui.findAll({ type: 'Button' })).map(one => String(one.props.key ?? ''))
+    expect(keys.filter(key => key.startsWith('msg:') || key.startsWith('btn:') || (alsoChats && key.startsWith('dialog:')))).toEqual([])
+  }
+
+  /** ⏎ on the newest message, Draft reply to main, main answers: the draft waits. */
+  async function landDraft($: Engine, ui: Ui, beforeLanding: () => Promise<void> = async () => undefined): Promise<void> {
+    await ui.press({ key: 'msg:700040' })
+    await ui.press({ key: 'sheet:intent:draft_reply' })
+    await $.turn.start({ text: '', turnId: 't-1' })
+    await beforeLanding()
+    await $.turn.complete({ answer: 'Sure, 10 works.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
+  }
+
+  for (const seat of SEATS) {
+    const inline = seat.props.placement === 'inline'
+    test(`${seat.name}, the cursor on the newest of 40 messages: x, n (send, empty), s, t, a draft; nothing above the cursor moves`, async ($, on) => {
+      const { ui, clock } = await openStable($, on, seat.props)
+      await openChat(ui, 1004)
+      const base = await place(ui)
+      expect(base.key).toBe('msg:700040')
+      // x: the marks ride the bar's row.
+      await ui.press({ key: 'key:mark' })
+      expect((await ui.find({ key: 'bar' }))?.text).toContain('▪ 1 marked')
+      expect(await place(ui)).toEqual(base)
+      await ui.press({ key: 'key:back' })
+      // n, a send: the box is in the bar's row, the thread under it static; its notice takes no row of the thread.
+      await ui.press({ key: 'key:write' })
+      await expectStatic(ui, true)
+      await ui.input({ key: 'bt:send', text: 'hello' })
+      await clock.settle()
+      expect(await ui.find({ key: 'notice' })).toBeDefined()
+      expect(await place(ui)).toEqual(base)
+      await ui.press({ key: 'key:dismiss' })
+      expect(await ui.find({ key: 'notice' })).toBeUndefined()
+      // Without d, a notice leaves after 15 s.
+      await ui.press({ key: 'key:write' })
+      await ui.input({ key: 'bt:send', text: 'again' })
+      await clock.settle()
+      expect(await ui.find({ key: 'notice' })).toBeDefined()
+      await clock.advance(15_000)
+      expect(await ui.find({ key: 'notice' })).toBeUndefined()
+      expect(await place(ui)).toEqual(base)
+      // n, ⏎ on the empty box: it closes.
+      await ui.press({ key: 'key:write' })
+      await ui.input({ key: 'bt:send', text: '' })
+      expect(await ui.find({ key: 'bt:send' })).toBeUndefined()
+      expect(await place(ui)).toEqual(base)
+      // s, ⏎ on the field as it opened: it closes, and the cursor stays in the chat.
+      await ui.press({ key: 'key:search' })
+      await expectStatic(ui, true)
+      await ui.input({ key: 'search', text: '' })
+      expect(await ui.find({ key: 'search' })).toBeUndefined()
+      expect(await place(ui)).toEqual(base)
+      // t: the summary is a layer over the lower part; it lands; h closes it.
+      await ui.press({ key: 'key:summary' })
+      await clock.settle()
+      expect((await ui.find({ key: 'summary' }))?.text).toContain('at 10 tomorrow')
+      await expectStatic(ui, inline)
+      await ui.press({ key: 'key:back' })
+      expect(await ui.find({ key: 'summary' })).toBeUndefined()
+      expect(await place(ui)).toEqual(base)
+      // A drafted reply lands: it waits behind its notice; e opens it as a layer, h closes it and it waits on.
+      await landDraft($, ui)
+      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      expect(await place(ui)).toEqual(base)
+      await ui.press({ key: 'key:edit' })
+      expect((await ui.find({ key: 'draft' }))?.text).toContain('reply to #700040 in Contact A')
+      await expectStatic(ui, inline)
+      await ui.press({ key: 'key:back' })
+      expect(await ui.find({ key: 'draft' })).toBeUndefined()
+      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      expect(await place(ui)).toEqual(base)
+      await ui.unmount()
+    })
+
+    test(`${seat.name}, the cursor mid-way down 60 chats: s, a notice, a draft landing, e and h; nothing above the cursor moves`, async ($, on) => {
+      const { ui } = await openStable($, on, seat.props)
+      await openChat(ui, 1004)
+      await ui.press({ key: 'key:follow' })
+      await landDraft($, ui, async () => {
+        await ui.press({ key: 'key:back' })
+        for (let i = 0; i < 5; i++) await ui.press({ key: 'key:down' })
+      })
+      // The draft landed while the cursor was in Chats: compare from there on.
+      const base = await place(ui)
+      expect(base.key).toMatch(/^dialog:/)
+      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      await ui.press({ key: 'key:search' })
+      await expectStatic(ui, true)
+      await ui.input({ key: 'search', text: '' })
+      expect(await place(ui)).toEqual(base)
+      // A notice arrives with no key pressed in the pane: /tg stop says what it stopped.
+      await $.command.run(runTg('stop'))
+      expect((await ui.find({ key: 'notice' }))?.text).toBe('■ stopped: Contact A')
+      expect(await place(ui)).toEqual(base)
+      await ui.press({ key: 'key:edit' })
+      expect(await ui.find({ key: 'draft' })).toBeDefined()
+      await ui.press({ key: 'key:back' })
+      expect(await place(ui)).toEqual(base)
+      await ui.unmount()
+    })
+  }
 })
 
 describe('states', () => {

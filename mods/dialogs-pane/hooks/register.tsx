@@ -23,7 +23,7 @@ import type {
   TgFailure,
   WatchHealth,
 } from '../types'
-import { EmptySavedLens, LensEditor, SummaryBlock, summaryRows, watchMark } from './triage/components'
+import { EmptySavedLens, LensEditor, SummaryBlock, watchMark } from './triage/components'
 import { FIRST_LENS_DIGIT, MAX_LENSES, draftFrom, parseLenses, toggleGroup, togglePicked, upsertLens } from './triage/lenses'
 import { EMPTY_TRIAGE, RECENT, applyToDialogs, applyToMessages, hiddenStatus, latencyText, repliesToYou, reportReply } from './triage/live'
 import { RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, toAsk, verdictKey, type Me } from './triage/needs'
@@ -84,8 +84,9 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, Divider, EmptyLens, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
-import { ActionBar, Frame, Header, HiddenKeys, MarksLine, Menu, NoticeRow, Strip } from './ui/frame'
+import { ActionBar, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, marksLead } from './ui/frame'
 import {
+  BAR_GAP,
   CHAT_KIND_LABEL,
   actionBar,
   chatKind,
@@ -139,6 +140,7 @@ const nav = atom({ plugin: 'dialogs-pane', key: 'nav' } as const, {
   messageStart: 0,
   isMenuOpen: false,
   isSearching: false,
+  isDraftOpen: false,
 })
 const dialogs = atom({ plugin: 'dialogs-pane', key: 'dialogs' } as const, { status: 'idle' })
 const thread = atom({ plugin: 'dialogs-pane', key: 'thread' } as const, null)
@@ -560,7 +562,8 @@ async function selectAtCursor($: $, how: 'toggle' | 'range'): Promise<void> {
 
 /**
  * The view the keys act on, under the menu: a layer (the card, Activity, the
- * send sheet, a diff, the lens editor) or the column the cursor is in.
+ * send sheet, a diff, the lens editor, a drafted reply, the summary, the send
+ * box or the search field) or the column the cursor is in.
  */
 async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   if ((await read($, autopilot)).view.kind === 'card') return 'card' // ── autopilot ──
@@ -569,7 +572,14 @@ async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   if (shown === 'sheet' || shown === 'broadcast') return 'sheet'
   if ((await read($, bottest)).diff !== null) return 'diff'
   if ((await read($, triage)).editor !== null) return 'editor'
-  return (await read($, nav)).view === 'thread' && (await read($, thread)) !== null ? 'chat' : 'chats'
+  // T4b's layers: the drafted reply and the summary over the lower part, a field in the bar's row.
+  const where = await read($, nav)
+  const open = await read($, thread)
+  if (where.isDraftOpen && (await read($, draft)) !== null) return 'draft'
+  const summary = (await read($, triage)).summary
+  if (open !== null && summary !== null && summary.peerId === open.peer.id && where.view === 'thread') return 'summary'
+  if (where.isSearching || (open !== null && (await read($, bottest)).composing)) return 'field'
+  return where.view === 'thread' && open !== null ? 'chat' : 'chats'
 }
 
 /** The chat the keys of `where` act on: the card's, the cursor row's in Chats, else the open one. */
@@ -605,8 +615,9 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       // ── running ── what 0 stops: every follow, autopilot and Worker (§5.6).
       isRunning: pilot.running.length > 0 || (await read($, pins)).length > 0 || tasks.some(isLive),
       hasFinished: tasks.some(task => !isLive(task)),
+      hasDraft: (await read($, draft)) !== null, // ── routing ──
       undoLeft: undoLeft(pilot.undo, Math.max(pilot.now, await $.clock.now())),
-      hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null,
+      hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null || (await stopNoticeNow($, Infinity)) !== null,
       marks: chosen.ids.length,
       isRangeOpen: chosen.anchor !== null,
       hasPair: diffPair(chosen.ids, messages).ok,
@@ -670,7 +681,9 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return ringCursor($)
     case 'summary':
     case 'write': {
-      // From a row in Chats: that chat opens, with its summary on top or the send box under it.
+      // On the summary, t retries one that failed and otherwise closes it, as h does.
+      if (where === 'summary') return (await read($, triage)).summary?.status === 'error' ? toggleSummary($) : back($)
+      // From a row in Chats: that chat opens, with its summary over the lower part or the send box in the bar's row.
       const dialog = where === 'chats' ? await cursorDialog($) : undefined
       if (where === 'chats' && dialog === undefined) return
       if (dialog !== undefined) await openThread($, dialog)
@@ -690,11 +703,13 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'lenses':
       return where === 'editor' ? saveLens($) : openLensEditor($)
     case 'edit':
-      return moveRing($, 'ap:tone')
+      return where === 'card' ? moveRing($, 'ap:tone') : openDraft($)
     case 'dismiss':
       if (where === 'card') return apNotice($, null)
       if (where === 'activity') return dismissEnded($)
+      // The notice row's notice: a write's result, or what 0 stopped.
       await update($, bottest, value => ({ ...value, notice: null }))
+      await update($, lastStop, () => null) // ── running ──
       return
     case 'undo':
       await apUndo($)
@@ -746,9 +761,13 @@ async function back($: $): Promise<void> {
     await update($, bottest, value => ({ ...value, diff: null }))
   } else if (where === 'editor') {
     await update($, triage, value => ({ ...value, editor: null }))
-  } else if ((await read($, nav)).isSearching) {
+  } else if (where === 'draft') {
+    // It waits on: its notice says e: open.
+    await update($, nav, value => ({ ...value, isDraftOpen: false }))
+  } else if (where === 'summary') {
+    await hideSummary($)
+  } else if (where === 'field') {
     await update($, nav, value => ({ ...value, isSearching: false }))
-  } else if ((await read($, bottest)).composing) {
     await update($, bottest, value => ({ ...value, composing: false }))
   } else {
     const chosen = await read($, selection)
@@ -760,13 +779,21 @@ async function back($: $): Promise<void> {
 
 /** `s`: the search field, ringed so the letters type into it. */
 async function startSearch($: $): Promise<void> {
-  await update($, nav, value => ({ ...value, view: 'dialogs', isSearching: true, isMenuOpen: false }))
+  await update($, nav, value => ({ ...value, isSearching: true, isMenuOpen: false }))
   // $.ui.focus waits, bounded, for the field to be drawn.
   await moveRing($, 'search')
 }
 
+/**
+ * The search field's ⏎: a new query filters every chat and puts the cursor on
+ * the first; the same one (⏎ on the field as it opened) only closes it, so the
+ * cursor and its window stay where they were (§4.3 rule 1).
+ */
 async function submitSearch($: $, query: string): Promise<void> {
-  await update($, nav, value => ({ ...value, view: 'dialogs', query: query.trim(), dialogCursor: 0, isSearching: false }))
+  const asked = query.trim()
+  await update($, nav, value =>
+    asked === value.query ? { ...value, isSearching: false } : { ...value, view: 'dialogs', query: asked, dialogCursor: 0, isSearching: false },
+  )
   await ringCursor($)
 }
 
@@ -783,7 +810,7 @@ async function dismissBand($: $): Promise<void> {
   await refreshStatus($)
 }
 
-// --- the frame: header, strip, the view's slot, temporary rows, the bar ---
+// --- the frame: header, strips, the view's slot, the notice row (inline), the bar or a layer in its row ---
 
 type Seating = { seat: Seat; width: number; rows: number; isFocused: boolean }
 
@@ -799,7 +826,10 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const context = await keyContext($, seat, where)
   const barContext: KeyContext = isMenu ? { ...context, where: 'menu' } : context
   const onKey = (id: RunKey) => runKey($, id)
-  const bar = actionBar(barContext, width)
+  const chosen = await read($, selection)
+  // The marks ride the bar's row (T4b): `▪ 3 marked` leads it, and the verbs get what is left.
+  const lead = !isMenu && where === 'chat' ? marksLead(chosen.ids.length) : null
+  const bar = actionBar(barContext, width - (lead === null ? 0 : lead.length + BAR_GAP))
   const isBase = where === 'chats' || where === 'chat'
   // Inline Chats: the strip shares the header row; the dock gives it a row of its own.
   const isInlineChats = seat === 'inline' && where === 'chats' && !isMenu
@@ -814,23 +844,25 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   // above the cursor nor the lists' windows change with it (§4.3 rule 1). Inline the header counts.
   const running = seat === 'dock' && !isMenu ? await drawRunningStrip($, els, width) : null
   const runningRows = seat === 'dock' ? RUNNING_ROWS : 0
-  const none = { elements: [], rows: 0 }
-  // The search field stays over every layer: it sits above the cursor row, which keeps its ring (see search).
-  const top = isMenu || where === 'editor' ? none : await drawTop($, els)
-  const temps = isMenu || !isBase ? none : await drawTemps($, els, where, width)
+  // Inline, the windows always leave a row for a notice (T4b): the frame fits its content, so the
+  // row costs nothing while it is empty, and one arriving takes no row from a list.
+  const notice = seat === 'inline' && !isMenu ? await drawNoticeRow($, els, width) : null
+  const noticeRows = seat === 'inline' ? 1 : 0
   // The send sheet's intents and Ask field take the bar's place (§5.1): four rows docked, two inline.
+  // The send box and the search field are layers in the bar's own row (T4b).
   const shown = await read($, overlay)
   const sheetBar = isMenu || where !== 'sheet' ? null : await drawSheetBar($, els, seat, width, seating.isFocused)
+  const fieldBar = isMenu || where !== 'field' ? null : await drawFieldBar($, els)
   const isAsking = shown.kind === 'sheet' && shown.step === 'ask'
   const sheetRows = sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
-  const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + runningRows + top.rows + temps.rows
+  const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + runningRows + noticeRows
   const room = Math.max(3, rows - chrome)
   const slot = isMenu
     ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
     : seat === 'dock'
-      ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - runningRows - top.rows))
+      ? await drawDock($, els, where, width, room, Math.max(3, rows - 2 - (strip === null ? 0 : 1) - runningRows))
       : await drawInline($, els, where, width, room)
-  const drawn = new Set(sheetBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
+  const drawn = new Set(sheetBar === null && fieldBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
   if (strip !== null && search === 'key') drawn.add('s')
   // Views that draw a key of the table themselves: the lens editor's save, the sheet's a, i and h.
   if (!isMenu && where === 'editor') drawn.add('z')
@@ -852,10 +884,9 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
     }),
     running,
     strip: isInlineChats ? null : strip,
-    top: top.elements,
     slot,
-    temps: temps.elements,
-    bar: sheetBar ?? ActionBar(els, { keys: bar, isFocused: seating.isFocused, onKey }),
+    notice,
+    bar: sheetBar ?? fieldBar ?? ActionBar(els, { keys: bar, lead, isFocused: seating.isFocused, onKey }),
     hidden: HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey }),
   })
 }
@@ -891,6 +922,12 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
       return 'tg › activity'
     case 'editor':
       return 'tg › lens'
+    case 'summary':
+      return `tg › summary · ${label}`
+    case 'draft':
+      return `tg › draft · ${(await read($, draft))?.peer.label ?? label}`
+    case 'field':
+      return (await read($, nav)).isSearching ? 'tg › search' : `tg › ${label}`
     case 'menu':
     case 'band':
       return 'tg'
@@ -945,74 +982,66 @@ async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key'
   })
 }
 
-/** On top: the search field while it is up. A task's card sits on top of its chat's thread (T4). */
-async function drawTop($: $, els: Els): Promise<{ elements: RenderElement[]; rows: number }> {
-  const where = await read($, nav)
+/**
+ * The send box (`n`) or the search field (`s`), in the bar's row (T4b, as the
+ * send sheet's Ask field): it adds no row, the lists under it are drawn
+ * without ring stops while it holds the ring (§4.3 rule 3), and ⏎ on it empty
+ * closes it. Null without an Input (a surface that has none).
+ */
+async function drawFieldBar($: $, els: Els): Promise<RenderElement | null> {
   const Input = 'Input' in els ? els.Input : undefined
-  const search =
-    where.isSearching && Input !== undefined
-      ? [<Input key="search" label="search" placeholder="title or @name; empty clears" value={where.query} submitLabel="filter" onSubmit={value => submitSearch($, value)} />]
-      : []
-  return { elements: search, rows: search.length }
+  if (Input === undefined) return null
+  const where = await read($, nav)
+  if (where.isSearching) {
+    return <Input key="search" label="search" placeholder="title or @name; empty clears and closes" value={where.query} submitLabel="filter" onSubmit={value => submitSearch($, value)} />
+  }
+  const open = await read($, thread)
+  return open === null ? null : SendBox(els, { peer: open.peer.label, onSend: text => sendText($, text) })
 }
 
-/** Rows that come and go under the view: a drafted reply, the marks, the send box, one notice. */
-async function drawTemps($: $, els: Els, where: Where, width: number): Promise<{ elements: RenderElement[]; rows: number }> {
-  const elements: RenderElement[] = []
-  let rows = 0
-  const replyDraft = await read($, draft) // ── routing ──
-  if (replyDraft !== null) {
-    elements.push(
-      DraftRow(els, {
-        draft: replyDraft,
-        width,
-        onCheck: () => checkDraft($),
-        onSend: () => sendDraft($),
-        onDrop: () => update($, draft, () => null),
-        onEdit: text => update($, draft, value => (value === null ? null : { ...value, text, step: { kind: 'draft' } })),
-      }),
-    )
-    rows += 3 + (replyDraft.step.kind === 'planned' ? Math.ceil(replyDraft.text.length / Math.max(10, width)) : 1)
-  }
-  const chosen = await read($, selection)
-  if (where === 'chat' && (chosen.ids.length > 0 || chosen.anchor !== null)) {
-    elements.push(MarksLine(els, { count: chosen.ids.length, isRangeOpen: chosen.anchor !== null }))
-    rows += 1
-  }
+/**
+ * The notice the pane shows now: what a write is doing (`… pressing`), what it
+ * brought back or why it was refused, what `0` stopped, a drafted reply that
+ * waits. The dock draws it in the running strip's row, inline in the notice row.
+ */
+async function noticeNow($: $, width: number): Promise<Notice | null> {
   const bt = await read($, bottest)
-  const open = await read($, thread)
-  const box = bt.composing && open !== null ? SendBox(els, { peer: open.peer.label, onSend: text => sendText($, text) }) : null
-  if (box !== null) {
-    elements.push(box)
-    rows += 1
-  }
-  const notice = bt.busy !== null ? { tone: 'info' as const, text: `${GLYPH.working} ${bt.busy}` } : bt.notice
-  if (notice !== null && open !== null) {
-    elements.push(NoticeRow(els, { notice }))
-    rows += Math.ceil(notice.text.length / Math.max(10, width))
-  }
-  return { elements, rows }
+  if (bt.busy !== null) return { tone: 'info', text: `${GLYPH.working} ${bt.busy}` }
+  if (bt.notice !== null) return bt.notice
+  const stop = await stopNoticeNow($, width) // ── running ──
+  if (stop !== null) return stop
+  const replyDraft = await read($, draft) // ── routing ──
+  return replyDraft === null || replyDraft.step.kind === 'sent' ? null : { tone: 'warn', text: `${LEVEL_GLYPH.draft} draft for ${replyDraft.peer.label} waits · e: open` }
+}
+
+/** Inline's notice row: one row the windows always leave free. */
+async function drawNoticeRow($: $, els: Els, width: number): Promise<RenderElement | null> {
+  const notice = await noticeNow($, width)
+  return notice === null ? null : NoticeRow(els, { notice })
 }
 
 /**
  * Dock: Chats on top, the open chat or a layer below. The list's height comes
- * from `listRoom`, the room without the rows that come and go (the sheet, the
- * temporary rows): the engine keeps the ring by its place among the Buttons,
+ * from `listRoom`, the room without the sheet's rows: the engine keeps the
+ * ring by its place among the Buttons,
  * so the chats above must not change in number when a layer opens or closes.
  */
 async function drawDock($: $, els: Els, where: Where, width: number, room: number, listRoom: number): Promise<RenderElement[]> {
   const open = await read($, thread)
   const listLength = (await shownDialogs($)).length
   const listRows = Math.min(Math.max(1, listLength), Math.max(3, Math.floor(listRoom * 0.4)))
-  const list = where === 'editor' ? [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one])) : await drawDialogList($, els, width, listRows, where === 'chats')
+  // Under the send box or the search field the list is drawn without ring stops (§4.3 rule 3).
+  const mode = where === 'chats' ? 'active' : where === 'field' ? 'static' : 'idle'
+  const list = where === 'editor' ? [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one])) : await drawDialogList($, els, width, listRows, mode)
   if (where === 'editor') return list
   const lower = Math.max(1, room - listRows - 1)
   return [...list, Divider(els, { label: await dividerLabel($), width }), ...(await drawLower($, els, 'dock', where, width, lower, open !== null))]
 }
 
-/** Inline: one view at a time. */
+/** Inline: one view at a time; a field in the bar's row shows the column it works on, without ring stops. */
 async function drawInline($: $, els: Els, where: Where, width: number, room: number): Promise<RenderElement[]> {
-  if (where === 'chats') return drawDialogList($, els, width, room, true)
+  if (where === 'chats') return drawDialogList($, els, width, room, 'active')
+  if (where === 'field' && (await read($, nav)).isSearching) return drawDialogList($, els, width, room, 'static')
   if (where === 'editor') return [await drawLensEditor($, els, room)].flatMap(one => (one === null ? [] : [one]))
   return drawLower($, els, 'inline', where, width, room, true)
 }
@@ -1038,17 +1067,22 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
       const diff = await drawBottestDiff($, els, width, rows)
       return diff === null ? [] : [diff]
     }
+    case 'summary': {
+      const summary = await drawSummary($, els, width) // ── triage ──
+      return summary === null ? [] : [summary]
+    }
+    case 'draft': {
+      const view = await drawDraft($, els, width) // ── routing ──
+      return view === null ? [] : [view]
+    }
     case 'chats':
-    case 'chat': {
+    case 'chat':
+    case 'field': {
       if (!isOpen) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
-      const summary = await drawSummary($, els, width)
       // ── delegate ── the chat's task card, on top of its thread; a delegate chat keeps its rows (see drawChatTask).
       const task = await drawChatTask($, els, width, seat, rows)
-      return [
-        ...(summary.element === null ? [] : [summary.element]),
-        ...task.elements,
-        ...(await drawThread($, els, width, Math.max(1, rows - summary.rows - task.rows), where === 'chat' ? 'active' : 'idle')),
-      ]
+      const mode = where === 'chat' ? 'active' : where === 'field' ? 'static' : 'idle'
+      return [...task.elements, ...(await drawThread($, els, width, Math.max(1, rows - task.rows), mode))]
     }
     case 'editor':
     case 'menu':
@@ -1069,7 +1103,11 @@ async function dividerLabel($: $): Promise<string> {
   return `${open.peer.label} · ${kind}${isWatched ? ' · ◎ watched' : ''}${follow}${live}`
 }
 
-async function drawDialogList($: $, els: Els, width: number, rows: number, isActive: boolean): Promise<RenderElement[]> {
+/**
+ * `active`: the cursor's column, its row ringed. `idle`: the chat holds the
+ * cursor. `static`: under the send box or the search field, ▸ shown and no ring stops.
+ */
+async function drawDialogList($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static'): Promise<RenderElement[]> {
   const load = await read($, dialogs)
   const where = await read($, nav)
   const at = await read($, now)
@@ -1088,7 +1126,8 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, isAct
   return shown.items.map((dialog, index) =>
     DialogRow(els, {
       dialog,
-      isCursor: isActive && shown.start + index === cursor,
+      isCursor: mode !== 'idle' && shown.start + index === cursor,
+      isStatic: mode === 'static',
       isOpen: open?.peer.id === dialog.id,
       isPinned: pinned.has(dialog.id),
       width,
@@ -1462,13 +1501,12 @@ async function toggleSummary($: $): Promise<void> {
   const current = (await read($, triage)).summary
   summaryAbort?.abort()
   summaryAbort = null
-  if (current?.peerId === peer.id && current.status !== 'error') {
-    await update($, triage, value => ({ ...value, summary: null }))
-    return
-  }
+  if (current?.peerId === peer.id && current.status !== 'error') return hideSummary($)
   const abort = new AbortController()
   summaryAbort = abort
   await update($, triage, value => ({ ...value, summary: { peerId: peer.id, status: 'loading' } }))
+  await update($, nav, value => ({ ...value, view: 'thread' }))
+  await moveRing($, 'summary:close')
   const fetched = await runTg($, tg.read(peer.arg, { limit: SUMMARY_LIMIT }))
   if (abort.signal.aborted) return
   if (!fetched.ok) {
@@ -1497,12 +1535,23 @@ async function toggleSummary($: $): Promise<void> {
   )
 }
 
-/** The summary block above the thread while `t` has run, and the rows it takes. */
-async function drawSummary($: $, els: Els, width: number): Promise<{ element: RenderElement | null; rows: number }> {
+/**
+ * `t`'s summary, a layer over the lower part (dock) or the body (inline): it
+ * takes no row from the thread, which is not drawn under it (T4b). Its close
+ * Button holds the ring, so ⏎ closes it as h does.
+ */
+async function drawSummary($: $, els: Els, width: number): Promise<RenderElement | null> {
   const open = await read($, thread)
   const summary = (await read($, triage)).summary
-  if (open === null || summary === null || summary.peerId !== open.peer.id) return { element: null, rows: 0 }
-  return { rows: summaryRows(summary), element: SummaryBlock(els, { summary, width }) }
+  if (open === null || summary === null || summary.peerId !== open.peer.id) return null
+  return SummaryBlock(els, { summary, width, onClose: () => back($) })
+}
+
+/** `h` on the summary: it closes, and a summary still being written is cancelled. */
+async function hideSummary($: $): Promise<void> {
+  summaryAbort?.abort()
+  summaryAbort = null
+  await update($, triage, value => ({ ...value, summary: null }))
 }
 
 // --- needs-you ranking ---
@@ -2360,6 +2409,36 @@ async function checkDraft($: $): Promise<void> {
 }
 
 /** send reply: only after a check the guard allowed, and the same argv minus --dry-run. */
+/** `e` on a waiting draft's notice: the drafted reply as a layer, ringed on its main Button. */
+async function openDraft($: $): Promise<void> {
+  const current = await read($, draft)
+  if (current === null) return
+  await update($, nav, value => ({ ...value, isDraftOpen: true, isMenuOpen: false }))
+  await moveRing($, current.step.kind === 'planned' && current.step.isAllowed ? 'draft:send' : 'draft:check')
+}
+
+/**
+ * The drafted reply over the lower part (dock) or the body (inline), opened with
+ * `e`: check, send reply, edit, drop as before. It took a row under the lists
+ * while it waited; now its notice does, in a row that is always there (T4b).
+ */
+async function drawDraft($: $, els: Els, width: number): Promise<RenderElement | null> {
+  const current = await read($, draft)
+  if (current === null) return null
+  return DraftRow(els, {
+    draft: current,
+    width,
+    onCheck: () => checkDraft($),
+    onSend: () => sendDraft($),
+    onDrop: async () => {
+      await update($, draft, () => null)
+      await update($, nav, value => ({ ...value, isDraftOpen: false }))
+      await ringCursor($)
+    },
+    onEdit: text => update($, draft, value => (value === null ? null : { ...value, text, step: { kind: 'draft' } })),
+  })
+}
+
 async function sendDraft($: $): Promise<void> {
   const current = await read($, draft)
   if (current === null || current.step.kind !== 'planned' || !current.step.isAllowed) return
@@ -2418,8 +2497,20 @@ function registerBottest(on: On): void {
   }).catch(($, e, next) => next(e))
 }
 
+/** How long a notice stays in its row (T4b), unless `d` dismisses it first. */
+const NOTICE_MS = 15_000
+let noticeTimer: Timer | null = null
+
+/** Every notice goes through here, so each one leaves its row after NOTICE_MS (a newer one restarts the wait). */
 async function say($: $, tone: Notice['tone'], text: string): Promise<void> {
   await update($, bottest, value => ({ ...value, notice: { tone, text } }))
+  noticeTimer?.cancel()
+  noticeTimer = $.clock.after(NOTICE_MS, () => {
+    noticeTimer = null
+    update($, bottest, value => (value.notice?.text === text ? { ...value, notice: null } : value)).catch(() => {
+      // A notice left behind stays until d; the next one replaces it.
+    })
+  })
 }
 
 // --- the thread's watch: live replies and local timing ---
@@ -2542,7 +2633,8 @@ async function finishWrite($: $, peer: PeerRef, pending: Pending, startedAt: num
     : result.answer === null
       ? null
       : { tone: 'info', text: result.answer }
-  await update($, bottest, value => ({ ...value, notice }))
+  if (notice === null) await update($, bottest, value => ({ ...value, notice: null }))
+  else await say($, notice.tone, notice.text)
   await recordStep($, peer, pending, startedAt, result)
 }
 
@@ -2586,8 +2678,15 @@ async function pressChip($: $, message: MessageView, button: KeyButton): Promise
 }
 
 /** The send box's submit: `tg send PEER - --plain --wait 10s --json --yes`, the text on stdin. */
+/** The send box's ⏎: it closes, the text goes out (an empty box sends nothing), and the ring goes back to the cursor row. */
 async function sendText($: $, text: string): Promise<void> {
   await update($, bottest, value => ({ ...value, composing: false }))
+  await sendFromBox($, text)
+  // The box's drawing lacks the cursor row's key, so the ring waits for the next one (§4.3 rule 3).
+  await ringCursor($)
+}
+
+async function sendFromBox($: $, text: string): Promise<void> {
   const open = await read($, thread)
   if (open === null || text.trim() === '') return
   if (isBotFather(open.peer.arg)) return say($, 'warn', readOnlyText({ kind: 'botfather' }))
@@ -2596,8 +2695,6 @@ async function sendText($: $, text: string): Promise<void> {
   await update($, bottest, value => ({ ...value, busy: `sending ${oneLine(text, 24)}`, notice: null, timing: sent(value.timing, at) }))
   const result = await runWrite($, calls.send(open.peer.arg, true), text)
   await finishWrite($, open.peer, { kind: 'send', text, wait_s: SEND_WAIT_S }, at, result)
-  // Hand the keys back to the thread, or j/k would type into nothing.
-  await ringCursor($)
 }
 
 // --- keys: b, n, r, f ---
@@ -2620,8 +2717,7 @@ async function focusButtons($: $): Promise<void> {
 async function toggleCompose($: $): Promise<void> {
   const next = await update($, bottest, value => ({ ...value, composing: !value.composing, notice: null }))
   if (!next.composing) return
-  // The ring can move only onto a drawn element: give the box one frame to draw.
-  await $.clock.sleep(50)
+  // $.ui.focus waits, bounded, for the box to be drawn in the bar's row.
   await moveRing($, 'bt:send')
 }
 
@@ -2630,12 +2726,14 @@ async function toggleRecord($: $): Promise<void> {
   const at = await $.clock.now()
   const state = await read($, bottest)
   if (state.recording === null) {
-    await update($, bottest, value => ({ ...value, recording: startRecording(at), notice: { tone: 'info', text: 'Recording: sends and presses from the pane become steps. r stops.' } }))
+    await update($, bottest, value => ({ ...value, recording: startRecording(at) }))
+    await say($, 'info', 'Recording: sends and presses from the pane become steps. r stops.')
     return
   }
   const recording = state.recording
   if (recording.steps.length === 0) {
-    await update($, bottest, value => ({ ...value, recording: null, notice: { tone: 'info', text: 'Recording stopped: no steps, nothing written.' } }))
+    await update($, bottest, value => ({ ...value, recording: null }))
+    await say($, 'info', 'Recording stopped: no steps, nothing written.')
     return
   }
   const script = toScript(recording, at)
@@ -2654,11 +2752,9 @@ async function toggleRecord($: $): Promise<void> {
     ...value,
     recording: null,
     recorded: { ...recording, stoppedAt: at, script, path: written },
-    notice:
-      written === null
-        ? { tone: 'danger', text: `${GLYPH.error} could not write ${scriptPath(recording)}; the steps are kept in the pane's state.` }
-        : { tone: 'info', text: `${GLYPH.done} ${recording.steps.length} steps → ${scriptPath(recording)} (in the session's directory)` },
   }))
+  if (written === null) await say($, 'danger', `${GLYPH.error} could not write ${scriptPath(recording)}; the steps are kept in the pane's state.`)
+  else await say($, 'info', `${GLYPH.done} ${recording.steps.length} steps → ${scriptPath(recording)} (in the session's directory)`)
 }
 
 /** `f`: diff the two selected bot replies; again closes the diff. */
@@ -4403,6 +4499,7 @@ import {
   mergedLog,
   runRows,
   stopAnswer,
+  STOP_LABEL,
   stopNotice,
   stoppedOf,
   stripItems,
@@ -4465,10 +4562,17 @@ async function stopEverything($: $): Promise<StopReport> {
 /** The dock's strip: what runs, `0: stop all` beside it; after `0`, what stopped. Null: nothing to say. */
 async function drawRunningStrip($: $, els: Els, width: number): Promise<RenderElement | null> {
   const items = stripItems(await runRowsNow($))
-  if (items.length > 0) return RunningStrip(els, { ...fitStrip(items, width), notice: null })
+  // A notice takes the row's left part; `0: stop all` keeps its place while something runs (T4b).
+  const notice = await noticeNow($, width - (items.length > 0 ? STOP_LABEL.length + 2 : 0))
+  if (items.length === 0 && notice === null) return null
+  return RunningStrip(els, { ...fitStrip(items, width), notice, isRunning: items.length > 0 })
+}
+
+/** What `0` stopped, fitted to `width`, while its 15 s last. */
+async function stopNoticeNow($: $, width: number): Promise<Notice | null> {
   const notice = await read($, lastStop)
   if (notice === null || notice.until <= (await $.clock.now())) return null
-  return RunningStrip(els, { shown: [], more: 0, notice: stopNotice(notice.names, notice.failed, width) })
+  return { tone: 'danger', text: stopNotice(notice.names, notice.failed, width) }
 }
 
 // --- Activity ---

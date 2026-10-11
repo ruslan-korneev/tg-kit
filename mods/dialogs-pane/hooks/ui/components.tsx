@@ -44,10 +44,12 @@ export function windowAt<T>(list: readonly T[], start: number, rows: number): T[
 }
 
 export function DialogRow(
-  { Button, Text }: Els,
+  { Box, Button, Text }: Els,
   props: {
     dialog: TgDialog
     isCursor: boolean
+    /** Drawn without its ring stop while a field in the bar's row holds the ring (§4.3 rule 3); ▸ shows. */
+    isStatic?: boolean
     isOpen: boolean
     isPinned: boolean
     width: number
@@ -68,21 +70,31 @@ export function DialogRow(
   // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left; an autopilot mark takes its own.
   const pilot = props.autopilot
   const nameWidth = Math.max(8, props.width - 21 - (pilot === undefined ? 0 : pilot.tail.length + 3 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)))
+  const cells = [
+    <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : props.isOpen ? `${GLYPH.open} ` : '  '}</Text>,
+    pilot === undefined ? null : <Text color={TOKEN.accent}>{pilot.glyph} </Text>,
+    <Text color={color}>{glyph} </Text>,
+    <Text bold={isUnread || props.isOpen} underline={props.isOpen}>
+      {pad(dialogLabel(dialog), nameWidth)}
+    </Text>,
+    <Text bold>{badge.padStart(3)} </Text>,
+    <Text dimColor>{time.padStart(9)} </Text>,
+    <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>,
+    props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>,
+    pilot === undefined ? null : <Text dimColor> {pilot.tail}</Text>,
+    pilot?.warn === undefined ? null : <Text color={TOKEN.danger}> {pilot.warn}</Text>,
+  ]
+  if (props.isStatic === true) {
+    return (
+      <Box key={`dialog:${dialog.id}`} flexDirection="row">
+        {...cells}
+      </Box>
+    )
+  }
   return (
     // The cursor row takes the ring whenever the pane takes the keys: ⏎ acts on it at once.
     <Button key={`dialog:${dialog.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onOpen}>
-      <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : props.isOpen ? `${GLYPH.open} ` : '  '}</Text>
-      {pilot === undefined ? null : <Text color={TOKEN.accent}>{pilot.glyph} </Text>}
-      <Text color={color}>{glyph} </Text>
-      <Text bold={isUnread || props.isOpen} underline={props.isOpen}>
-        {pad(dialogLabel(dialog), nameWidth)}
-      </Text>
-      <Text bold>{badge.padStart(3)} </Text>
-      <Text dimColor>{time.padStart(9)} </Text>
-      <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>
-      {props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>}
-      {pilot === undefined ? null : <Text dimColor> {pilot.tail}</Text>}
-      {pilot?.warn === undefined ? null : <Text color={TOKEN.danger}> {pilot.warn}</Text>}
+      {...cells}
     </Button>
   )
 }

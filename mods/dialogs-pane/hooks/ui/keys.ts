@@ -48,9 +48,11 @@ export const CHAT_KIND_LABEL: Record<ChatKind, string> = {
  * Where the keys act. `chats` and `chat` are the two columns (the cursor's);
  * the rest are layers drawn over the lower part (dock) or the body (inline).
  * `sheet` is the send sheet (§5.1) and the views it opens: targets, inspect, the
- * Ask field, a broadcast's legs.
+ * Ask field, a broadcast's legs. `summary` is `t`'s summary and `draft` a drafted
+ * reply opened with `e`, each over the lower part; `field` is the send box (`n`)
+ * or the search field (`s`) in the bar's row (T4b, §4.3 rule 1).
  */
-export const WHERES = ['chats', 'chat', 'sheet', 'card', 'activity', 'diff', 'editor', 'menu', 'band'] as const
+export const WHERES = ['chats', 'chat', 'sheet', 'card', 'activity', 'diff', 'editor', 'summary', 'draft', 'field', 'menu', 'band'] as const
 export type Where = (typeof WHERES)[number]
 
 export type Seat = 'dock' | 'inline'
@@ -66,6 +68,8 @@ export type KeyFacts = {
   isRunning: boolean
   /** Activity lists a delegate task that ended: `d` dismisses them. */
   hasFinished: boolean
+  /** A drafted reply waits (its notice says `e: open`). */
+  hasDraft: boolean
   /** Seconds left to undo the last auto reply; 0 when no window is open. */
   undoLeft: number
   hasNotice: boolean
@@ -94,6 +98,7 @@ export const NO_FACTS: KeyFacts = {
   rows: 0,
   isRunning: false,
   hasFinished: false,
+  hasDraft: false,
   undoLeft: 0,
   hasNotice: false,
   marks: 0,
@@ -137,7 +142,7 @@ type Def = {
   isDigits?: true
 }
 
-const PANE: readonly Where[] = ['chats', 'chat', 'sheet', 'card', 'activity', 'diff', 'editor']
+const PANE: readonly Where[] = ['chats', 'chat', 'sheet', 'card', 'activity', 'diff', 'editor', 'summary', 'draft']
 const LISTS: readonly Where[] = ['chats', 'chat']
 /** Views with a cursor that j and k move: the two columns, and Activity's running rows. */
 const MOVES: readonly Where[] = [...LISTS, 'activity']
@@ -196,7 +201,7 @@ export const KEYS = [
   },
   { id: 'watch', key: 'w', hotkey: 'w', group: 'chat', where: LISTS, kinds: WATCH, label: c => (c.facts.isWatched ? 'unwatch' : 'watch') },
   { id: 'follow', key: 'p', hotkey: 'p', group: 'chat', where: ['chat'], kinds: AGENT, label: c => (c.facts.isFollowed ? 'unfollow' : 'follow → main') },
-  { id: 'summary', key: 't', hotkey: 't', group: 'chat', where: LISTS, kinds: 'any', label: c => SUMMARY_LABEL[c.facts.summary] },
+  { id: 'summary', key: 't', hotkey: 't', group: 'chat', where: [...LISTS, 'summary'], kinds: 'any', label: c => SUMMARY_LABEL[c.facts.summary] },
   { id: 'write', key: 'n', hotkey: 'n', group: 'chat', where: LISTS, kinds: WRITE, label: () => 'write' },
   { id: 'record', key: 'r', hotkey: 'r', group: 'chat', where: ['chat'], kinds: ['bot'], label: c => (c.facts.isRecording ? 'stop rec' : 'rec') },
   {
@@ -238,13 +243,24 @@ export const KEYS = [
     needs: c => (c.facts.sheet === 'targets' || c.facts.sheet === 'broadcast' ? null : 'needs a: another agent'),
     isDigits: true,
   },
-  { id: 'edit', key: 'e', hotkey: 'e', group: 'chat', where: ['card', 'band'], kinds: 'any', label: c => (c.where === 'card' ? 'brief' : 'edit') },
+  {
+    id: 'edit',
+    key: 'e',
+    hotkey: 'e',
+    group: 'chat',
+    where: ['chats', 'chat', 'card', 'band'],
+    kinds: 'any',
+    label: c => (c.where === 'card' ? 'brief' : c.where === 'band' ? 'edit' : 'open draft'),
+    // In the lists, e opens the drafted reply its notice names (T4b); nothing to open, nothing listed.
+    needs: c => (c.where === 'chats' || c.where === 'chat' ? (c.facts.hasDraft ? null : 'needs a drafted reply') : null),
+    whileWaiting: 'hidden',
+  },
   {
     id: 'dismiss',
     key: 'd',
     hotkey: 'd',
     group: 'pane',
-    where: ['chat', 'card', 'activity', 'band'],
+    where: ['chats', 'chat', 'card', 'activity', 'band'],
     kinds: 'any',
     label: c => (c.where === 'activity' ? 'dismiss ended tasks' : 'dismiss'),
     needs: c => (c.where === 'band' ? null : c.where === 'activity' ? (c.facts.hasFinished ? null : 'needs a task that ended') : c.facts.hasNotice ? null : 'needs a notice'),
@@ -267,18 +283,27 @@ export const KEYS = [
     key: 'h',
     hotkey: 'h',
     group: 'pane',
-    where: ['chat', 'sheet', 'card', 'activity', 'diff', 'editor', 'menu'],
+    where: ['chat', 'sheet', 'card', 'activity', 'diff', 'editor', 'summary', 'draft', 'field', 'menu'],
     kinds: 'any',
-    label: c => (c.where === 'chat' ? (c.facts.marks > 0 || c.facts.isRangeOpen ? 'clear' : 'chats') : c.where === 'sheet' && c.facts.sheet === 'intents' ? 'cancel' : 'back'),
+    label: c =>
+      c.where === 'chat'
+        ? c.facts.marks > 0 || c.facts.isRangeOpen
+          ? 'clear'
+          : 'chats'
+        : (c.where === 'sheet' && c.facts.sheet === 'intents') || c.where === 'field'
+          ? 'cancel'
+          : c.where === 'summary' || c.where === 'draft'
+            ? 'close'
+            : 'back',
   },
   { id: 'menu', key: 'm', hotkey: 'm', group: 'pane', where: [...PANE, 'menu'], kinds: 'any', label: c => (c.where === 'menu' ? 'close' : 'menu') },
-  { id: 'hide', key: 'q', hotkey: 'q', group: 'pane', where: PANE, kinds: 'any', label: () => 'hide' },
+  { id: 'hide', key: 'q', hotkey: 'q', group: 'pane', where: [...PANE, 'field'], kinds: 'any', label: () => 'hide' },
   {
     id: 'stop',
     key: '0',
     hotkey: '0',
     group: 'safety',
-    where: PANE,
+    where: [...PANE, 'field'],
     kinds: 'any',
     label: () => 'stop all',
     needs: c => (c.facts.isRunning ? null : 'nothing runs'),
@@ -341,9 +366,11 @@ function verbs(c: KeyContext): readonly KeyId[] {
     case 'chats':
       // The dock draws `s: search` on the strip; inline has no strip row to spare.
       return c.seat === 'inline' ? ['open', 'search', 'summary', 'watch', 'agent'] : ['open', 'summary', 'watch', 'agent']
-    case 'chat':
-      // Inline shows one view: the way back to the chats is a verb there.
-      return [...(c.kind === null ? ['send' as const] : KIND_BAR[c.kind]), ...(c.seat === 'inline' ? ['back' as const] : [])]
+    case 'chat': {
+      // Inline shows one view: the way back to the chats is a verb there. An open range shows its end.
+      const base: readonly KeyId[] = c.kind === null ? ['send'] : KIND_BAR[c.kind]
+      return [...base.slice(0, 1), ...(c.facts.isRangeOpen ? (['range'] as const) : []), ...base.slice(1), ...(c.seat === 'inline' ? ['back' as const] : [])]
+    }
     case 'sheet':
       return ['back']
     case 'card':
@@ -351,7 +378,12 @@ function verbs(c: KeyContext): readonly KeyId[] {
     case 'activity':
       return ['open', 'dismiss', 'back']
     case 'editor':
+    case 'draft':
       return ['back']
+    case 'summary':
+      return ['summary', 'back']
+    case 'field':
+      return []
     case 'diff':
       return ['diff', 'back']
     case 'menu':
