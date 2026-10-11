@@ -1,11 +1,13 @@
 """Pins the theme catalogue the CLI and the pane share (§10.2, "The theme
 catalogue"): palettes/themes.json is the source of truth, and src/tg_kit/themes.json
 (package data: an installed `tg` cannot read the repo root) is a byte-identical copy.
-Also checks the file's schema, and that no theme draws two different colours on
-one 256-colour cell in tmux once its `variant256` is applied.
+The pane's copy is mods/dialogs-pane/hooks/ui/themes.ts, the file's bytes as a module
+(the engine loads no .json from a plugin), written by dev/pane_themes.py; and the
+mod's `palette` option lists every theme. Also checks the file's schema, and that no
+theme draws two different colours on one 256-colour cell in tmux once its
+`variant256` is applied.
 
-Not covered: the pane's copy (mods/dialogs-pane/hooks/ui/themes.json), which T17
-adds and pins here; contrast (§10.2 lists it for the owner, not as a rule).
+Not covered: that palette.ts reads the module right (the mod's own palette.test.ts).
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "palettes/themes.json"
 COPIES = [ROOT / "src/tg_kit/themes.json"]
+PANE_COPY = ROOT / "mods/dialogs-pane/hooks/ui/themes.ts"
+PANE_MANIFEST = ROOT / "mods/dialogs-pane/.claude-plugin/plugin.json"
 DOC: dict[str, Any] = json.loads(SOURCE.read_text("utf-8"))
 THEMES: dict[str, dict[str, Any]] = DOC["themes"]
 HEX = re.compile(r"#[0-9A-F]{6}")
@@ -28,6 +32,26 @@ HEX = re.compile(r"#[0-9A-F]{6}")
 @pytest.mark.parametrize("copy", COPIES, ids=lambda p: str(p.relative_to(ROOT)))
 def test_the_copy_matches_the_source(copy: Path) -> None:
     assert copy.read_bytes() == SOURCE.read_bytes(), f"copy {SOURCE} to {copy}"
+
+
+def test_the_pane_module_carries_the_source_bytes() -> None:
+    text = PANE_COPY.read_text("utf-8")
+    opening = "\nexport const CATALOGUE = "
+    assert opening in text, f"run dev/pane_themes.py to write {PANE_COPY}"
+    body = text.split(opening, 1)[1]
+    assert body.endswith(" as const\n")
+    copied = body.removesuffix(" as const\n") + "\n"
+    assert copied == SOURCE.read_text("utf-8"), f"run dev/pane_themes.py to copy {SOURCE}"
+
+
+def test_the_pane_option_lists_every_theme_and_defaults_to_tokyo_night() -> None:
+    """theme and ansi, then each theme, and its `<name>256` where it has a variant256."""
+    palette = json.loads(PANE_MANIFEST.read_text("utf-8"))["userConfig"]["palette"]
+    expected = ["theme", "ansi"]
+    for name, theme in THEMES.items():
+        expected += [name, f"{name}256"] if "variant256" in theme else [name]
+    assert palette["options"] == expected
+    assert palette["default"] == "tokyo-night"
 
 
 def test_the_catalogue_names_its_roles_senders_and_topic_keys() -> None:

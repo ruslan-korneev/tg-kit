@@ -85,7 +85,7 @@ describe('the chat row (§10.4)', () => {
         const { Box } = els
         return (
           <Box key="rows" flexDirection="column">
-            {rows.map(row => ChatRow(els, PALETTES.mocha, { ...dialogRow(row.dialog, { now: NOW, agent: row.agent }), rowKey: row.key, width: row.width, isCursor: row.key === 'plain', isOpen: false, onPress: () => {} }))}
+            {rows.map(row => ChatRow(els, PALETTES['catppuccin-mocha'], { ...dialogRow(row.dialog, { now: NOW, agent: row.agent }), rowKey: row.key, width: row.width, isCursor: row.key === 'plain', isOpen: false, onPress: () => {} }))}
           </Box>
         )
       })

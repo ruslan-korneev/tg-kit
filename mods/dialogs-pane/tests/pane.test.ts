@@ -6,13 +6,15 @@ import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-
 
 import { defaultDialog } from '../hooks/autopilot/config'
 import { KEYS, STRAY_KEYS, helpLines, hotkeyTable } from '../hooks/ui/keys'
-import { PALETTES } from '../hooks/ui/palette'
+import { DEFAULT_PALETTE, PALETTES } from '../hooks/ui/palette'
 import type { ApDraft, Autopilot, PeerRef, TgDialog, TgMessage } from '../types'
 import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, PERSON_MESSAGES, borderOf, chatIds, chatKey, cornerOf, findChat, folderRun, legendOf, messagesFor, reachChat, tabsOf, titleOf } from './fixtures'
 import { FOOTER, HINT, bandKeyProblems, beneathCard, engineSites, siteText } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
+/** What each role draws with the `palette` option left at its default (decision 9). */
+const COLORS = PALETTES[DEFAULT_PALETTE]
 
 const DOCK: RenderPropsOf['Pane'] = {
   title: 'tg · dialogs',
@@ -235,7 +237,7 @@ describe('the frame', () => {
 
   test('focus by colour (§10.5): the cursor card accent while the pane holds the keys; without them every border surface, and ctrl+x tab: keys leads a dim key line', async ($, on) => {
     const { ui } = await openPane($, on)
-    const theme = PALETTES.theme
+    const theme = COLORS
     expect(await borderOf(ui, 'card:chats')).toBe(theme.accent)
     expect((await ui.find({ key: 'bar' }))?.text).not.toContain('ctrl+x tab: keys')
     expect((await ui.find({ key: 'key:menu' }))?.props.dimColor).toBe(false)
@@ -251,6 +253,21 @@ describe('the frame', () => {
     expect((await ui.find({ key: 'key:menu' }))?.props.dimColor).toBe(true)
     await ui.unmount()
   })
+
+  // The `palette` option (§10.2, decision 9): a listed value draws that palette; a stored
+  // value outside the list counts as unset, so the pane draws the default.
+  for (const [palette, drawn] of [
+    ['kanagawa256', 'kanagawa256'],
+    ['theme', 'theme'],
+    ['mocha', DEFAULT_PALETTE],
+  ] as const) {
+    test(`palette = ${palette}: the borders draw ${drawn}'s roles`, { options: { palette } }, async ($, on) => {
+      const { ui } = await openPane($, on)
+      await openChat(ui, 1001)
+      expect([await borderOf(ui, 'card:chat'), await borderOf(ui, 'card:chats')]).toEqual([PALETTES[drawn].accent, PALETTES[drawn].person])
+      await ui.unmount()
+    })
+  }
 
   test('the keys the bar does not show are in a Box the surface does not draw', async ($, on) => {
     const { ui } = await openPane($, on)
@@ -1642,7 +1659,7 @@ describe('states', () => {
     engineSites(on)
     const { ui, clock } = await openPane($, on, DOCK, argv => (isBroken && argv[1] === 'dialogs' ? failure(1, 'error: the fake is down') : happy(argv)))
     const line = await ui.find({ type: 'Text', text: 'tg: the fake is down' })
-    expect(line?.props.color).toBe('error')
+    expect(line?.props.color).toBe(COLORS.unread)
     // Nothing is on its way: no `…` in the header, and the footer says it failed.
     expect((await ui.find({ key: 'header' }))?.text).not.toContain('…')
     expect(await siteText($, FOOTER)).toBe('focus & tg ⚠')
@@ -1662,7 +1679,7 @@ describe('states', () => {
     const { ui } = await openPane($, on, DOCK, argv => (argv[1] === 'dialogs' ? failure(5, 'error: FLOOD_WAIT 23s: Telegram asks to wait before retrying') : happy(argv)))
     // Telegram's 23 s fall inside the 60 s a pass waits after the last one: the count is to the retry.
     const line = await ui.find({ type: 'Text', text: 'Telegram asks to wait 23 s · retrying in 60 s' })
-    expect(line?.props.color).toBe('warning')
+    expect(line?.props.color).toBe(COLORS.held)
     expect(await ui.find({ key: 'reload' })).toBeUndefined()
     // Said once: the list says it, so the notice row does not; a wait is not a failure, so the footer waits too.
     expect((await legendOf(ui)) ?? '').not.toContain('asks to wait')
@@ -1840,7 +1857,7 @@ describe('the visual pass (§7, T7)', () => {
   test("BotFather's row ends in ro, in the held role (§10.3)", async ($, on) => {
     const { ui } = await openPane($, on)
     expect((await findChat(ui, 1006))?.text).toMatch(/ BotFather .* ro$/)
-    expect((await texts(ui, await chatKey(ui, 1006))).find(one => one.text.trim() === 'ro')?.props.color).toBe('warning')
+    expect((await texts(ui, await chatKey(ui, 1006))).find(one => one.text.trim() === 'ro')?.props.color).toBe(COLORS.held)
     await ui.unmount()
   })
 
@@ -1848,11 +1865,11 @@ describe('the visual pass (§7, T7)', () => {
     const muted = (argv: readonly string[]) => (argv[1] === 'dialogs' ? json(KINDS.map(one => (one.id === 1002 ? { ...one, muted: true, unread: 14 } : one))) : happy(argv))
     const { ui } = await openPane($, on, DOCK, muted)
     const group = await texts(ui, await chatKey(ui, 1002))
-    expect(group.find(one => one.text.trim() === '14')?.props.color).toBe('inactive')
+    expect(group.find(one => one.text.trim() === '14')?.props.color).toBe(COLORS.dim)
     // A muted chat's name is not bold: its count would bury the rest (§4.7).
     expect(group.find(one => one.text.includes('Dev Team'))?.props.bold).toBe(false)
     const bot = await texts(ui, await chatKey(ui, 1001))
-    expect(bot.find(one => one.text.trim() === '2')?.props.color).toBe('error')
+    expect(bot.find(one => one.text.trim() === '2')?.props.color).toBe(COLORS.unread)
     expect(bot.find(one => one.text.includes('Example Bot'))?.props.bold).toBe(true)
     await ui.unmount()
   })
@@ -1862,9 +1879,9 @@ describe('the visual pass (§7, T7)', () => {
     await openChat(ui, 1001)
     await ui.press({ key: 'key:follow' })
     const stop = (await texts(ui, 'legend')).find(one => one.text === '0: stop all')
-    expect(stop?.props.color).toBe(PALETTES.theme.unread)
+    expect(stop?.props.color).toBe(COLORS.unread)
     await ui.press({ key: 'key:menu' })
-    expect((await texts(ui, 'menu:stop')).map(one => one.props.color)).toEqual([PALETTES.theme.unread])
+    expect((await texts(ui, 'menu:stop')).map(one => one.props.color)).toEqual([COLORS.unread])
     await ui.unmount()
   })
 
