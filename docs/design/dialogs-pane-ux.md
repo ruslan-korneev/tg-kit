@@ -843,10 +843,10 @@ Flow 1 · Compact · the sheet takes the last two rows
 ╭───────────────────────────────────────────────────────────────────────────────────────────────✕─╮
 │ tg › Work › @example_bot · ◎ watched                                                      ● keys │
 │    20:11 you  /start                                                                             │
-│    20:11 bot  Hi! I am Example Bot. Pick an option:                    [Settings] [Help]         │
+│    20:11 bot  Hi! I am Example Bot. Pick an option:           [Settings] [Help]                  │
 │    21:02 you  /settings                                                                          │
-│ ▸  21:02 bot  ⚠ Something went wrong                            [Retry] [Back]      ⏱6s  #677791 │
-│    21:03 bot  Main menu                                                [Settings] [Help]         │
+│ ▸  21:02 bot  ⚠ Something went wrong                          [Retry] [Back] ⏱6s #677791         │
+│    21:03 bot  Main menu                                       [Settings] [Help]                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -922,7 +922,7 @@ Flow 2 · Compact · recording, latency on each reply
 │ tg › Work › @example_bot · ◎ watched                                            ● rec 3   ● keys │
 │    21:09 you  /settings                                                                          │
 │    21:09 bot  ⚠ Something went wrong                                                       ⏱1.1s │
-│ ▸  21:10 bot  Settings saved   (edited)                                 1: Back   ⏱1.3s  #677801 │
+│ ▸  21:10 bot  Settings saved   (edited)                                 1: Back ⏱1.3s #677801    │
 │    21:10 you  /ping                                                                              │
 │    21:10 bot  pong                                                                         ⏱0.4s │
 │                                                                                                  │
