@@ -7,7 +7,7 @@ import type { ApNote, ApUndoWindow, BandEvent, DgStatus, PeerRef } from '../../t
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
 import type { DraftView } from './drafts'
-import { GLYPH, cells, oneLine, type SummaryParts } from './model'
+import { GLYPH, cells, oneLine, peerConfirmLabel, type SummaryParts } from './model'
 
 // --- the footer label (SessionMode) ---
 
@@ -157,11 +157,11 @@ export function hintTail(count: number, forYou: number): string | undefined {
 export function itemLine(item: BandItem, now: number): string {
   switch (item.kind) {
     case 'hold':
-      return `⏸ HARD STOP ${item.stops.join(' + ')}: ${oneLine(item.what, 60)} · ${LEVEL_GLYPH.delegate} ${item.peer.label}`
+      return `⏸ HARD STOP ${item.stops.join(' + ')}: ${oneLine(item.what, 60)} · ${LEVEL_GLYPH.delegate} ${peerConfirmLabel(item.peer)}`
     case 'draft':
-      return `${LEVEL_GLYPH.draft} draft for ${item.draft.peer.label}: "${oneLine(item.draft.text, 60)}"`
+      return `${LEVEL_GLYPH.draft} draft for ${peerConfirmLabel(item.draft.peer)}: "${oneLine(item.draft.text, 60)}"`
     case 'undo':
-      return `${LEVEL_GLYPH.auto} ${item.undo.peer.label} replied "${oneLine(item.undo.text, 40)}" · u: undo ${undoLeft(item.undo, now)}s`
+      return `${LEVEL_GLYPH.auto} ${peerConfirmLabel(item.undo.peer)} replied "${oneLine(item.undo.text, 40)}" · u: undo ${undoLeft(item.undo, now)}s`
     case 'reply':
       return `${item.event.kind === 'bot' ? GLYPH.bot : GLYPH.unread} ${item.event.label}: "${oneLine(item.event.text, 60)}"`
     case 'summary':

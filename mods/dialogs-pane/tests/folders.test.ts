@@ -212,11 +212,12 @@ describe('the strip and the Folders list (§4.7)', () => {
     expect(tabs).toContain('9: ‹Reading›')
     expect(tabs).not.toContain('1: Personal')
     expect(tabs[0]).toMatch(/^\+\d+$/)
-    // A muted chat's count is dim, marked ·.
+    // A muted chat's count is dim (§10.3, decision 5): the `dim` role, not `unread`.
     await ui.press({ key: 'digit:4' })
     const channel = await findChat(ui, 1005)
-    expect(channel?.text).toContain('·14')
-    expect(JSON.stringify(channel)).toContain('"dimColor":true')
+    expect(channel?.text).toMatch(/ 14$/)
+    expect(JSON.stringify(channel)).toContain('"color":"inactive"')
+    expect(JSON.stringify(channel)).not.toContain('"color":"error"')
     await ui.unmount()
   })
 
@@ -290,7 +291,7 @@ describe('the strip and the Folders list (§4.7)', () => {
 
   test('a new session with a stored folder shows it at once, while its first pass is still out', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    // One stored row from the day before: its time column must read yesterday before any tg call answers.
+    // One stored row from the day before: its time column must read the weekday before any tg call answers.
     const work = MANY.slice(0, 5).map((one, index) => (index === 4 ? { ...one, last_date: '2026-10-09T08:00:00Z' } : one))
     const seen = world(on, { folders: { list: [{ id: 1, title: 'Personal', kind: 'folder', unread: 0 }, { id: 2, title: 'Work', kind: 'folder', unread: 2 }], view: { kind: 'folder', id: 2 }, rows: work } })
     seen.pass.answer = new Promise(() => undefined)
@@ -302,7 +303,7 @@ describe('the strip and the Folders list (§4.7)', () => {
     expect(await tabsOf(ui)).toEqual(['1: Personal', '2: ‹Work 2›', '3: For you', '4: Bots'])
     expect((await ui.find({ key: 'header' }))?.text).toContain('…')
     expect(await drawnIds(ui)).toEqual(work.map(one => one.id))
-    expect((await findChat(ui, work[4]?.id ?? 0))?.text).toMatch(/yesterday$/)
+    expect((await findChat(ui, work[4]?.id ?? 0))?.text).toMatch(/^ {4}(Mon|Tue|Wed|Thu|Fri|Sat|Sun) /)
     expect(passes(seen)).toBe(1)
     await ui.unmount()
   })
@@ -555,8 +556,8 @@ describe('a list that changes while the cursor stays keeps the ring (§4.3, §8 
       await clock.settle()
       expect(await place(ui)).toEqual(base)
       expect(await genOf(ui)).toBe(gen)
-      // The count changes in place, after the watch column's ◎ (§7.3).
-      expect((await findChat(ui, 3002))?.text).toMatch(/Contact 12 +◎ +1 /)
+      // The count changes in place, in the symbol column (§10.4).
+      expect((await findChat(ui, 3002))?.text).toMatch(/Contact 12 .* 1$/)
       if (inline) expect((await ui.find({ key: 'notice' }))?.text).toBe('↑ 1 moved · g: apply')
       else expect((await ui.find({ key: 'strip' }))?.text).toContain('↑1')
       await ui.unmount()
@@ -574,7 +575,7 @@ describe('a list that changes while the cursor stays keeps the ring (§4.3, §8 
       expect(passes(seen)).toBe(2)
       expect(await place(ui)).toEqual(base)
       expect(await drawnIds(ui)).toEqual(ids)
-      expect((await findChat(ui, 3001))?.text).toMatch(/Contact 11 +4 /)
+      expect((await findChat(ui, 3001))?.text).toMatch(/Contact 11 .* 4$/)
       await ui.unmount()
     })
 

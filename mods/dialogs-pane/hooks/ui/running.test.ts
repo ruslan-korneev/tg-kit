@@ -2,15 +2,14 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { ApDialog, ApEntry, LedgerEntry, PeerRef } from '../../types'
 import { defaultDialog } from '../autopilot/config'
+import { labelCells } from './model'
 import {
   CELL_ROLE,
-  KIND_ROLE,
   activityOrder,
   activityTarget,
   activityText,
   autopilotRows,
   autopilotTitle,
-  cardCells,
   cellOf,
   cells,
   fitStrip,
@@ -374,11 +373,12 @@ describe('the log’s columns (§10.6)', () => {
   test('at 40 (a 44-column pane): a 12-cell name, the text cut to the row', () => {
     const segs = logLine(row, 40)
     expect(text(segs)).toBe('14:02  Dev chat     sent "Merged, thank…')
-    expect(cardCells(text(segs))).toBe(40)
+    expect(labelCells(text(segs))).toBe(40)
     expect(text(logLine({ ...row, peer: { label: 'Project team members', kind: 'group' } }, 40))).toMatch(/^14:02 {2}Project tea… sent/)
   })
 
-  test('kinds take their roles', () => {
-    expect(KIND_ROLE).toMatchObject({ user: 'person', bot: 'bot', group: 'group', supergroup: 'group', channel: 'channel', self: 'saved' })
+  test('the chat column takes its kind’s role, as the chat row’s glyph does', () => {
+    const roles = (['user', 'bot', 'group', 'supergroup', 'channel', 'self'] as const).map(kind => logLine({ ...row, peer: { label: 'x', kind } }, 56)[1]?.role)
+    expect(roles).toEqual(['person', 'bot', 'group', 'group', 'channel', 'saved'])
   })
 })

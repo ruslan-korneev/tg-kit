@@ -18,7 +18,7 @@ import type {
   TgFailure,
   WatchHealth,
 } from '../types'
-import { SummaryBlock, watchMark } from './triage/components'
+import { SummaryBlock } from './triage/components'
 import { EMPTY_TRIAGE, RECENT, applyToDialogs, applyToMessages, repliesToYou, reportReply } from './triage/live'
 import { NO_ME, RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, toAsk, verdictKey, type Me } from './triage/needs'
 import { SUMMARY_LIMIT, SUMMARY_MAX_TOKENS, SUMMARY_SYSTEM, SUMMARY_TIMEOUT_MS, TRIAGE_MODEL, summaryPrompt } from './triage/summary'
@@ -76,7 +76,7 @@ import {
 import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
-import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
+import { ChatRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
 import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, chipsColumn, chipsTail, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
@@ -107,14 +107,17 @@ import {
   TOKEN,
   clamp,
   dialogLabel,
+  dialogRow,
   grownDialog,
   loaded,
   oneLine,
   peerArg,
+  peerConfirmLabel,
   rangeSelect,
   selectWhole,
   stateSummary,
   toggleSelected,
+  type AgentMark,
 } from './ui/model'
 import {
   NOTHING_ON_SCREEN,
@@ -1176,7 +1179,7 @@ async function drawFieldBar($: $, els: Els): Promise<RenderElement | null> {
     return <Input key="search" label="search" placeholder="every chat: title or @name; empty goes back to the folder" value={where.query} submitLabel="search" onSubmit={value => submitSearch($, value)} />
   }
   const open = await read($, thread)
-  return open === null ? null : SendBox(els, { peer: open.peer.label, onSend: text => sendText($, text) })
+  return open === null ? null : SendBox(els, { peer: peerConfirmLabel(open.peer), onSend: text => sendText($, text) })
 }
 
 /**
@@ -1279,7 +1282,7 @@ async function dividerLabel($: $): Promise<string> {
   const view = (await read($, autopilot)).view
   const carded = view.kind === 'card' ? await apDialog($, view.dialogId) : null
   if (view.kind === 'card' && carded !== null) {
-    const name = carded.peer.label
+    const name = peerConfirmLabel(carded.peer)
     return view.step === 'ladder' ? `what may an agent do in ${name}?` : view.step === 'options' ? `options for ${name}` : view.step === 'warning' ? `${LEVEL_GLYPH.delegate} delegate ${name}?` : `${name} · ${LEVEL_GLYPH.delegate} delegate`
   }
   const open = await read($, thread)
@@ -1301,34 +1304,28 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, mode:
   const where = await read($, nav)
   const at = await read($, now)
   const open = await read($, thread)
-  const waiting = LoadState(els, { load, now: at, rows, onReload: () => reload($) })
+  const waiting = LoadState(els, colors, { load, now: at, rows, onReload: () => reload($) })
   if (waiting !== null) return [waiting]
   const list = loaded(load) ?? []
   if (list.length === 0) return [EmptyList(els, { text: await emptyText($) })] // ── folders ──
-  const markOf = await watchMarks($)
-  const pilotOf = await autopilotMarks($)
+  const agentOf = await agentMarks($)
   const cursor = clamp(where.dialogCursor, list.length)
   windowRows.dialogs = rows
   const start = edgeStart(where.dialogStart, cursor, rows, list.length)
   const shown = { start, items: windowAt(list, start, rows) }
-  const pinned = new Set((await read($, pins)).map(pin => pin.peer.id))
   const gen = (await read($, folders)).gen
   return shown.items.map((dialog, index) =>
-    DialogRow(els, {
-      dialog,
+    ChatRow(els, colors, {
+      ...dialogRow(dialog, { now: at, agent: agentOf(dialog.id) }),
       rowKey: rowKey(gen, { kind: 'chat', dialog }),
       isCursor: mode !== 'idle' && shown.start + index === cursor,
       isStatic: mode === 'static',
       isOpen: open?.peer.id === dialog.id,
-      isPinned: pinned.has(dialog.id),
       width,
-      now: at,
-      onOpen: async () => {
+      onPress: async () => {
         await update($, nav, value => ({ ...value, view: 'dialogs', dialogCursor: shown.start + index }))
         await openAtCursor($)
       },
-      mark: markOf(dialog.id),
-      autopilot: pilotOf(dialog.id),
     }),
   )
 }
@@ -1344,7 +1341,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
   const open = await read($, thread)
   if (open === null) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
   const at = await read($, now)
-  const waiting = LoadState(els, { load: open.load, now: at, rows, onReload: () => reload($) })
+  const waiting = LoadState(els, colors, { load: open.load, now: at, rows, onReload: () => reload($) })
   if (waiting !== null) return [waiting]
   const messages = loaded(open.load) ?? []
   if (messages.length === 0) return [<Text dimColor>No messages in this chat yet.</Text>]
@@ -1362,7 +1359,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
     const isCursor = mode !== 'idle' && row === layout.cursor
     const toRow = () => update($, nav, value => ({ ...value, view: 'thread', messageCursor: row }))
     if (item.kind === 'draft') {
-      return DraftCard(els, {
+      return DraftCard(els, colors, {
         draft: item.draft,
         isCursor,
         isStatic: mode === 'static',
@@ -1379,7 +1376,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
       })
     }
     const { message } = item
-    return MessageCard(els, {
+    return MessageCard(els, colors, {
       ...bt(els, message, isCursor),
       message,
       isCursor,
@@ -1543,7 +1540,7 @@ async function onTriageEnd($: $, entry: Listening, reason: string, how: 'quiet' 
   }
   entry.hasFailed = true
   await setHealth($, entry.peer.id, 'failed')
-  $.ui.toast(`tg watch ${entry.peer.label}: ${reason}`)
+  $.ui.toast(`tg watch ${entry.peer.arg}: ${reason}`) // the command it ran, so the handle
 }
 
 async function setHealth($: $, dialogId: number, health: WatchHealth): Promise<void> {
@@ -1627,12 +1624,6 @@ async function watchedReplyId($: $, dialogId: number): Promise<number | null> {
 }
 
 /** The `◎` mark of each watched dialog's row, colored by its watch's health. */
-async function watchMarks($: $): Promise<(dialogId: number) => { text: string; color?: string } | undefined> {
-  const state = await read($, triage)
-  const watched = new Set(state.watched.map(peer => peer.id))
-  return dialogId => (watched.has(dialogId) ? watchMark(state.health[String(dialogId)]) : undefined)
-}
-
 // --- summary of the open thread ---
 
 async function setSummary($: $, peerId: number, summary: Summary | null): Promise<void> {
@@ -2175,7 +2166,7 @@ async function drawSheetBar($: $, els: Els, seat: Seat, width: number, isFocused
         ? null
         : isAllowed
           ? { dock: `⏎ sends the ringed one, the recording with it (${steps})`, inline: '⏎ the ringed one', isWarn: false }
-          : { dock: `⏎ asks first: ${handoff.peer.label} is not in allow.toml`, inline: '⏎ asks allow.toml first', isWarn: true },
+          : { dock: `⏎ asks first: ${peerConfirmLabel(handoff.peer)} is not in allow.toml`, inline: '⏎ asks allow.toml first', isWarn: true },
     target: targetText(shown.to, state),
     intents: SHEET_INTENTS[shown.sender],
     ringed,
@@ -3001,7 +2992,7 @@ async function allowReplay($: $, peer: PeerRef): Promise<boolean> {
   const argv = allowArgv(peer.arg)
   let answer: string | null
   try {
-    answer = await $.ui.ask(replayAllowQuestion(peer.label, argv), { options: [ALLOW_NO, ALLOW_YES], header: 'allow.toml' })
+    answer = await $.ui.ask(replayAllowQuestion(peerConfirmLabel(peer), argv), { options: [ALLOW_NO, ALLOW_YES], header: 'allow.toml' })
   } catch {
     // Dismissed, timed out, or a -p run: no answer is a no.
     answer = null
@@ -4060,7 +4051,7 @@ async function apAskAllow($: $, peer: PeerRef, rung: ApRung): Promise<boolean> {
   const argv = allowArgv(peer.arg)
   let answer: string | null
   try {
-    answer = await $.ui.ask(allowQuestion(peer.label, rung, argv), { options: [ALLOW_NO, ALLOW_YES], header: 'allow.toml' })
+    answer = await $.ui.ask(allowQuestion(peerConfirmLabel(peer), rung, argv), { options: [ALLOW_NO, ALLOW_YES], header: 'allow.toml' })
   } catch {
     // Dismissed, timed out, or a -p run: no answer is a no.
     answer = null
@@ -4231,23 +4222,32 @@ async function drawCard($: $, els: Els, width: number): Promise<RenderElement | 
         onBrief: (field, text) => edit(one => ({ ...one, brief: { ...one.brief, [field]: text.trim() } })),
       })
     case 'warning':
-      return DelegateWarning(els, { label: dialog.peer.label }) // ── delegate ──
+      return DelegateWarning(els, { label: peerConfirmLabel(dialog.peer) }) // ── delegate ──
     case 'grant':
       return drawGrant($, els, dialog, allow, isGuardUp, view.notice) // ── delegate ──
   }
 }
 
 /** DialogRow's level mark for running dialogs: the glyph, and `auto 3/50` (sent this hour / limit). */
-async function autopilotMarks($: $): Promise<(dialogId: number) => { glyph: string; tail: string; warn?: string } | undefined> {
+/**
+ * The row's agent symbol (§10.3): any level on, a follow → main included (decision 2); held while a
+ * draft or a hard stop waits for the owner; ⚠ while a delegate runs with its hard stops skipped.
+ */
+async function agentMarks($: $): Promise<(dialogId: number) => AgentMark | null> {
   const state = await read($, autopilot)
   const noStopsOf = await dgNoStopsOf($) // ── delegate ──
-  const at = Math.max(state.now, await $.clock.now())
+  const followed = new Set((await read($, pins)).map(pin => pin.peer.id))
+  const guard = await dgGuardView($) // ── delegate ──
+  const holding = new Set([
+    ...state.drafts.map(one => one.peer.id),
+    ...(await read($, delegate)).tasks.filter(task => isLive(task) && holdsOfView(task, guard).length > 0).map(task => task.peer.id), // ── delegate ──
+  ])
   return dialogId => {
     const dialog = state.dialogs[String(dialogId)]
-    if (dialog === undefined || !state.running.includes(dialogId)) return undefined
-    const tail = apLevelTail(state, dialog, at)
-    const warn = dialog.level === 'delegate' ? noStopsOf(dialogId) : null // ── delegate ──
-    return warn === null ? { glyph: LEVEL_GLYPH[dialog.level], tail } : { glyph: LEVEL_GLYPH[dialog.level], tail, warn }
+    const isRunning = dialog !== undefined && state.running.includes(dialogId)
+    if (isRunning && dialog.level === 'delegate' && noStopsOf(dialogId) !== null) return 'no-stops' // ── delegate ──
+    if (!isRunning && !followed.has(dialogId)) return null
+    return holding.has(dialogId) ? 'holding' : 'on'
   }
 }
 
@@ -4964,7 +4964,7 @@ async function dgOutgoing($: $, peer: PeerRef, text: string, seq: number | null)
   const task = (await dgLiveTask($, peer.id)) ?? { ...STOPPED_PLACEHOLDER, peer, summary: `reply in ${peer.label}` }
   await dgLogStop($, task, split.skipped, 'skipped', 'dangerouslySkipHardStops')
   if (split.ask.length === 0) return null
-  const answer = await dgAskStop($, task, split.ask, `reply in ${peer.label}`)
+  const answer = await dgAskStop($, task, split.ask, `reply in ${peerConfirmLabel(peer)}`)
   await dgLogStop($, task, split.ask, answer.yes ? 'yes' : 'no', answer.why)
   if (answer.yes) return null
   const reason = `HARD STOP ${split.ask.map(hit => hit.stop).join(' + ')}: not sent (${answer.why})`
@@ -5078,7 +5078,7 @@ async function dgAlarms($: $): Promise<{ line: string | null; noStops: string | 
     ...guard.holds.filter(hold => hold.taskId === task.id).map(hold => ({ key: `hold:g:${task.id}:${hold.id}`, peer: task.peer, stops: hold.stops, what: hold.what })),
   ])
   const held = holds[0]
-  const line = held === undefined ? null : `tg ⏸ HARD STOP ${held.stops.join(' + ')}: ${oneLine(held.what, 50)} · ${LEVEL_GLYPH.delegate} ${held.peer.label} · answer in the dialog`
+  const line = held === undefined ? null : `tg ⏸ HARD STOP ${held.stops.join(' + ')}: ${oneLine(held.what, 50)} · ${LEVEL_GLYPH.delegate} ${peerConfirmLabel(held.peer)} · answer in the dialog`
   const pilot = await read($, autopilot)
   const noStopsOf = await dgNoStopsOf($)
   const marks = pilot.running.filter(id => pilot.dialogs[String(id)]?.level === 'delegate').map(noStopsOf)
@@ -5456,7 +5456,7 @@ import {
   type PassMap,
   type StoredFolders,
 } from './folders/folders'
-import { cells, dialogGlyph, shortTime } from './ui/model'
+import { cells, dialogGlyph, rowTime } from './ui/model'
 
 const NO_FOLDERS: Folders = { list: null, gen: 0, agents: [], why: {}, isRanking: false, pass: NO_PASS }
 const folders = atom({ plugin: 'dialogs-pane', key: 'folders' } as const, NO_FOLDERS)
@@ -5975,7 +5975,7 @@ async function drawTop($: $, els: Els, width: number, rows: number, mode: 'activ
   if (where.view === 'folders') {
     const items = await folderItems($)
     if (items.length === 0) {
-      const loading = LoadState(els, { load: { status: 'loading' }, now: 0, rows, onReload: () => reload($) })
+      const loading = LoadState(els, colors, { load: { status: 'loading' }, now: 0, rows, onReload: () => reload($) })
       return loading === null ? [] : [loading]
     }
     const columns = seat === 'inline' ? 2 : 1
@@ -6108,9 +6108,9 @@ async function forYouItems($: $, gen: number): Promise<ForYouItem[]> {
   return (await listRows($)).map((row): ForYouItem => {
     const key = rowKey(gen, row)
     if (row.kind === 'chat') {
-      const { glyph, color } = dialogGlyph(row.dialog.kind)
+      const glyph = dialogGlyph(row.dialog.kind)
       const unread = row.dialog.unread === 0 ? '' : `${row.dialog.muted ? '·' : ''}${row.dialog.unread}`
-      return { key, section: 'people', glyph, glyphColor: color, name: dialogLabel(row.dialog), label: why[String(row.dialog.id)] ?? '', text: row.dialog.last_text, isEditing: false, right: `${unread.padStart(4)} ${shortTime(row.dialog.last_date, at).padStart(9)}`, isGone: false }
+      return { key, section: 'people', glyph: glyph.text, glyphColor: colors[glyph.role], name: dialogLabel(row.dialog), label: why[String(row.dialog.id)] ?? '', text: row.dialog.last_text, isEditing: false, right: `${unread.padStart(4)} ${rowTime(row.dialog.last_date, at).padStart(9)}`, isGone: false }
     }
     const item = row.item
     if (item.kind === 'draft') {
@@ -6150,7 +6150,7 @@ async function drawForYou($: $, els: Els, width: number, rows: number, mode: 'ac
   const load = await read($, dialogs)
   const items = await forYouItems($, state.gen)
   if (items.length === 0) {
-    const waiting = LoadState(els, { load, now: await read($, now), rows, onReload: () => reload($) })
+    const waiting = LoadState(els, colors, { load, now: await read($, now), rows, onReload: () => reload($) })
     if (waiting !== null) return [waiting]
     if (!state.isRanking) return [EmptyList(els, { text: 'Nothing waits for you in any folder. h: folders' })]
   }
@@ -6407,7 +6407,7 @@ async function notifyHolds($: $, holds: readonly BandHold[]): Promise<void> {
   if (fresh.length === 0 && notified.every(key => keys.includes(key))) return
   await update($, queue, value => ({ ...value, notified: keys }))
   for (const hold of fresh) {
-    $.ui.notify(`HARD STOP ${hold.stops.join(' + ')}: ${oneLine(hold.what, 120)} (${hold.peer.label}). Answer in Claude Code.`, { title: 'tg' }).catch(() => {
+    $.ui.notify(`HARD STOP ${hold.stops.join(' + ')}: ${oneLine(hold.what, 120)} (${peerConfirmLabel(hold.peer)}). Answer in Claude Code.`, { title: 'tg' }).catch(() => {
       // A refused or unbound notification leaves the status line and the band, which say the same.
     })
   }

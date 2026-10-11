@@ -13,7 +13,7 @@ import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
 import { latencyText } from '../triage/live'
 import type { Els } from './components'
-import { GLYPH, TOKEN, oneLine } from './model'
+import { GLYPH, TOKEN, oneLine, peerConfirmLabel } from './model'
 import { DRAFT_LEAD, draftFits, positionText, type BandItem } from './queue'
 
 /** The band's width from which a draft's row 1 also draws `ctrl+x tab ›` and `o: open`; under it `o` stays a hidden key. */
@@ -52,7 +52,7 @@ export function BandItemView(els: Els, props: BandProps): RenderElement {
     case 'hold':
       return Item(els, props, {
         title: titleText(els, '⏸', TOKEN.warn, `HARD STOP ${props.item.stops.join(' + ')}: ${oneLine(props.item.what, 200)}`),
-        detail: `${LEVEL_GLYPH.delegate} ${props.item.peer.label} · answer in the dialog`,
+        detail: `${LEVEL_GLYPH.delegate} ${peerConfirmLabel(props.item.peer)} · answer in the dialog`,
         primary: { key: 'band:hold:open', label: '⏎ open' },
         keys: [],
         hidden: ['o'],
@@ -61,7 +61,7 @@ export function BandItemView(els: Els, props: BandProps): RenderElement {
       const { undo } = props.item
       const conf = undo.confidence === null ? '' : ` · conf ${undo.confidence.toFixed(2)}`
       return Item(els, props, {
-        title: titleText(els, LEVEL_GLYPH.auto, TOKEN.accent, `${undo.peer.label} replied "${oneLine(undo.text, 200)}"${conf}`),
+        title: titleText(els, LEVEL_GLYPH.auto, TOKEN.accent, `${peerConfirmLabel(undo.peer)} replied "${oneLine(undo.text, 200)}"${conf}`),
         detail: null,
         primary: { key: 'ap:band:undo-press', label: `undo ${undoLeft(undo, props.now)}s`, hotkey: 'u' },
         keys: [{ key: 'ap:band:undo-dismiss', label: 'ok', hotkey: 'd', run: props.on.dismiss }],
@@ -197,7 +197,7 @@ function DraftItem(els: Els, props: BandProps, item: Extract<BandItem, { kind: '
         <Box flexGrow={1} flexShrink={1}>
           <Text wrap="truncate-end">
             <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} `}</Text>
-            {`${draft.peer.label}: "${oneLine(draft.incoming, 200)}"${draft.why === '' ? '' : ` · ${draft.why}`}`}
+            {`${peerConfirmLabel(draft.peer)}: "${oneLine(draft.incoming, 200)}"${draft.why === '' ? '' : ` · ${draft.why}`}`}
           </Text>
         </Box>
         {verdict === null ? null : (

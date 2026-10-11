@@ -6,7 +6,7 @@
 import type { ActivityView, ApDialog, ApEntry, ApLevel, ApOutcome, ApPhase, LedgerEntry, PeerRef, PinWatch, TgPeerKind } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { packetLogText } from '../routing/route'
-import { GLYPH, NARROW_GLYPHS, cells as wideCells, clockText, labelCells, oneLine } from './model'
+import { GLYPH, clockText, dialogGlyph, labelCells, oneLine } from './model'
 import type { Role } from './palette'
 
 /** One chat with something on it. */
@@ -194,24 +194,12 @@ export function minSec(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-/**
- * The card's own glyphs a terminal draws in one cell (East Asian Width N or A,
- * §10.3). T12 adds them to NARROW_GLYPHS; the union keeps the count right
- * before and after that lands.
- */
-const CARD_NARROW: ReadonlySet<string> = new Set([...NARROW_GLYPHS, '…', '▰', '▱', '━', '■', '↻', '▣', '✓', '✗'])
-
-/** Cells of a card row: its narrow glyphs as drawn, everything else as `cells` counts it (erring wide). */
-export function cardCells(text: string): number {
-  return wideCells(text) - [...text].filter(char => CARD_NARROW.has(char)).length
-}
-
-/** `text` cut to `room` cells with `…`, counted as the terminal draws it (`cardCells`). */
+/** `text` cut to `room` cells with `…`, counted as the terminal draws it (`labelCells`). */
 export function cutCells(text: string, room: number): string {
-  if (cardCells(text) <= room) return text
+  if (labelCells(text) <= room) return text
   let out = ''
   for (const char of text) {
-    if (cardCells(`${out}${char}…`) > room) break
+    if (labelCells(`${out}${char}…`) > room) break
     out += char
   }
   return `${out}…`
@@ -220,7 +208,7 @@ export function cutCells(text: string, room: number): string {
 /** `text` cut to `width` cells and padded to exactly that. */
 function column(text: string, width: number): string {
   const cut = cutCells(text, width)
-  return `${cut}${' '.repeat(Math.max(0, width - cardCells(cut)))}`
+  return `${cut}${' '.repeat(Math.max(0, width - labelCells(cut)))}`
 }
 
 // The gauge: the chat nearest its limit.
@@ -278,7 +266,7 @@ export function gaugeLine(g: Gauge | null, width: number): Seg[] {
   const free = g.freeInMs === null ? '' : `${isWide ? '  ' : ' '}↻ ${minSec(g.freeInMs)}`
   const head = gaugeSegs(g)
   const per = isWide ? ' per hour' : ''
-  const used = cardCells(head.map(seg => seg.text).join('')) + per.length + 3 + cardCells(free)
+  const used = labelCells(head.map(seg => seg.text).join('')) + per.length + 3 + labelCells(free)
   return [
     ...head,
     { text: per, role: 'dim' },
@@ -344,7 +332,7 @@ export function stripLine(entries: readonly ApEntry[], width: number): Seg[] {
   const counted = cells(entries, 0).counts
   const tail = countSegs(counted, isWide)
   if (tail.length === 0) return [{ text: 'no replies yet', role: 'dim' }]
-  const tailCells = cardCells(tail.map(seg => seg.text).join(''))
+  const tailCells = labelCells(tail.map(seg => seg.text).join(''))
   const strip = cells(entries, width - 2 - tailCells)
   // Runs of one kind draw as one Text.
   const runs: Seg[] = []
@@ -474,15 +462,6 @@ export type LogRow = { key: string; at: number; peer: { label: string; kind: TgP
 
 const PACKET = '▣'
 
-export const KIND_ROLE = {
-  self: 'saved',
-  user: 'person',
-  bot: 'bot',
-  group: 'group',
-  supergroup: 'group',
-  channel: 'channel',
-  unknown: 'person',
-} as const satisfies Record<TgPeerKind, Role>
 
 const conf = (confidence: number | null) => (confidence === null ? '' : ` · ${confidence.toFixed(2)}`)
 
@@ -555,7 +534,7 @@ export function logLine(row: LogRow, width: number): Seg[] {
   const head = 5 + 2 + name + 1
   return [
     { text: `${clockText(row.at)}  `, role: 'dim' },
-    { text: `${column(row.peer.label, name)} `, role: KIND_ROLE[row.peer.kind] },
+    { text: `${column(row.peer.label, name)} `, role: dialogGlyph(row.peer.kind).role },
     { text: cutCells(row.text, Math.max(1, width - head)), role: row.tone },
   ]
 }

@@ -177,7 +177,7 @@ describe('the frame', () => {
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'tg', props: DOCK })
       expect((await ui.find({ key: 'header' }))?.text).toContain('tg › chats')
-      expect((await findChat(ui, 1001))?.text).toContain('@example_bot')
+      expect((await findChat(ui, 1001))?.text).toContain('Example Bot')
       expect((await findChat(ui, 1003))?.text).toContain('Saved Messages')
       await ui.unmount()
     }
@@ -207,7 +207,7 @@ describe('the frame', () => {
     // Chats stay on screen above the thread; the open chat's row is marked.
     expect((await findChat(ui, 1001))?.text).toContain('›')
     expect((await ui.find({ key: 'msg:677791' }))?.text).toContain('Something went wrong')
-    expect(await ui.find({ type: 'Text', text: '@example_bot · bot' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Example Bot · bot' })).toBeDefined()
     // In the chat the strip's digits are not live: only the active column's are.
     expect(await ui.find({ key: 'digit:1' })).toBeUndefined()
     expect(await tabsOf(ui)).toEqual(['‹All chats 3›', 'For you', 'Bots'])
@@ -223,7 +223,7 @@ describe('the frame', () => {
     await openChat(ui, 1001)
     expect(await findChat(ui, 1001)).toBeUndefined()
     expect(await ui.find({ key: 'strip' })).toBeUndefined()
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › @example_bot')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › Example Bot')
     expect((await ui.find({ key: 'key:back' }))?.text).toContain('chats')
     expect(await barKeys(ui)).toContain('back')
     await ui.press({ key: 'key:back' })
@@ -276,7 +276,7 @@ describe('keys', () => {
     await ui.press({ key: 'msg:677791' })
     expect(await ui.find({ key: 'sheet' })).toBeDefined()
     expect(await ui.find({ key: 'bar' })).toBeUndefined()
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › @example_bot')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › Example Bot')
     expect((await ui.find({ key: 'key:back' }))?.text).toBe('cancel')
     await ui.press({ key: 'key:agent' })
     expect(await ui.find({ key: 'route:main' })).toBeDefined()
@@ -324,7 +324,7 @@ describe('keys', () => {
     // On the first reply to /settings, which has no earlier reply to pair with.
     await ui.press({ key: 'key:up' })
     await ui.press({ key: 'key:menu' })
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › menu · @example_bot')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › menu · Example Bot')
     for (const key of ['menu:mark', 'menu:range', 'menu:record', 'menu:follow', 'menu:watch', 'menu:summary', 'menu:hide']) {
       expect(await ui.find({ key })).toBeDefined()
     }
@@ -786,7 +786,7 @@ async function stopsBeforeNode(ui: Ui, isEnd: (node: { type?: unknown; props?: {
   return count
 }
 
-/** Ring stops above the dock's divider (`─ @example_bot · bot ─`). */
+/** Ring stops above the dock's divider (`─ Example Bot · bot ─`). */
 async function stopsAbove(ui: Ui): Promise<number> {
   return stopsBeforeNode(ui, node => node.type === 'Text' && Array.isArray(node.children) && typeof node.children[0] === 'string' && node.children[0].startsWith('─ '))
 }
@@ -840,7 +840,7 @@ describe('the running strip comes and goes over the same ring stops (§4.3 rule 
     expect(await ui.find({ key: 'running' })).toBeUndefined()
     await ui.press({ key: 'key:follow' })
     const strip = await ui.find({ key: 'running' })
-    expect(strip?.text).toContain('⌁ @example_bot → main')
+    expect(strip?.text).toContain('⌁ Example Bot → main')
     expect(strip?.text).toContain('0: stop all')
     expect(await place(ui)).toEqual(base)
     await ui.press({ key: 'key:follow' })
@@ -848,7 +848,7 @@ describe('the running strip comes and goes over the same ring stops (§4.3 rule 
     expect(await place(ui)).toEqual(base)
     await ui.press({ key: 'key:follow' })
     await $.command.run(runTg('stop'))
-    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: @example_bot')
+    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: Example Bot')
     expect(await place(ui)).toEqual(base)
     await ui.unmount()
   })
@@ -906,13 +906,13 @@ describe('Activity (l, §5.7)', () => {
     await ui.press({ key: 'key:follow' })
     await ui.press({ key: 'key:activity' })
     expect((await ui.find({ key: 'header' }))?.text).toContain('tg › activity')
-    expect((await ui.find({ key: 'act:1001' }))?.text).toMatch(/^▸ ⌁ {2}@example_bot {3}follows → main · /)
+    expect((await ui.find({ key: 'act:1001' }))?.text).toMatch(/^▸ ⌁ {2}Example Bot {4}follows → main · /)
     expect((await ui.find({ key: 'act:1001' }))?.props.autoFocus).toBe(true)
     expect(await barKeys(ui)).toEqual(['open', 'back', 'menu'])
     const above = await stopsBefore(ui, 'act:1002')
     await $.command.run(runTg('stop'))
     // Both rows stay, so nothing above the second one moved.
-    expect((await ui.find({ key: 'act:1001' }))?.text).toContain('■  @example_bot   stopped')
+    expect((await ui.find({ key: 'act:1001' }))?.text).toMatch(/■ {2}Example Bot +stopped/)
     expect(await stopsBefore(ui, 'act:1002')).toBe(above)
     await ui.press({ key: 'key:down' })
     expect((await ui.find({ key: 'act:1002' }))?.props.autoFocus).toBe(true)
@@ -1175,9 +1175,9 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
         // only while the window's top row is past the divider of its day.
         const day = index === 0 || index === 10 ? null : index < 10 ? 'yesterday' : 'today'
         const header = (await ui.find({ key: 'header' }))?.text ?? ''
-        if (day === null) expect(header).not.toContain('tg › @example_bot · ')
+        if (day === null) expect(header).not.toContain('tg › Example Bot · ')
         else {
-          expect(header).toContain(`tg › @example_bot · ${day}`)
+          expect(header).toContain(`tg › Example Bot · ${day}`)
           named.add(day)
         }
         expect(await headerStops(ui)).toBe(0)
@@ -1189,7 +1189,7 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       expect([...named].sort()).toEqual(['today', 'yesterday'])
       // At the top the first divider is drawn, so the header names no day.
       expect((await rows(ui, 'msg:'))[0]).toBe(`msg:${CHIPPED[0]?.id}`)
-      expect((await ui.find({ key: 'header' }))?.text).not.toContain('tg › @example_bot · ')
+      expect((await ui.find({ key: 'header' }))?.text).not.toContain('tg › Example Bot · ')
       await ui.unmount()
     })
   }
@@ -1363,7 +1363,7 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
       // The ring keeps its place among the Buttons (§1): ⏎'s Button first in every item, so it stays on ⏎ (§4.3).
       expect(shape.isFirstRinged).toBe(true)
       expect(shape.rows).toBe(2)
-      // One Button per hotkey, each the table's band meaning; no digits in the band (§10).
+      // One Button per hotkey, each the table's band meaning; no digits in the band (§11).
       expect(await bandKeyProblems(band)).toEqual([])
       expect(await band.find({ type: 'Text', text: `${(step % 4) + 1}/4  j: next` })).toBeDefined()
       await band.press({ key: 'band:next' })
@@ -1459,12 +1459,12 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
       'tg 3 · ⌁1 · 2 for you',
       'running',
       // The test's world spawns no `tg watch`, so the follow reads failed.
-      '  ⌁  @example_bot   follows → main · failed',
+      '  ⌁  Example Bot    follows → main · failed',
       'watching  nothing',
       'waiting',
-      '  ✎ draft for Contact A: "Tomorrow is packed, can I write after 18?"',
-      '  ✎ draft for Dev Team: "Merging after lunch."',
-      '  ⟳ Dev Team replied "Merged, thanks" · u: undo 30s',
+      '  ✎ draft for Contact A · 1004: "Tomorrow is packed, can I write after 18?"',
+      '  ✎ draft for Dev Team · 1002: "Merging after lunch."',
+      '  ⟳ Dev Team · 1002 replied "Merged, thanks" · u: undo 30s',
       '  ◉ Dev Team: Release moved to Friday.',
     ])
     // The engine hands the row its text under the plugin's name (seen live); the card's title is the command's own.
@@ -1510,12 +1510,12 @@ describe('states', () => {
     await ui.unmount()
   })
 
-  test('an error is one red line and g: retry; g runs it again', async ($, on) => {
+  test('an error is one red line (the unread role) and g: retry; g runs it again', async ($, on) => {
     let isBroken = true
     engineSites(on)
     const { ui, clock } = await openPane($, on, DOCK, argv => (isBroken && argv[1] === 'dialogs' ? failure(1, 'error: the fake is down') : happy(argv)))
     const line = await ui.find({ type: 'Text', text: 'tg: the fake is down' })
-    expect(line?.props.color).toBe('red')
+    expect(line?.props.color).toBe('error')
     // Nothing is on its way: no `…` in the header, and the footer says it failed.
     expect((await ui.find({ key: 'header' }))?.text).not.toContain('…')
     expect(await siteText($, FOOTER)).toBe('focus & tg ⚠')
@@ -1530,12 +1530,12 @@ describe('states', () => {
     await ui.unmount()
   })
 
-  test('a flood wait is yellow and counts down; it retries by itself, so no g', async ($, on) => {
+  test('a flood wait is yellow (the held role) and counts down; it retries by itself, so no g', async ($, on) => {
     engineSites(on)
     const { ui } = await openPane($, on, DOCK, argv => (argv[1] === 'dialogs' ? failure(5, 'error: FLOOD_WAIT 23s: Telegram asks to wait before retrying') : happy(argv)))
     // Telegram's 23 s fall inside the 60 s a pass waits after the last one: the count is to the retry.
     const line = await ui.find({ type: 'Text', text: 'Telegram asks to wait 23 s · retrying in 60 s' })
-    expect(line?.props.color).toBe('yellow')
+    expect(line?.props.color).toBe('warning')
     expect(await ui.find({ key: 'reload' })).toBeUndefined()
     // Said once: the list says it, so the notice row does not; a wait is not a failure, so the footer waits too.
     expect((await ui.find({ key: 'running' }))?.text ?? '').not.toContain('asks to wait')
@@ -1695,34 +1695,35 @@ describe('the visual pass (§7, T7)', () => {
     return found
   }
 
-  test("a chat row's name keeps its column when an agent starts: the level column is always drawn (§7.3)", async ($, on) => {
+  test("a chat row's name keeps its column when an agent starts: the row's columns are fixed (§10.4)", async ($, on) => {
     const { ui } = await openPane($, on)
     const before = (await findChat(ui, 1001))?.text ?? ''
     await openChat(ui, 1001)
     await ui.press({ key: 'key:follow' })
     await ui.press({ key: 'key:back' })
     const after = (await findChat(ui, 1001))?.text ?? ''
-    expect(after).toContain('⌁ ◆ @example_bot')
-    expect(after.indexOf('@example_bot')).toBe(before.indexOf('@example_bot'))
+    expect(after).toContain('⬡ Example Bot')
+    expect(after.indexOf('Example Bot')).toBe(before.indexOf('Example Bot'))
     await ui.unmount()
   })
 
-  test("BotFather's ro takes the watch column, before the count and the time; a watched chat's ◎ the same column", async ($, on) => {
+  test("BotFather's row ends in ro, in the held role (§10.3)", async ($, on) => {
     const { ui } = await openPane($, on)
-    expect((await findChat(ui, 1006))?.text).toMatch(/@BotFather +ro {5} +10-08$/)
-    await ui.press({ key: 'key:watch' })
-    expect((await findChat(ui, 1001))?.text).toMatch(/@example_bot +◎ {4}2 +\S+$/)
+    expect((await findChat(ui, 1006))?.text).toMatch(/ BotFather .* ro$/)
+    expect((await texts(ui, await chatKey(ui, 1006))).find(one => one.text.trim() === 'ro')?.props.color).toBe('warning')
     await ui.unmount()
   })
 
-  test("a muted chat's count is dim, never bold; an unmuted one's bold", async ($, on) => {
+  test("a muted chat's count is dim, an unmuted one's in the unread role (§10.3, decision 5); an unread name bold", async ($, on) => {
     const muted = (argv: readonly string[]) => (argv[1] === 'dialogs' ? json(KINDS.map(one => (one.id === 1002 ? { ...one, muted: true, unread: 14 } : one))) : happy(argv))
     const { ui } = await openPane($, on, DOCK, muted)
-    const group = (await texts(ui, await chatKey(ui, 1002))).find(one => one.text.trim() === '·14')
-    expect(group?.props.dimColor).toBe(true)
-    expect(group?.props.bold).toBe(false)
-    const bot = (await texts(ui, await chatKey(ui, 1001))).find(one => one.text.trim() === '2')
-    expect(bot?.props.bold).toBe(true)
+    const group = await texts(ui, await chatKey(ui, 1002))
+    expect(group.find(one => one.text.trim() === '14')?.props.color).toBe('inactive')
+    // A muted chat's name is not bold: its count would bury the rest (§4.7).
+    expect(group.find(one => one.text.includes('Dev Team'))?.props.bold).toBe(false)
+    const bot = await texts(ui, await chatKey(ui, 1001))
+    expect(bot.find(one => one.text.trim() === '2')?.props.color).toBe('error')
+    expect(bot.find(one => one.text.includes('Example Bot'))?.props.bold).toBe(true)
     await ui.unmount()
   })
 
