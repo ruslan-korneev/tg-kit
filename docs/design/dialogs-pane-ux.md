@@ -2130,8 +2130,14 @@ left alone, as for the second yellow. What stays:
 - in tmux, cell 174 is also `claude`'s (`215;119;87`): the red topic shares it with the rose
   topic and the bot glyph ⬡. Two topics in one colour are told apart by their names; neither
   reads as an unread count;
-- P6 measured the dark theme only. In a light Claude Code theme the pair is unmeasured: T16 checks
-  `diffRemovedWord` ≠ `error` there once, and if they meet, says so here.
+- the other Claude Code themes, read once from 2.1.296's theme table (T13, a0e31fa): `light`
+  `error` `171;43;63` (125) and `diffRemovedWord` `209;69;75` (167, 4.5:1 on white);
+  `light-daltonized` `204;0;0` (160) and `153;51;51` (95); `light-ansi` `red` and `redBright`.
+  All apart;
+- a known gap: under `dark-ansi` both keys are `redBright`, so a red topic still draws in
+  `unread`'s colour there. No cue for it: no probe has shown a way for the mod to read which Claude
+  Code theme is on, and a second shape for one topic colour would say nothing in the others. The topic's name
+  and the unread count's column tell them apart, as in the single-red catalogue themes.
 
 #### The theme catalogue
 
