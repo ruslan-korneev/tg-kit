@@ -9,7 +9,6 @@ import { DRAFT_INDENT, type DraftView, type VerdictTone } from './drafts'
 import { cutCells } from '../folders/folders'
 import {
   GLYPH,
-  TOKEN,
   cells,
   failureRole,
   failureText,
@@ -261,17 +260,6 @@ export function EmptyList({ Text }: Els, props: { text: string }): RenderElement
   return (
     <Text key="empty" dimColor wrap="wrap">
       {props.text}
-    </Text>
-  )
-}
-
-/** `─ label ───…`; `right` ends it (`─ start here ──── d: got it ─`). */
-export function Divider({ Text }: Els, props: { label: string; width: number; right?: string }): RenderElement {
-  const label = props.label === '' ? '' : ` ${props.label} `
-  const right = props.right === undefined ? '' : ` ${props.right} ─`
-  return (
-    <Text color={TOKEN.accent} dimColor wrap="truncate-end">
-      {`─${label}`.padEnd(Math.max(1, props.width - right.length), '─') + right}
     </Text>
   )
 }
