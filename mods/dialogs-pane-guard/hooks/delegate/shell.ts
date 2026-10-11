@@ -281,9 +281,62 @@ function expand(words: readonly string[], depth: number): Reading {
   return out
 }
 
-/** The commands an argv runs (a launcher's `uv run …`), read as one simple command of a Bash command is. */
-export function readArgv(words: readonly string[]): Reading {
-  return expand(words, 0)
+// --- launchers: uv run, uv tool run, uvx, pipx run ---
+
+/** The options of uv, uv run, uv tool run, uvx and pipx run that take a value. */
+const LAUNCHER_VALUE = new Set([
+  '--with', '--with-editable', '--with-requirements', '--from', '--python', '-p', '--package', '--project', '--directory', '--env-file', '--index',
+  '--default-index', '--index-url', '--extra-index-url', '--find-links', '-f', '--extra', '--group', '--only-group', '--no-group', '--config-file',
+  '--cache-dir', '-w', '--spec', '--pip-args', '--color',
+])
+
+/** Past a launcher's options to its next word; `-m X` is Python's module X. */
+function pastOptions(words: readonly string[]): string[] {
+  let rest = [...words]
+  for (;;) {
+    const word = rest[0]
+    if (word === undefined || !word.startsWith('-')) return rest
+    if (word === '--') return rest.slice(1)
+    if (word === '-m' || word === '--module') return ['python', '-m', rest[1] ?? '']
+    if (word.startsWith('--module=')) return ['python', '-m', word.slice(9)]
+    rest = rest.slice(word.includes('=') || !LAUNCHER_VALUE.has(word) ? 1 : 2)
+  }
+}
+
+/** What a launcher runs: `uv run X`, `uv tool run X`, `uvx X`, `pipx run X`; null when it is no launcher. */
+export function launched(simple: Simple): string[] | null {
+  const name = base(simple[0] ?? '').toLowerCase()
+  if (name === 'uvx') return pastOptions(simple.slice(1))
+  if (name !== 'uv' && name !== 'pipx') return null
+  let rest = pastOptions(simple.slice(1))
+  if (name === 'uv' && rest[0] === 'tool') rest = pastOptions(rest.slice(1))
+  return rest[0] === 'run' ? pastOptions(rest.slice(1)) : null
+}
+
+/**
+ * The reading with what its launchers run added (`uv run gh pr merge` → `gh
+ * pr merge` too), launchers in launchers as well; deeper than the reader
+ * goes is isTooDeep. The grant's tg rule and the hard stops both read it.
+ */
+export function seeThrough(reading: Reading): Reading {
+  const out: Reading = { ...reading, commands: [...reading.commands], expanded: new Set(reading.expanded), assigns: [...reading.assigns] }
+  let layer = reading.commands
+  for (let depth = 0; layer.length > 0; depth++) {
+    const next: Simple[] = []
+    for (const simple of layer) {
+      const inner = launched(simple)
+      if (inner === null) continue
+      if (depth >= MAX_DEPTH) {
+        out.isTooDeep = true
+        continue
+      }
+      const read = expand(inner, 0)
+      merge(out, read)
+      next.push(...read.commands)
+    }
+    layer = next
+  }
+  return out
 }
 
 /** The simple commands a Bash command runs, `sh -c '…'`, `eval '…'`, `find -exec` and `git rebase -x` read inside. */
@@ -322,6 +375,19 @@ export function operands(simple: Simple): string[] {
 
 /** A redirection word: its operator and what follows it in the same word. */
 const REDIRECT = /^(?:\d*|&)(>>|>\||>&|<<<|<<|<>|<&|>|<)(.*)$/s
+
+/** What a command reads in through a redirect: `<f`, `< f`, `<>f`, `<&f` (not `<&0`), and a here-string's word. */
+export function inputTargets(simple: Simple): string[] {
+  const out: string[] = []
+  simple.slice(1).forEach((word, i) => {
+    const redirect = REDIRECT.exec(word)
+    const op = redirect?.[1] ?? ''
+    if (redirect === null || !(op === '<' || op === '<>' || op === '<&' || op === '<<<')) return
+    const target = (redirect[2] ?? '') === '' ? (simple[i + 2] ?? '') : (redirect[2] ?? '')
+    if (target !== '' && !(op === '<&' && /^(\d+-?|-)$/.test(target))) out.push(target)
+  })
+  return out
+}
 
 /**
  * Every string a command's words can name a path with: each word itself, a

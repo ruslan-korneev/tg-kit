@@ -344,6 +344,10 @@ deadline all count as no. The brief cannot turn them off:
 - deleting anything outside the worktree;
 - agreeing to a deadline or a price on your behalf.
 
+The Worker's calls are read the way the grant reads them: what `sh -c`, `eval`, `xargs`,
+`find -exec`, `git rebase -x` and a launcher (`uv run`, `uvx`, `pipx run`) run counts, and so does
+a file fed in through `<`. A command nested deeper than that reader follows asks for every stop.
+
 **Turning hard stops off: `dangerouslySkipHardStops`.** The name is deliberately long and scary,
 like `--dangerously-skip-permissions`. Stops are named so they can be skipped one by one:
 `money`, `publish` (push, merge, deploy), `share` (files, credentials, personal data), `delete`,

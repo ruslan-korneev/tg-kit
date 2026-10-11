@@ -215,6 +215,18 @@ describe('hard stops', () => {
     expect(await guardValue($, 'holds')).toEqual([])
   })
 
+  test('T10: under `any`, a merge behind a launcher waits in the dialog as a plain one does; No keeps it from running', WITH_PANE, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const seen = world(on)
+    seen.dialog = 'No'
+    await start($, { ...DELEGATE, tasks: [{ ...TASK, grant: { ...TASK.grant, commands: 'any' } }] })
+    const result = await worker($, 'uv run gh pr merge 12 --squash')
+    expect(seen.questions).toEqual(['HARD STOP publish (Worker for Dev Team): gh pr merge 12 --squash. Allow it?'])
+    expect(result.deny).toContain('Hard stop publish')
+    expect((await worker($, 'uv run pytest -q')).deny).toBeUndefined()
+    expect(seen.ran).toEqual(['uv run pytest -q'])
+  })
+
   test('No refuses it: the push never runs', WITH_PANE, async ($, on) => {
     mock.clock(on, { now: NOW })
     const seen = world(on)

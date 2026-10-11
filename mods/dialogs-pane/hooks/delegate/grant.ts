@@ -4,7 +4,7 @@
 // grant holds whatever the prompt says. Pure.
 import type { DgCommands, DgDialog, DgDuration, DgGrant, DgSkip, DgStop, DgWeb } from './contract'
 import { isInside, isUnresolvable, resolvePath } from './paths'
-import { base, gitSub, operands, pathWords, readArgv, readCommand, type Reading, type Simple } from './shell'
+import { base, gitSub, operands, pathWords, readCommand, seeThrough, type Reading, type Simple } from './shell'
 import { DG_STOPS, type Place, type ToolUse } from './stops'
 
 export const DG_WEB = ['off', 'read', 'full'] as const satisfies readonly DgWeb[]
@@ -423,36 +423,6 @@ function programWords(simple: Simple, name: string): string[] {
 // --- tg: never the Worker's (dialogs-pane-ux.md §9 decision 11) ---
 
 const PYTHON = /^(python|pypy)(\d+(\.\d+)*)?$/
-/** The options of uv, uv run, uv tool run, uvx and pipx run that take a value. */
-const LAUNCHER_VALUE = new Set([
-  '--with', '--with-editable', '--with-requirements', '--from', '--python', '-p', '--package', '--project', '--directory', '--env-file', '--index',
-  '--default-index', '--index-url', '--extra-index-url', '--find-links', '-f', '--extra', '--group', '--only-group', '--no-group', '--config-file',
-  '--cache-dir', '-w', '--spec', '--pip-args', '--color',
-])
-
-/** Past a launcher's options to its next word; `-m X` is Python's module X. */
-function pastOptions(words: readonly string[]): string[] {
-  let rest = [...words]
-  for (;;) {
-    const word = rest[0]
-    if (word === undefined || !word.startsWith('-')) return rest
-    if (word === '--') return rest.slice(1)
-    if (word === '-m' || word === '--module') return ['python', '-m', rest[1] ?? '']
-    if (word.startsWith('--module=')) return ['python', '-m', word.slice(9)]
-    rest = rest.slice(word.includes('=') || !LAUNCHER_VALUE.has(word) ? 1 : 2)
-  }
-}
-
-/** What a launcher runs: `uv run X`, `uv tool run X`, `uvx X`, `pipx run X`; null when it is no launcher. */
-function launched(simple: Simple): string[] | null {
-  const name = base(simple[0] ?? '').toLowerCase()
-  if (name === 'uvx') return pastOptions(simple.slice(1))
-  if (name !== 'uv' && name !== 'pipx') return null
-  let rest = pastOptions(simple.slice(1))
-  if (name === 'uv' && rest[0] === 'tool') rest = pastOptions(rest.slice(1))
-  return rest[0] === 'run' ? pastOptions(rest.slice(1)) : null
-}
-
 /** Whether Python runs tg-kit's code: `-m tg_kit…`, a `-c` text or a script that names tg_kit. */
 function runsTgKit(simple: Simple): boolean {
   const names = (text: string | undefined) => (text ?? '').toLowerCase().includes('tg_kit')
@@ -476,17 +446,10 @@ function runsTgKit(simple: Simple): boolean {
   return false
 }
 
-/** Whether a simple command runs tg: by any path, behind a launcher, or as Python on tg_kit. */
-function runsTg(simple: Simple, depth = 0): boolean {
+/** Whether a simple command runs tg: by any path, or as Python on tg_kit (launchers are seen through by seeThrough). */
+function runsTg(simple: Simple): boolean {
   const name = base(simple[0] ?? '').toLowerCase()
-  if (name === 'tg') return true
-  if (PYTHON.test(name)) return runsTgKit(simple)
-  const inner = launched(simple)
-  if (inner === null) return false
-  // A launcher in a launcher in a launcher: fail closed.
-  if (depth >= 3) return true
-  const reading = readArgv(inner)
-  return reading.isTooDeep || reading.commands.some(one => runsTg(one, depth + 1))
+  return name === 'tg' || (PYTHON.test(name) && runsTgKit(simple))
 }
 
 // --- links: the grant reads paths without following them (paths.ts), so none may lead out ---
@@ -542,8 +505,9 @@ function bashCheck(command: string, grant: DgGrant, scope: Scope): GrantCheck {
   const reading = readCommand(command)
   const isChecks = grant.commands === 'checks'
   // Decision 11, before the mode: what is nested too deep may run tg, and is refused in both modes.
-  if (reading.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec, git rebase -x)')
-  const tg = reading.commands.find(simple => runsTg(simple))
+  const seen = seeThrough(reading)
+  if (seen.isTooDeep) return refuse('commands nested deeper than the grant reads (sh -c, eval, find -exec, git rebase -x, launchers)')
+  const tg = seen.commands.find(runsTg)
   if (tg !== undefined) return refuse(`${tg.join(' ').slice(0, 60)}: tg is never the Worker's to run, in either commands mode; the Speaker is the only voice in the chat`)
   const start = scope.worktrees[0] ?? '/'
   // Where each simple command stands: its worktree, and where a `cd` before it went (null: it cannot be told).
