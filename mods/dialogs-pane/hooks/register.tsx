@@ -5429,9 +5429,15 @@ async function footerText($: $): Promise<string> {
   return footerLabel(await unreadHead($), await summaryOf($))
 }
 
-/** What the pane draws now, so the band does not say it twice. */
+/**
+ * What the pane draws now, so the band does not say it twice. An open pane
+ * the engine has not placed (a terminal too narrow) or keeps behind another
+ * tab draws nothing.
+ */
 async function onScreen($: $): Promise<OnScreen> {
   if ((await read($, mode)) === 'hidden') return NOTHING_ON_SCREEN
+  const pane = (await $.ui.panes()).find(one => one.id === PANE)
+  if (pane === undefined || !pane.isPlaced || !pane.isShown) return NOTHING_ON_SCREEN
   const where = await read($, nav)
   const open = await read($, thread)
   const isDock = lastSeat === 'dock'

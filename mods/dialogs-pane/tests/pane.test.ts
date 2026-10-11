@@ -40,6 +40,8 @@ type World = {
   store: Map<string, unknown>
   /** What /tg registered: its description and argument hint list the subcommands. */
   registered: { description: string; argumentHint?: string }[]
+  /** Whether the engine placed the pane: false is a terminal too narrow for it. */
+  isPlaced: boolean
 }
 
 const json = (value: unknown): ProcessRunResult => ({
@@ -60,7 +62,7 @@ const failure = (exitCode: number, stderr: string): ProcessRunResult => ({
 
 /** The engine beneath the plugin: tg, panes, the ring, status line, toasts, store, clock. */
 function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store: Record<string, unknown> = {}): World {
-  const seen: World = { opened: [], closed: [], status: [], toasts: [], store: new Map(Object.entries(store)), registered: [] }
+  const seen: World = { opened: [], closed: [], status: [], toasts: [], store: new Map(Object.entries(store)), registered: [], isPlaced: true }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
   on('store.set', (_$, e) => {
@@ -81,7 +83,9 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
     seen.closed.push(e.id)
     return { value: undefined }
   })
-  on('ui.panes', () => ({ value: [] }))
+  // The panes this world opened and did not close, placed and shown unless a test says otherwise.
+  const isOpen = (id: string) => seen.opened.filter(one => one === id).length > seen.closed.filter(one => one === id).length
+  on('ui.panes', () => ({ value: [...new Set(seen.opened)].filter(isOpen).map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: seen.isPlaced })) }))
   on('ui.focus', () => ({}))
   // `t`'s summary: the model's answer, the same for every chat.
   on('model.complete', () => ({ value: { isAnswered: true, text: '- they ask to call\n- at 10 tomorrow', usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } }))
@@ -958,6 +962,21 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_SITE })
     expect((await bandShape(band)).first).toBe('ap:note:open')
     expect(await band.find({ type: 'Text', text: /j: next/ })).toBeUndefined()
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test('an open pane the engine has not placed draws nothing: the band keeps For you\'s drafts', async ($, on) => {
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const { ui, seen } = await openPane($, on)
+    await fillBand($, write)
+    await ui.press({ key: 'key:foryou' })
+    // A terminal too narrow for the pane: open, but not drawn.
+    seen.isPlaced = false
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_SITE })
+    expect((await bandShape(band)).first).toBe('ap:draft:send')
+    expect(await band.find({ type: 'Text', text: '1/4  j: next' })).toBeDefined()
     await band.unmount()
     await ui.unmount()
   })
