@@ -262,7 +262,12 @@ lower part. Inline, each view takes the body.
   drawing still has lands on the old drawing. So ⏎ stays on the cursor row only when:
   1. a view never changes how many stops are drawn above the cursor row while the cursor stays: an
      element only some views use is drawn in all of them, without its hotkey where it does not
-     work (the strip's `s: search`);
+     work (the strip's `s: search`). Rows under a list count too: one that comes or goes while the
+     cursor stays changes the list's room, and the window's start moves with it. So the marks
+     count rides the action bar's row; notices ride a row that is always there (the dock's
+     running-strip row; inline, a notice row the windows always leave room for); the send box and
+     the search field are layers in the bar's row; `t`'s summary is a layer; and a drafted reply
+     waits until it is opened as one (T4b);
   2. lists scroll at their edges: a move inside the window never changes which rows are above the
      cursor, and a move past the edge brings a row the old drawing did not have, which the ring
      waits for;
@@ -833,13 +838,13 @@ the same message. In a group with a bot in it, the bot's messages still get pres
 Flow 2 · Wide · 1 pressed Retry while recording
 ┌────────────────────────────────────────────────────────────────┐
 │tg › @example_bot                               ● rec 3   ● keys│
+│pressed Retry → edited in place · the bot said "Saved"          │
 │  (list as on the home screen)                                  │
 │─ @example_bot · bot · ◎ watched ───────────────────────────────│
 │   21:09 you  /settings                                         │
 │   21:09 bot  ⚠ Something went wrong                       ⏱1.1s│
 │▸  21:10 bot  Settings saved   (edited)           ⏱1.3s  #677801│
 │              1: Back                                           │
-│pressed Retry → edited in place · the bot said "Saved"          │
 │⏎ send…  1: press  n: write  r: stop rec  f: diff  m: menu      │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -1325,10 +1330,12 @@ titles, never a second row, and `s: search` moves to the action bar.
 
 Budgets: the dock spends at most three rows on chrome (header, folder strip while in Chats, action
 bar), plus the running strip's row, kept whether it shows or not (it comes and goes while the
-cursor stays, and §4.3 rule 1 keeps the rows above the cursor still), plus what is temporary (a
-sheet, one notice). Inline spends two (header with the strip, action bar). Inline, the frame is as
-tall as what it holds, up to the room (`scroll.bodyRows`): the engine fits an inline frame to its
-tree, and `height` does not pad it.
+cursor stays, and §4.3 rule 1 keeps the rows above the cursor still). That row also carries the
+notices. A layer replaces rows rather than adding them: the send sheet, the send box and the search
+field take the bar's place. Inline spends two (header with the strip, action bar) and leaves one row
+of the room for a notice. Inline, the frame is as tall as what it holds, up to the room
+(`scroll.bodyRows`): the engine fits an inline frame to its tree, and `height` does not pad it, so
+the notice row costs nothing while it is empty.
 Cards align their labels in a 7-column left column (`brief`, `limits`, `asks`, `writes`, `grant`,
 `stops`, `guard`).
 
@@ -1362,6 +1369,7 @@ T0b kill switch now  ─┤  independent and small: any time, before T1 is fine
 T0c allowlist fix    ─┤
 T0d owner's writes   ─┘
 T8 tg folders ─▶ T8b one pass (CLI, Python): independent of T1; T9 needs both
+T2 + T4 ─▶ T4b rows that come and go keep the windows still (before T9)
 T1 frame, keys, menu, focus ──┬─▶ T2 send sheet ──┬─▶ T6 bot testing ──┐
                               ├─▶ T3 agent card    │                   │
                               ├─▶ T4 running, stop │                   ├─▶ T7 onboarding, states, docs
@@ -1369,11 +1377,12 @@ T1 frame, keys, menu, focus ──┬─▶ T2 send sheet ──┬─▶ T6 bot
                               └─▶ T9 folders, For you (needs T8b) ─────┘
 ```
 
-With one builder at a time, after T0b, T0c, T0d, T8, T8b and T1: T2, T4, T9, T5, T3, T6, T7.
-Safety came first. Send is next, the flow the owner uses most: T0b and T1 already stop every
-autopilot and Worker (`0`, `/tg stop`), and what T4 adds (the running strip, names, follows in `0`,
-Activity) touches no Telegram write, so it can follow T2, which needs nothing from T4. Then the
-owner's folders, what runs at a glance, the agent card.
+With one builder at a time, after T0b, T0c, T0d, T8, T8b, T1, T2 and T4: T4b, T9, T5, T3, T6, T7.
+Safety came first. Send came next, the flow the owner uses most: T0b and T1 already stopped every
+autopilot and Worker (`0`, `/tg stop`), and what T4 added (the running strip, names, follows in
+`0`, Activity) touches no Telegram write, so it could follow T2. T4b comes before T9 because a
+ring off the cursor makes ⏎ act on the wrong row, and T9's live lists are the same class. Then
+the owner's folders, what runs at a glance, the agent card.
 
 **T0a — a fake tg for live runs** (½ h, optional). `mods/dialogs-pane/dev/fake-tg` answering
 `dialogs`, `read`, `msg`, `whoami`, `allow list`, `send` (with `--dry-run`), `press`, `delete` and
@@ -1480,6 +1489,36 @@ BotFather runs nothing.
   bursts, drafts, stop events), `u` on a row in its undo window, `d` dismisses finished tasks.
 - Tests: `0` empties pins, running and live tasks (TaskStop called); `/tg stop` while a turn runs;
   the merged log's order.
+
+**T4b — rows that come and go keep the windows still** (½–1 day; after T2 and T4, before T9).
+§4.3 rule 1 covers the rows under a list too. Today the marks line, a notice, routing's drafted
+reply, the send box (`n`), `t`'s summary and the search field (`s`) take rows from a list's room
+while the cursor stays. The window shrinks, and its start moves: in a 40-message thread at a 31-row
+dock, `x` on the newest message moved the first row shown, and the cursor's stop, by one.
+- The marks count leads the action bar's row: `▪ 3 marked` before the verbs, `v: range end` while
+  a range is open. The marks line (T1) goes.
+- Notices take a row that is always there: a press's or a send's result, `… pressing`, an error,
+  the guard's refusal, a draft that waits. In the dock that is the running strip's row, for 15 s
+  or until `d`; while something runs, the notice takes the row's left part and `0: stop all` keeps
+  its place. Inline, the windows always leave one row of the room for a notice; the frame fits its
+  content, so the row costs nothing while it is empty.
+- The send box (`n`) and the search field (`s`) are layers in the bar's row, as the send sheet's
+  Ask field is. The list under them is static while they hold the ring (rule 3), so closing them
+  rings the cursor row by a key the closing drawing does not have. ⏎ on an empty field closes it.
+- `t`'s summary is a layer over the lower part (dock) or the body (inline); `h` closes it.
+- A drafted reply waits (routing's Draft reply, until T3 makes drafts rows of their chat). The
+  notice says `✎ draft for Contact A waits · e: open`, and `e` opens it as a layer, with its
+  check, send reply, edit and drop as today; `h` closes it and it waits on.
+- The task card's lines (T4) then follow a lower part that no longer moves.
+- Tests:
+  - At 30–33 dock rows and inline, in a 40-message thread and a 60-chat list, for each of: `x`; a
+    notice arriving; `n` with a send and with an empty ⏎; `s` and its submit; `t` and its summary
+    landing; a draft landing, then `e` and `h`. The cursor's stop and the window's first row are
+    the same before and after.
+  - No `msg:`, `btn:` or `dialog:` Button is drawn under a layer that holds the ring.
+  - The kill switch stops in order: TaskStop, then a dialog's lease release (`$.store.delete`),
+    then the follow's watch (its generator's `finally`), recorded in the hooks.
+  - Appendix A's live check adds `x` ⏎, `n` with an empty ⏎, and `t` `h`.
 
 **T5 — footer, band, transcript, `/tg`** (1 day; after T1).
 - `SessionMode` label with the summary; `$.ui.status` only for the three alarms; `PromptHint` tail
@@ -1738,4 +1777,5 @@ Decided by the owner after the second pass (2026-10-10):
   needs a bot thread that long): `k` ten times, then ⏎ `h` ⏎. The inverse ring stays on ▸ each
   time; a ring a row or more away from ▸ means one of §4.3's ring rules broke. No unit test sees
   the ring, so the tests check the rules instead: `j` and `k` inside a window keep its first row,
-  and no `msg:` or `btn:` Button is drawn while the send sheet holds the ring.
+  and no `msg:` or `btn:` Button is drawn while the send sheet holds the ring. From T4b on, also
+  `x` then ⏎, `n` then ⏎ on the empty field, and `t` then `h`.
