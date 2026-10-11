@@ -43,6 +43,9 @@ export function edgeStart(start: number, cursor: number, rows: number, length: n
   return Math.min(Math.max(0, moved), Math.max(0, length - room))
 }
 
+/** A dialog row's cells besides the name (§7.3): cursor 2, level 2, kind 2, watch 2, unread 4, time 10. */
+const DIALOG_FIXED = 22
+
 /** The rows of `list` a window of `rows` from `start` shows. */
 export function windowAt<T>(list: readonly T[], start: number, rows: number): T[] {
   return list.slice(start, start + Math.max(1, rows))
@@ -62,9 +65,9 @@ export function DialogRow(
     width: number
     now: number
     onOpen: () => void
-    /** One glyph after `ro`/`⌁`: the watch mark. */
+    /** The watch column's glyph (◎, colored by the watch's health); BotFather's `ro` takes the column instead. */
     mark?: { text: string; color?: string }
-    /** The autopilot's level glyph before the name, and `auto 3/50` after the marks; `warn` (red): ── delegate ── skipped hard stops. */
+    /** The autopilot's level glyph in the level column, and `auto 3/50` after the name; `warn` (red): ── delegate ── skipped hard stops. */
     autopilot?: { glyph: string; tail: string; warn?: string }
   },
 ): RenderElement {
@@ -74,23 +77,26 @@ export function DialogRow(
   // A muted chat's count is dim and marked `·14`: muted ones would bury the rest (§4.7, §5).
   const badge = isUnread ? `${dialog.muted ? '·' : ''}${dialog.unread}` : ''
   const time = shortTime(dialog.last_date, props.now)
-  const marks = isReadOnlyPeer(dialog) ? 'ro' : props.isPinned ? GLYPH.pinned : ''
-  // cursor(2) glyph(2) badge(4) time(10) marks(3): the name takes what is left; an autopilot mark takes its own.
   const pilot = props.autopilot
-  const nameWidth = Math.max(8, props.width - 21 - (pilot === undefined ? 0 : pilot.tail.length + 3 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)))
+  // §7.3: cursor 2 · level 2 · kind 2 · name · watch 2 · unread 4 · time 10. The level column is always drawn,
+  // so a name does not shift when an agent starts; a follow is the ladder's first level (decision 2), so ⌁ sits there too.
+  const level = pilot !== undefined ? pilot.glyph : props.isPinned ? GLYPH.pinned : ' '
+  // The watch column: `ro` on BotFather (read-only, nothing to watch there), else the watch mark.
+  const watch = isReadOnlyPeer(dialog) ? { text: 'ro', color: TOKEN.warn } : props.mark
+  const tail = pilot === undefined ? 0 : pilot.tail.length + 1 + (pilot.warn === undefined ? 0 : pilot.warn.length + 1)
+  const nameWidth = Math.max(8, props.width - DIALOG_FIXED - tail)
   const cells = [
     <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : props.isOpen ? `${GLYPH.open} ` : '  '}</Text>,
-    pilot === undefined ? null : <Text color={TOKEN.accent}>{pilot.glyph} </Text>,
+    <Text color={TOKEN.accent}>{`${level} `}</Text>,
     <Text color={color}>{glyph} </Text>,
     <Text bold={(isUnread && !dialog.muted) || props.isOpen} underline={props.isOpen}>
       {pad(dialogLabel(dialog), nameWidth)}
     </Text>,
-    <Text bold={!dialog.muted} dimColor={dialog.muted}>{badge.padStart(3)} </Text>,
-    <Text dimColor>{time.padStart(9)} </Text>,
-    <Text color={isReadOnlyPeer(dialog) ? TOKEN.warn : TOKEN.accent}>{marks}</Text>,
-    props.mark === undefined ? null : <Text color={props.mark.color}>{props.mark.text}</Text>,
-    pilot === undefined ? null : <Text dimColor> {pilot.tail}</Text>,
-    pilot?.warn === undefined ? null : <Text color={TOKEN.danger}> {pilot.warn}</Text>,
+    pilot === undefined ? null : <Text dimColor>{`${pilot.tail} `}</Text>,
+    pilot?.warn === undefined ? null : <Text color={TOKEN.danger}>{`${pilot.warn} `}</Text>,
+    <Text color={watch?.color}>{(watch?.text ?? '').padEnd(2)}</Text>,
+    <Text bold={!dialog.muted} dimColor={dialog.muted}>{badge.padStart(4)}</Text>,
+    <Text dimColor>{time.padStart(10)}</Text>,
   ]
   if (props.isStatic === true) {
     return (
@@ -157,7 +163,8 @@ export function MessageCard(
   const head = [
     <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>,
     <Text dimColor> {clockOf(message.date).padEnd(5)} </Text>,
-    <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{fit(sender, props.sender.width)}</Text>,
+    // The bot token is the ◆ glyph's alone (§7.1): the sender column stays plain.
+    <Text>{fit(sender, props.sender.width)}</Text>,
     <Text>{' '.repeat(props.sender.gap)}</Text>,
     <Text color={color}>{fit(oneLine(body, textWidth), textWidth)}</Text>,
   ]

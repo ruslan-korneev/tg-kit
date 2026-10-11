@@ -43,10 +43,8 @@ export function RunningStrip({ Box, Text }: Els, props: { shown: readonly StripI
     <Box key="running" flexDirection="row" justifyContent="space-between" columnGap={2}>
       {left}
       {props.isRunning ? (
-        <Text>
-          <Text color={TOKEN.accent}>{STOP_LABEL.slice(0, 2)}</Text>
-          <Text color={TOKEN.danger}>{STOP_LABEL.slice(2)}</Text>
-        </Text>
+        // The kill switch is the danger token's, key and all (§7.1): it is the one red thing the strip says.
+        <Text color={TOKEN.danger}>{STOP_LABEL}</Text>
       ) : null}
     </Box>
   )

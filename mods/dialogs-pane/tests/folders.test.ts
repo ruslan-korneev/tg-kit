@@ -504,7 +504,8 @@ describe('a list that changes while the cursor stays keeps the ring (§4.3, §8 
       await clock.settle()
       expect(await place(ui)).toEqual(base)
       expect(await genOf(ui)).toBe(gen)
-      expect((await findChat(ui, 3002))?.text).toMatch(/Contact 12 +1 /)
+      // The count changes in place, after the watch column's ◎ (§7.3).
+      expect((await findChat(ui, 3002))?.text).toMatch(/Contact 12 +◎ +1 /)
       if (inline) expect((await ui.find({ key: 'notice' }))?.text).toBe('↑ 1 moved · g: apply')
       else expect((await ui.find({ key: 'strip' }))?.text).toContain('↑1')
       await ui.unmount()

@@ -302,7 +302,8 @@ export function Menu(els: Els, props: { sections: readonly MenuSection[]; onKey:
               const id = def.id as RunKey
               return (
                 <Button key={`menu:${def.id}`} plain hotkey={def.hotkey ?? undefined} onPress={() => props.onKey(id)}>
-                  {def.hotkey === null ? head : entry.label}
+                  {/* 0 is drawn red while it has something to stop, here as in the bar and the strip (§7.1). */}
+                  {def.id === 'stop' ? <Text color={TOKEN.danger}>{entry.label}</Text> : def.hotkey === null ? head : entry.label}
                 </Button>
               )
             })}

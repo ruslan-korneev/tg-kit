@@ -375,6 +375,22 @@ describe('the agent card (§5.4, §4.6, decisions 2 and 8)', () => {
     await ui.unmount()
   })
 
+  test("a bot chat's bar leaves a to the menu: the menu's a is pressable and opens the card on follow and summarize (T7)", async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1001)
+    expect(await barKeys(ui)).not.toContain('agent')
+    // Live all the same: a hidden key under the bar.
+    expect((await ui.find({ key: 'key:agent' }))?.props.hotkey).toBe('a')
+    await ui.press({ key: 'key:menu' })
+    const entry = await ui.find({ key: 'menu:agent' })
+    expect(entry?.type).toBe('Button')
+    expect(entry?.props.hotkey).toBe('a')
+    await ui.press({ key: 'menu:agent' })
+    expect(await ui.find({ key: 'menu' })).toBeUndefined()
+    expect(await rungs(ui)).toEqual(['follow', 'listen'])
+    await ui.unmount()
+  })
+
   test('a channel: follow and summarize only, summarize picked, and the card says why nothing writes', async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1005)
@@ -1621,6 +1637,72 @@ describe('the first open: the start block until d (§4.4, §8 T7)', () => {
       await ui.unmount()
     })
   }
+})
+
+describe('the visual pass (§7, T7)', () => {
+  /** The Text nodes under a drawn element, with their props, in order. */
+  async function texts(ui: Ui, key: string): Promise<{ text: string; props: Record<string, unknown> }[]> {
+    const found: { text: string; props: Record<string, unknown> }[] = []
+    const walk = (node: unknown) => {
+      if (typeof node !== 'object' || node === null) return
+      const one = node as { type?: unknown; props?: Record<string, unknown>; children?: unknown }
+      if (one.type === 'Text' && Array.isArray(one.children) && one.children.every(child => typeof child === 'string')) found.push({ text: one.children.join(''), props: one.props ?? {} })
+      if (Array.isArray(one.children)) for (const child of one.children) walk(child)
+    }
+    walk(await ui.find({ key }))
+    return found
+  }
+
+  test("a chat row's name keeps its column when an agent starts: the level column is always drawn (§7.3)", async ($, on) => {
+    const { ui } = await openPane($, on)
+    const before = (await findChat(ui, 1001))?.text ?? ''
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    await ui.press({ key: 'key:back' })
+    const after = (await findChat(ui, 1001))?.text ?? ''
+    expect(after).toContain('⌁ ◆ @example_bot')
+    expect(after.indexOf('@example_bot')).toBe(before.indexOf('@example_bot'))
+    await ui.unmount()
+  })
+
+  test("BotFather's ro takes the watch column, before the count and the time; a watched chat's ◎ the same column", async ($, on) => {
+    const { ui } = await openPane($, on)
+    expect((await findChat(ui, 1006))?.text).toMatch(/@BotFather +ro {5} +10-08$/)
+    await ui.press({ key: 'key:watch' })
+    expect((await findChat(ui, 1001))?.text).toMatch(/@example_bot +◎ {4}2 +\S+$/)
+    await ui.unmount()
+  })
+
+  test("a muted chat's count is dim, never bold; an unmuted one's bold", async ($, on) => {
+    const muted = (argv: readonly string[]) => (argv[1] === 'dialogs' ? json(KINDS.map(one => (one.id === 1002 ? { ...one, muted: true, unread: 14 } : one))) : happy(argv))
+    const { ui } = await openPane($, on, DOCK, muted)
+    const group = (await texts(ui, await chatKey(ui, 1002))).find(one => one.text.trim() === '·14')
+    expect(group?.props.dimColor).toBe(true)
+    expect(group?.props.bold).toBe(false)
+    const bot = (await texts(ui, await chatKey(ui, 1001))).find(one => one.text.trim() === '2')
+    expect(bot?.props.bold).toBe(true)
+    await ui.unmount()
+  })
+
+  test('0: stop all is the danger token, key and all, in the strip; and in the menu while it has something to stop', async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1001)
+    await ui.press({ key: 'key:follow' })
+    const stop = (await texts(ui, 'running')).find(one => one.text === '0: stop all')
+    expect(stop?.props.color).toBe('red')
+    await ui.press({ key: 'key:menu' })
+    expect((await texts(ui, 'menu:stop')).map(one => one.props.color)).toEqual(['red'])
+    await ui.unmount()
+  })
+
+  test("a bot's sender column is plain: the bot token is the ◆ glyph's alone (§7.1)", async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1001)
+    const sender = (await texts(ui, 'msg:677792')).find(one => one.text.trim() === 'bot')
+    expect(sender).toBeDefined()
+    expect(sender?.props.color).toBeUndefined()
+    await ui.unmount()
+  })
 })
 
 describe('hidden mode', () => {
