@@ -10,8 +10,8 @@ goes through `tg raw`, which covers the whole MTProto API.
 ## Install
 
 ```bash
-uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.1.0'                # puts `tg` on PATH
-uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.1.0'   # + QR-code login
+uv tool install 'git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'                # puts `tg` on PATH
+uv tool install 'tg-kit[qr] @ git+https://github.com/ruslan-korneev/tg-kit@v0.2.0'   # + QR-code login
 ```
 
 From a local checkout, for development:
@@ -33,6 +33,93 @@ npx skills add ruslan-korneev/tg-kit -g -a claude-code -a codex     # chosen age
 
 Leave out `-g` to install into the current project instead (`.claude/skills/`, `.agents/skills/`,
 …). The skill needs the `tg` CLI on PATH (see Install) and a logged-in account (see Log in).
+
+## Dialogs pane (Claude Code mod)
+
+A Telegram pane inside Claude Code. Your Telegram folders and chats sit next to the session; ⏎ on
+a message hands it to Claude; a bot is tested with single keys; and any chat can be given to an
+agent, from "follow it" to "do the work it asks for". The pane reads and writes Telegram only
+through `tg`.
+
+### Install the pane
+
+It is two plugins from this repository's marketplace. `dialogs-pane` is the pane.
+`dialogs-pane-guard` holds a `delegate` Worker to its grant and hard stops. Without the guard
+everything works except `delegate`, which does not start.
+
+```bash
+claude plugin marketplace add ruslan-korneev/tg-kit      # or a local checkout's path
+claude plugin install dialogs-pane@tg-kit
+claude plugin install dialogs-pane-guard@tg-kit
+```
+
+The pane needs `tg` v0.2.0 or later on PATH (it uses `tg watch` and `tg folders`) and a
+logged-in account (see Log in). `tg folders --help` tells you whether yours has them.
+
+### First run
+
+Type `/tg` in a session. The pane opens on your first Telegram folder. In fullscreen, from 110
+columns, it docks beside the transcript: the chat list on top, the open chat below. In a narrower
+terminal it sits above the prompt and shows one view at a time. A "start here" block names the
+keys that matter until you press `d`.
+
+- The pane takes the keys while its header shows `● keys`. `ctrl+x tab` hands them over, and `Esc`
+  gives them back to the prompt.
+- `m` lists every key the current view can use, and each entry is pressable. `/tg help` prints the
+  same table in the transcript; `/tg status` shows what runs.
+- `h` goes one level up. `q` hides the pane; the footer then keeps the unread count and what runs.
+  `/tg` brings the pane back.
+
+### What you do with it
+
+- **Folders and chats.** `1`–`9` open your first nine Telegram folders, in Telegram's order. `h`
+  from the chat list lists every folder, the Archive, For you and Bots. `s` searches every chat.
+  `y` (For you) gathers what waits for you: agents' drafts first, then people who mention you or
+  wrote to you.
+- **Hand a message to Claude.** ⏎ on a message opens the send sheet, and a digit sends it with an
+  intent: `⏎ 1` sends a bot's reply as Fix. The intents follow who wrote the message: Fix,
+  Reproduce, Explain and Test for a bot; Do it, Explain and Draft reply for a person. `a` picks
+  another agent, `i` shows what it will read, and `x` or `v` mark several messages first. Claude
+  gets a `<tg-packet>`: the whole message record, with phone numbers, usernames, ids and names
+  masked.
+- **Test a bot.** In a bot chat, digits press the buttons of the message under the cursor, and `n`
+  writes to the bot. `r … r` records your sends and presses into a script under `.tg-recordings/`;
+  `1` on the sheet that follows hands it to an agent as a live test. `f` diffs a reply with the
+  last reply to the same message. `⏱` marks each reply's latency.
+- **Watch and summarize.** `w` tells you about new messages in a chat, above the prompt too while
+  the pane is hidden. `t` summarizes a chat.
+- **Give a chat to an agent.** `a` opens the chat's agent card, a ladder: `1` follow (new messages
+  go to Claude's context), `2` summarize, `3` draft (the agent drafts, you send with ⏎), `4` auto
+  (it replies within limits) and `5` delegate (it replies and does the work in your repo). Each
+  kind of chat gets only the levels that fit: in a bot chat or a channel an agent only reads, and
+  delegate is for person chats. A draft waits as a row of its chat, in For you and above the
+  prompt.
+
+### Safety
+
+- **Stop everything:** `0` stops every follow, autopilot and Worker at once, from any view.
+  `/tg stop` does the same from the prompt, even while Claude is mid-turn. Settings stay, and the
+  card restarts a chat.
+- **Your keys, your writes.** What you send with your own key goes out as yours: a message after
+  `n`, a draft you read whole, a button press. What an agent sends on its own (auto, delegate, an
+  agent replaying a recording) needs the chat in `allow.toml`. The pane never adds it silently:
+  the card asks in Claude Code's dialog, No first, showing the exact `tg allow add … --yes`, and
+  only your Yes runs it. The add is kept; `tg allow remove` takes it out. BotFather stays
+  read-only, and `readonly = true` in tg's config refuses every write.
+- **What `delegate` may do.** The Worker works in a fresh git worktree of each repo you grant,
+  never in your checkout. It runs only the repo's own checks (read off `package.json`,
+  `pyproject.toml` with `uv.lock`, `Makefile`, `justfile`, `Cargo.toml`, `go.mod`), local git and
+  read-only commands. Everything else is refused, `sh -c`, `eval` and scripts it writes included.
+  It never runs `tg` and never reads tg-kit's config, so the chat has one voice: the agent that
+  replies as you. Spending money, pushing, merging, deploying, sharing your files, deleting outside
+  the worktree and agreeing to a deadline or price on your behalf stop and ask you (hard stops).
+  The one thing the guard cannot read around: a check you allow runs the repository's own code.
+  Grant a check only to code you trust to run.
+
+The design is in [`docs/design/dialogs-pane.md`](docs/design/dialogs-pane.md) (the packet,
+autopilot, delegate and its guard) and
+[`docs/design/dialogs-pane-ux.md`](docs/design/dialogs-pane-ux.md) (the views, the keys, the
+states, and decisions 1–12).
 
 ## Log in
 
@@ -91,7 +178,8 @@ every button. Pressing a button depends on its type:
 
 ```bash
 # read
-tg dialogs [-n 30] [--unread] [--query TEXT] [--archived]
+tg dialogs [-n 30] [--unread] [--query TEXT] [--archived | --folder ID|TITLE]
+tg folders [--counts | --chats]          # Telegram folders in Telegram's order
 tg read PEER [-n 20] [--before ID] [--after ID] [--since 2h|2026-09-01] [--from PEER] [--reverse] [--full]
 tg msg PEER ID [ID…]                     # full messages, never truncated
 tg search PEER QUERY [--filter photo|video|doc|link|voice|music|gif|round|…] [--since …] [--from PEER]
@@ -101,6 +189,7 @@ tg info PEER                             # bio / description / bot commands / me
 tg download PEER ID [--out DIR] [--max-size 200]   # prints the path; never overwrites
 tg drafts
 tg transcribe PEER ID                    # voice → text (Premium or its trial)
+tg watch PEER… [--jsonl] [--events message,edit,typing,delete] [--after ID | --since 2h] [--idle-exit 30s]
 
 # write: every command supports --dry-run and goes through the guard
 tg send PEER TEXT|- [--reply-to ID] [--no-preview] [--md|--html|--plain] [--silent] [--wait 10s]
@@ -212,10 +301,133 @@ Per command:
 | Command | Document |
 |---|---|
 | `read`, `msg`, `search` | a list of messages |
+| `dialogs` | a list of chats (below) |
+| `folders` | a list of folders (below) |
 | `send`, `send-file`, `edit`, `forward`, `start` | `{"sent": [...]}`, plus `"replies": [...]` with `--wait` |
 | `press` | `{"button": {...}, "answer": {"alert", "toast", "url"} \| null, "replies": [...]}` |
 | `raw` | the TL result's `to_dict()`, with bytes as base64 and dates as ISO |
 | `--dry-run` | the plan: `{"action", "target", "steps": [{"method", "params"}], "guard"}` |
+
+`tg watch` streams, so it takes `--jsonl` instead of `--json` (see below).
+
+### Dialogs and folders
+
+`tg dialogs` prints one chat per line: id, kind, `@username` or title, `📌` pinned, `🔕` muted,
+`[N unread, M mentions]`, then the last message. With `--json` each chat is:
+
+```json
+{"id": 123456, "kind": "bot", "title": "Example", "username": "example_bot",
+ "unread": 2, "mentions": 0, "pinned": true, "muted": false,
+ "last_id": 677791, "last_date": "2026-09-29T11:02:00+00:00", "last_text": "Choose an option"}
+```
+
+- `kind` is one of `self` `user` `bot` `group` `supergroup` `channel` `unknown`.
+- `mentions` is Telegram's count of unread mentions of you.
+- `muted`: the chat's own mute, or, when it has none, your default for that kind of chat
+  (private chats, groups, channels). If Telegram does not return a default, that kind counts as
+  not muted and a note goes to stderr.
+- `pinned` is pinned in the list shown: the chat list, the archive (`--archived`), or the folder
+  (`--folder`).
+
+`tg folders` lists your Telegram folders in Telegram's order, All chats wherever you put it:
+
+```
+2 Work [3 unread]
+0 All chats [41 unread]
+11 Team Projects (shared)
+```
+
+```json
+[{"id": 2, "title": "Work", "kind": "folder", "unread": 3},
+ {"id": 0, "title": "All chats", "kind": "all", "unread": 41},
+ {"id": 11, "title": "Team Projects", "kind": "shared", "unread": 0}]
+```
+
+- `kind`: `all` (All chats, always id 0), `folder`, or `shared` (a folder joined or shared by an
+  invite link).
+- `unread` comes only with `--counts`: the folder's unread chats that are not muted. It looks at
+  the latest 500 chats of the chat list and of the Archive, plus the chats the folders list by
+  name.
+- `tg folders --chats` is one pass for every folder. It implies `--counts` and makes the same
+  Telegram calls. Each text line ends in ` · N chats`. With `--json` it prints one document:
+
+  ```json
+  {"at": "2026-10-11T09:30:00+00:00", "scan": 500,
+   "folders": [
+     {"id": 2, "title": "Work", "kind": "folder", "unread": 1,
+      "pinned": [-1000000000205], "chats": [-1000000000205, 123456]},
+     {"id": 0, "title": "All chats", "kind": "all", "unread": 1,
+      "pinned": [123456], "chats": [123456, -1000000000205, 202]},
+     {"id": 11, "title": "Team", "kind": "shared", "unread": 0, "pinned": [], "chats": [202]}],
+   "dialogs": [{"id": 123456, "kind": "bot", …}, {"id": -1000000000205, …}, {"id": 202, …}]}
+  ```
+
+  `chats` holds every member in the folder's order, ids only: pinned first, then newest last
+  message first. `pinned` holds the folder's pinned chats; for All chats, the chat list's pins.
+  `dialogs` has one `tg dialogs` row for every chat in some `chats` list, and no other chat. A
+  row's `pinned` is Telegram's own pin for the chat. `scan` is how many of the latest chats
+  were looked at, in the chat list and again in the Archive. All chats and chat types see only
+  those; listed chats are always fetched. `at` is when the pass ran, in UTC. A FLOOD_WAIT longer
+  than `flood_sleep_threshold` exits 5.
+- `tg dialogs --folder ID|TITLE` lists one folder's chats: its pinned chats first, in its order,
+  then by last message. A title matches exactly, then case-insensitively. An unknown folder exits
+  4 with the list of folders.
+- Membership follows Telegram's rule: pinned or included chats are in; excluded ones are out;
+  otherwise the folder's chat types (contacts, non-contacts, groups, channels, bots), minus muted,
+  read or archived chats when the folder says so. An unread mention keeps a muted or read chat
+  in. A shared folder holds only its listed chats. Chats joining by type come from the latest 500
+  of the chat list and of the Archive.
+- Listed chats are fetched by id, so an old one still shows. Telegram rate-limits that by chats:
+  about 180 in 30 seconds. Past that, tg sleeps out the FLOOD_WAIT or exits 5. A listed chat
+  Telegram refuses (left, banned, deleted) is left out and not asked for again for 6 hours.
+- `--archived` is the Archive, which is not a folder, so it does not combine with `--folder`.
+
+### `tg watch` (`--jsonl`)
+
+`tg watch PEER…` stays connected and prints each event in the watched chats as it arrives: one
+JSON object per line with `--jsonl` (flushed per line), compact lines without it. It runs until
+Ctrl-C or SIGTERM (exit 0), until `--idle-exit DURATION` passes with nothing printed (exit 0),
+or until the process reading its stdout pipe exits (exit 0). It is read-only.
+
+```jsonl
+{"event": "message", "id": 677795, "chat_id": 123456, "date": "2026-09-29T11:06:00Z", "sender": {"id": 123456, "kind": "bot", "username": "example_bot", "name": "Example"}, "out": false, "text": "Done", …}
+{"event": "ready", "date": "2026-09-29T11:06:01.5Z", "peers": [{"chat_id": 123456, "kind": "bot", "username": "example_bot", "title": "Example"}]}
+{"event": "typing", "chat_id": 123456, "date": "2026-09-29T11:06:10.2Z", "sender": {"id": 123456, "kind": "bot", "username": "example_bot", "name": "Example"}, "action": "typing"}
+{"event": "message", "id": 677796, "chat_id": 123456, …}
+{"event": "edit", "id": 677796, "chat_id": 123456, "edited": "2026-09-29T11:06:14Z", …}
+{"event": "delete", "chat_id": 123456, "date": "2026-09-29T11:06:20.9Z", "ids": [677796]}
+```
+
+- `message` and `edit` are the message object above plus `"event"`. An `edit` carries the
+  message's whole new state. `edits` is always 0 here. Both directions count: `out` is true for
+  your own messages, including ones sent from another device.
+- `typing`: `action` is `typing`, `cancel` (stopped), `record_audio`, `record_video`,
+  `record_round`, `upload_photo`, `upload_video`, `upload_audio`, `upload_document`,
+  `upload_round`, `choose_sticker`, `choose_contact`, `geo_location`, `game_play`,
+  `text_draft`, … (the TL action name in snake_case, so new kinds still come through). Telegram
+  repeats a `typing` about every 5 s while it lasts and treats it as over after about 6 s without
+  one. `sender` comes from the local cache and may be `{"kind": "unknown", "name": "<id>"}`.
+  `date` is when tg received it.
+- `delete`: `date` is when tg received it. In private chats and basic groups Telegram does not
+  say which chat a deletion is in, so tg reports deletions there only for messages this watch has
+  printed. Channels and supergroups report every deletion.
+- `ready` is printed once, after tg has subscribed and replayed. Lines before it are the replay
+  of `--after ID` (one PEER) or `--since 2h|2026-09-01`: up to 200 messages per chat, oldest
+  first, as `message` events. Lines after it are live. A message that shows up in both is printed
+  once. `chat_id` in `ready` is the id that events carry: for `me` that is your own user id.
+- `--events message,edit,typing,delete` picks the kinds (default all). `ready` is always printed.
+- Connecting, resolving and the replay must finish within `--timeout`; after `ready` there is no
+  deadline. A lost connection exits 1 with `error: lost the connection to Telegram`; rerun with
+  `--after LAST_ID` to replay what was missed.
+
+Compact lines, with `[chat]` added when several chats are watched:
+
+```
+ready: watching @example_bot
+#677795 09-29 14:06 @example_bot: Done
+~ 09-29 14:06 @example_bot: typing
+✗ 09-29 14:06 deleted #677796
+```
 
 ## Exit codes
 
@@ -231,7 +443,8 @@ Per command:
 | 7 | refused by the guard or a policy; nothing was sent | see Safety |
 
 Errors go to stderr as one line (`error: …`) followed by `  fix: …`. There are no tracebacks
-unless you pass `-v`. Ctrl-C exits 130 and SIGTERM exits 143, both after a clean disconnect.
+unless you pass `-v`. Ctrl-C exits 130 and SIGTERM exits 143, both after a clean disconnect;
+`tg watch` exits 0 on both, since stopping is how it is meant to end.
 
 ## Safety
 

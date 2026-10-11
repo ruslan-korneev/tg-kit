@@ -1,0 +1,17 @@
+{
+  "name": "tg-kit",
+  "owner": {
+    "name": "Ruslan Korneev"
+  },
+  "description": "tg-kit's Claude Code mods: the Telegram dialogs pane and its delegate guard",
+  "plugins": [
+    {
+      "name": "dialogs-pane",
+      "source": "./mods/dialogs-pane"
+    },
+    {
+      "name": "dialogs-pane-guard",
+      "source": "./mods/dialogs-pane-guard"
+    }
+  ]
+}

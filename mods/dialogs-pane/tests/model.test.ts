@@ -1,0 +1,121 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import { failureOf, settle, tg } from '../hooks/tg/tg'
+import {
+  NO_SELECTION,
+  failureColor,
+  failureText,
+  grownDialog,
+  peerArg,
+  rangeSelect,
+  stateSummary,
+  toggleSelected,
+} from '../hooks/ui/model'
+import { DIALOGS, MESSAGES } from './fixtures'
+
+const ok = (stdout: string) => ({ exitCode: 0, stdout, stderr: '' })
+
+describe('tg adapter', () => {
+  test('builds --json argv for each call', () => {
+    expect(tg.dialogs().argv).toEqual(['tg', 'dialogs', '--limit', '50', '--json'])
+    expect(tg.read('@example_bot', { limit: 5 }).argv).toEqual([
+      'tg', 'read', '@example_bot', '--limit', '5', '--reverse', '--json',
+    ])
+    expect(tg.msg('@example_bot', [1, 2]).argv).toEqual(['tg', 'msg', '@example_bot', '1', '2', '--json'])
+  })
+
+  test('decodes dialogs and messages', () => {
+    const dialogs = settle(tg.dialogs(), ok(JSON.stringify(DIALOGS)))
+    expect(dialogs).toEqual({ ok: true, value: DIALOGS })
+    const messages = settle(tg.read('@example_bot'), ok(JSON.stringify(MESSAGES)))
+    expect(messages.ok && messages.value[1]?.buttons[0]?.[0]?.text).toBe('Retry')
+  })
+
+  test('maps exit codes to failures', () => {
+    expect(failureOf(3, 'error: not logged in\n  fix: tg login')).toEqual({ kind: 'auth' })
+    expect(failureOf(5, 'error: FLOOD_WAIT 23s: Telegram asks to wait before retrying')).toEqual({
+      kind: 'flood',
+      seconds: 23,
+    })
+    expect(failureOf(4, 'error: no such peer\n  fix: tg dialogs')).toEqual({ kind: 'not-found', message: 'no such peer' })
+    expect(failureOf(1, '')).toEqual({ kind: 'error', message: 'tg failed' })
+  })
+
+  test('tg msg exit 4 keeps the messages it found and flags the rest', () => {
+    const ran = { exitCode: 4, stdout: JSON.stringify(MESSAGES.slice(0, 1)), stderr: 'error: no message 9 in @example_bot' }
+    expect(settle(tg.msg('@example_bot', [677790, 9]), ran)).toEqual({
+      ok: true,
+      value: MESSAGES.slice(0, 1),
+      partial: 'no message 9 in @example_bot',
+    })
+    expect(settle(tg.read('@example_bot'), ran)).toEqual({
+      ok: false,
+      failure: { kind: 'not-found', message: 'no message 9 in @example_bot' },
+    })
+  })
+
+  test("a refusal's reason is tg's error: line, not the plan printed before it (§7.4)", () => {
+    const stderr = 'refused; nothing was sent. The plan was:\n{"action": "send"}\nerror: readonly = true in config.toml: every write is refused\n  fix: ask the account owner\n'
+    expect(failureOf(7, stderr)).toEqual({ kind: 'error', message: 'readonly = true in config.toml: every write is refused' })
+    // Without an error: line, the first one still speaks.
+    expect(failureOf(1, 'boom\n')).toEqual({ kind: 'error', message: 'boom' })
+  })
+
+  test('a run that never finished is `missing`; bad output is an error', () => {
+    expect(settle(tg.dialogs(), undefined)).toEqual({ ok: false, failure: { kind: 'missing' } })
+    expect(settle(tg.dialogs(), ok('not json')).ok).toBe(false)
+    expect(settle(tg.dialogs(), ok('{"id": 1}')).ok).toBe(false)
+  })
+})
+
+describe('§7.4 states: one sentence each; the key after it is the caller\'s', () => {
+  test('not logged in, tg missing, a flood wait counting down, an error', () => {
+    expect(failureText({ kind: 'auth' }, 0)).toBe('Not logged in: type ! tg login in your prompt')
+    expect(failureText({ kind: 'missing' }, 0)).toBe('tg is not on PATH, or did not answer in time. README → Install')
+    expect(failureText({ kind: 'flood', seconds: 23 }, 0)).toBe('Telegram asks to wait 23 s · retrying')
+    expect(failureText({ kind: 'flood', seconds: 23 }, 10_000, 23_000)).toBe('Telegram asks to wait 23 s · retrying in 13 s')
+    expect(failureText({ kind: 'flood', seconds: 40 }, 0, 60_000)).toBe('Telegram asks to wait 40 s · retrying in 60 s')
+    expect(failureText({ kind: 'error', message: 'boom' }, 0)).toBe('tg: boom')
+    expect([failureColor({ kind: 'flood', seconds: 1 }), failureColor({ kind: 'error', message: '' })]).toEqual(['yellow', 'red'])
+  })
+})
+
+describe('labels', () => {
+  test('peer arguments: me, @username, else the id', () => {
+    expect(DIALOGS.map(peerArg)).toEqual(['@example_bot', '1002', 'me'])
+  })
+})
+
+describe('selection', () => {
+  const order = [10, 11, 12, 13]
+
+  test('Space toggles one message', () => {
+    const one = toggleSelected(NO_SELECTION, 11)
+    expect(one.ids).toEqual([11])
+    expect(toggleSelected(one, 11).ids).toEqual([])
+  })
+
+  test('v marks a start, then selects through the cursor', () => {
+    const started = rangeSelect(NO_SELECTION, order, 13)
+    expect(started).toEqual({ ids: [13], anchor: 13 })
+    expect(rangeSelect(started, order, 11)).toEqual({ ids: [13, 11, 12], anchor: null })
+  })
+})
+
+describe('summary, status', () => {
+  test('the state summary leaves zeros out (design §4.5)', () => {
+    const levels = [
+      { glyph: '⌁', count: 1 },
+      { glyph: '◉', count: 0 },
+      { glyph: '⟳', count: 2 },
+    ]
+    expect(stateSummary({ levels, watched: 3, forYou: 2 })).toEqual({ levels: '⌁1 ⟳2', watched: '◎ 3 new', forYou: '2 for you' })
+    expect(stateSummary({ levels: [{ glyph: '⌁', count: 0 }], watched: 0, forYou: 0 })).toEqual({ levels: '', watched: '', forYou: '' })
+  })
+
+  test('the band reports the dialog whose unread count grew', () => {
+    const after = DIALOGS.map(d => (d.id === 1002 ? { ...d, unread: d.unread + 1 } : d))
+    expect(grownDialog(DIALOGS, after)?.id).toBe(1002)
+    expect(grownDialog(DIALOGS, DIALOGS)).toBeUndefined()
+  })
+})

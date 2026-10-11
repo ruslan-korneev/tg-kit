@@ -11,7 +11,8 @@ it is written:
 - `<name>.cache.db` — the entity cache (id → access hash, username, name,
   kind). SQLite in WAL mode with a busy timeout; every write is one short
   autocommit statement batch, so writers queue for milliseconds instead of
-  failing. Numeric-id resolution depends on it surviving between runs.
+  failing. Numeric-id resolution depends on it surviving between runs. It
+  also remembers, for a while, the chats getPeerDialogs refused.
 - `<name>.json` — who the account is (id, username, name, phone), for
   `tg accounts` without a network round trip. Written at login and by whoami.
 
@@ -27,6 +28,7 @@ import os
 import sqlite3
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,10 @@ create table if not exists entities (
 );
 create index if not exists entities_username on entities(lower(username));
 create index if not exists entities_phone on entities(phone);
+create table if not exists refused (
+    id integer primary key,
+    until integer not null
+);
 """
 
 # A full entity (kind known) replaces the row; a bare InputPeer (kind unknown,
@@ -156,6 +162,22 @@ class TgSession(MemorySession):  # type: ignore[misc]  # Telethon is untyped
         if self._db is not None:
             self._db.close()
             self._db = None
+
+    # --- chats getPeerDialogs refused --------------------------------------
+
+    def refused_peers(self, now: float) -> set[int]:
+        """Peer ids Telegram refused recently (left, banned, deleted), still within their time."""
+        rows = self._conn().execute("select id from refused where until > ?", (int(now),))
+        return {int(r[0]) for r in rows}
+
+    def remember_refused(self, ids: Iterable[int], *, now: float, until: float) -> None:
+        db = self._conn()
+        db.execute("delete from refused where until <= ?", (int(now),))
+        db.executemany(
+            "insert into refused (id, until) values (?, ?)"
+            " on conflict(id) do update set until = excluded.until",
+            [(i, int(until)) for i in ids],
+        )
 
     # --- entity cache -----------------------------------------------------
 

@@ -1,0 +1,21 @@
+{
+  "name": "dialogs-pane",
+  "version": "0.2.0",
+  "description": "Telegram dialogs and messages in a pane, read through the tg CLI",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "speakerModel": {
+      "title": "Autopilot model",
+      "description": "The model that writes autopilot replies as you (an alias or a full id, as --model takes)",
+      "type": "string",
+      "default": "claude-sonnet-5-5"
+    },
+    "dangerouslySkipHardStops": {
+      "title": "Skip delegate hard stops (dangerous)",
+      "description": "Hard stops the delegate Worker and Speaker skip in every session: all, or any of money, publish, share, delete, commit-on-behalf. Each skip is logged and the dialog shows a red ⚠ no stops. Leave empty to keep every stop.",
+      "type": "string",
+      "multiple": true,
+      "default": []
+    }
+  }
+}

@@ -7,6 +7,7 @@ one-class-per-kind `KeyboardButtonCallback`, `KeyboardButtonUrl`, ….
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,10 +15,31 @@ from telethon import utils
 from telethon.tl import types
 
 from tg_kit.buttons import Button, ButtonGrid
-from tg_kit.model import Forward, Media, MessageView, Reaction, Sender
-from tg_kit.session import entity_kind
+from tg_kit.folders import ALL_CHATS, Folder
+from tg_kit.model import (
+    DeleteEvent,
+    DialogView,
+    Forward,
+    Media,
+    MessageView,
+    Reaction,
+    Sender,
+    TypingEvent,
+)
+from tg_kit.session import EntityRow, entity_kind
 
-__all__ = ["convert_buttons", "convert_message"]
+__all__ = [
+    "MUTE_SCOPES",
+    "convert_buttons",
+    "convert_delete",
+    "convert_dialog",
+    "convert_folder",
+    "convert_message",
+    "convert_typing",
+    "folder_input_peers",
+    "mute_scope",
+    "typing_action",
+]
 
 _INLINE_TYPES: dict[type, str] = {
     types.InlineButtonTypeCallback: "cb",
@@ -263,3 +285,173 @@ def _reactions(reactions: Any) -> tuple[Reaction, ...]:
 
 def _snake(name: str) -> str:
     return "".join(f"_{ch.lower()}" if ch.isupper() else ch for ch in name).lstrip("_") or "unknown"
+
+
+# --- `tg watch`: raw updates → events ----------------------------------------
+# Layer 229 shapes (checked against the installed telethon.tl.types):
+#   updateUserTyping user_id action top_msg_id?           (private chat: the chat is the user)
+#   updateChatUserTyping chat_id from_id:Peer action      (basic group)
+#   updateChannelUserTyping channel_id from_id:Peer action top_msg_id?
+#   updateDeleteMessages messages                         (no chat: ids are per account)
+#   updateDeleteChannelMessages channel_id messages
+
+TYPING_UPDATES = (
+    types.UpdateUserTyping,
+    types.UpdateChatUserTyping,
+    types.UpdateChannelUserTyping,
+)
+DELETE_UPDATES = (types.UpdateDeleteMessages, types.UpdateDeleteChannelMessages)
+
+
+def typing_action(action: Any) -> str:
+    """`SendMessageRecordAudioAction` → `record_audio`; unknown future kinds still convert."""
+    name = type(action).__name__.removeprefix("SendMessage").removesuffix("Action")
+    return _snake(name)
+
+
+def convert_typing(
+    update: Any,
+    *,
+    self_id: int | None,
+    find: Callable[[int], EntityRow | None],
+    now: datetime,
+) -> TypingEvent | None:
+    """A typing update → event; `find` looks a sender up in the local entity cache."""
+    if isinstance(update, types.UpdateUserTyping):
+        chat_id = from_id = int(update.user_id)
+    elif isinstance(update, types.UpdateChatUserTyping):
+        chat_id = int(utils.get_peer_id(types.PeerChat(update.chat_id)))
+        from_id = int(utils.get_peer_id(update.from_id))
+    elif isinstance(update, types.UpdateChannelUserTyping):
+        chat_id = int(utils.get_peer_id(types.PeerChannel(update.channel_id)))
+        from_id = int(utils.get_peer_id(update.from_id))
+    else:
+        return None
+    return TypingEvent(
+        chat_id=chat_id,
+        sender=_cached_sender(from_id, self_id, find),
+        action=typing_action(update.action),
+        date=_utc(now),
+    )
+
+
+def _cached_sender(
+    peer_id: int, self_id: int | None, find: Callable[[int], EntityRow | None]
+) -> Sender:
+    # Typing updates come without user objects; the cache is all there is offline.
+    row = find(peer_id)
+    username = row.username if row else None
+    if peer_id == self_id:
+        return Sender(id=peer_id, kind="self", username=username, name="me")
+    if row is None:
+        return Sender(id=peer_id, kind="unknown", username=None, name=str(peer_id))
+    return Sender(
+        id=peer_id, kind=row.kind or "unknown", username=username, name=row.name or str(peer_id)
+    )
+
+
+def convert_delete(update: Any, *, now: datetime) -> DeleteEvent | None:
+    if isinstance(update, types.UpdateDeleteChannelMessages):
+        chat_id: int | None = int(utils.get_peer_id(types.PeerChannel(update.channel_id)))
+    elif isinstance(update, types.UpdateDeleteMessages):
+        chat_id = None
+    else:
+        return None
+    return DeleteEvent(chat_id=chat_id, ids=tuple(int(i) for i in update.messages), date=_utc(now))
+
+
+# --- `tg dialogs`, `tg folders` ----------------------------------------------
+# Layer 229 shapes (checked against the installed telethon.tl.types):
+#   dialogFilter flags contacts non_contacts groups broadcasts bots exclude_muted
+#     exclude_read exclude_archived title_noanimate id title:TextWithEntities
+#     emoticon? color? pinned_peers include_peers exclude_peers   (InputPeer lists)
+#   dialogFilterChatlist has_my_invites title_noanimate id title:TextWithEntities
+#     emoticon? color? pinned_peers include_peers                 (a shared folder)
+#   dialogFilterDefault                                           (All chats; no id)
+#   messages.dialogFilters tags_enabled filters                   (getDialogFilters)
+#   dialog … unread_count unread_mentions_count unread_mark notify_settings folder_id?
+
+# Where a chat's mute comes from when it has none of its own: the account's
+# default for that kind of chat (account.getNotifySettings with these scopes).
+MUTE_SCOPES = ("users", "chats", "broadcasts")
+
+
+def mute_scope(kind: str) -> str:
+    if kind == "channel":
+        return "broadcasts"
+    if kind in {"group", "supergroup"}:
+        return "chats"
+    return "users"
+
+
+def convert_folder(f: Any, *, self_id: int | None) -> Folder:
+    if isinstance(f, types.DialogFilterDefault):
+        return ALL_CHATS
+    title = getattr(f.title, "text", f.title)  # TextWithEntities since layer 185
+    pinned = tuple(_input_peer_id(p, self_id) for p in f.pinned_peers)
+    include = tuple(_input_peer_id(p, self_id) for p in f.include_peers)
+    if isinstance(f, types.DialogFilterChatlist):
+        return Folder(id=int(f.id), title=title, kind="shared", pinned=pinned, include=include)
+    return Folder(
+        id=int(f.id),
+        title=title,
+        kind="folder",
+        pinned=pinned,
+        include=include,
+        exclude=tuple(_input_peer_id(p, self_id) for p in f.exclude_peers),
+        contacts=bool(f.contacts),
+        non_contacts=bool(f.non_contacts),
+        groups=bool(f.groups),
+        channels=bool(f.broadcasts),
+        bots=bool(f.bots),
+        exclude_muted=bool(f.exclude_muted),
+        exclude_read=bool(f.exclude_read),
+        exclude_archived=bool(f.exclude_archived),
+    )
+
+
+def folder_input_peers(f: Any, *, self_id: int | None) -> dict[int, Any]:
+    """The folder's pinned and included chats as InputPeers (with access hashes), by id."""
+    peers = [*getattr(f, "pinned_peers", ()), *getattr(f, "include_peers", ())]
+    return {_input_peer_id(p, self_id): p for p in peers}
+
+
+def _input_peer_id(peer: Any, self_id: int | None) -> int:
+    if isinstance(peer, types.InputPeerSelf):
+        if self_id is None:
+            raise TypeError("InputPeerSelf without a known self id")
+        return self_id
+    return int(utils.get_peer_id(peer))
+
+
+def convert_dialog(
+    d: Any,
+    *,
+    self_id: int | None,
+    mute_defaults: Mapping[str, datetime | None],
+    now: datetime,
+) -> DialogView:
+    """A Telethon `custom.Dialog` → row. `mute_defaults` maps `MUTE_SCOPES` to mute_until."""
+    entity = d.entity
+    raw = d.dialog
+    kind = "self" if d.id == self_id else entity_kind(entity) or "unknown"
+    mute_until = getattr(raw.notify_settings, "mute_until", None)
+    if mute_until is None:
+        mute_until = mute_defaults.get(mute_scope(kind))
+    last = d.message
+    return DialogView(
+        id=int(d.id),
+        kind=kind,
+        title=d.name,
+        username=getattr(entity, "username", None),
+        unread=int(d.unread_count),
+        mentions=int(d.unread_mentions_count),
+        pinned=bool(d.pinned),
+        muted=mute_until is not None and _utc(mute_until) > now,
+        last_id=last.id if last is not None else None,
+        last_date=d.date,
+        last_text=(getattr(last, "message", None) or "") if last is not None else "",
+        contact=bool(getattr(entity, "contact", False)),
+        marked_unread=bool(raw.unread_mark),
+        archived=d.folder_id == 1,
+    )

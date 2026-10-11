@@ -6,16 +6,54 @@ Compact, one line per message, buttons on indented lines under it:
       [0:0 cb "My bot"] [0:1 cb "Back"]
     #677792 09-29 14:02 me ↩677791: /start
     #677794 09-29 14:05 @example_bot ✎×2: updated text {👍3}
+
+`tg watch` adds typing and delete lines, and one JSON object per line with `--jsonl`:
+
+    ~ 09-29 14:06 @example_bot: typing
+    ✗ 09-29 14:07 deleted #677792 #677793
+
+`tg dialogs` prints one line per chat, `tg folders` one line per folder:
+
+    123456 bot @example_bot 📌 [2 unread] — Choose an option
+    -1000000000777 channel Example News 🔕 [5 unread, 1 mention] — post text
+    2 Work [3 unread]
+    5 Team Projects (shared)
+
+`tg folders --chats` ends each folder line with its size: `2 Work [3 unread] · 14 chats`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, tzinfo
 
 from tg_kit.buttons import format_grid
-from tg_kit.model import Media, MessageView
+from tg_kit.folders import Folder, FolderChats
+from tg_kit.model import (
+    DialogView,
+    Media,
+    MessageEvent,
+    MessageView,
+    Sender,
+    TypingEvent,
+    WatchEvent,
+)
 
-__all__ = ["LIST_TRUNCATE", "compact", "message_json", "sender_label"]
+__all__ = [
+    "LIST_TRUNCATE",
+    "compact",
+    "dialog_json",
+    "dialog_line",
+    "event_json",
+    "event_lines",
+    "folder_json",
+    "folder_line",
+    "folders_pass_json",
+    "message_json",
+    "ready_json",
+    "sender_label",
+]
 
 # List commands cut text here; `tg msg` and `--full` never do. 300 keeps a
 # 20-message listing around 6–8 k characters, far under a tool-output limit.
@@ -23,7 +61,10 @@ LIST_TRUNCATE = 300
 
 
 def sender_label(view: MessageView) -> str:
-    s = view.sender
+    return _who(view.sender)
+
+
+def _who(s: Sender) -> str:
     if s.kind == "self":
         return "me"
     if s.username:
@@ -154,12 +195,7 @@ def message_json(view: MessageView) -> dict[str, object]:
         "id": view.id,
         "chat_id": view.chat_id,
         "date": _iso(view.date),
-        "sender": {
-            "id": view.sender.id,
-            "kind": view.sender.kind,
-            "username": view.sender.username,
-            "name": view.sender.name,
-        },
+        "sender": _sender_json(view.sender),
         "out": view.out,
         "text": view.text,
         "reply_to": view.reply_to,
@@ -184,3 +220,122 @@ def message_json(view: MessageView) -> dict[str, object]:
         "links": [{"text": text, "url": url} for text, url in view.links],
         **({"chat_title": view.chat_title} if view.chat_title else {}),
     }
+
+
+def _sender_json(s: Sender) -> dict[str, object]:
+    return {"id": s.id, "kind": s.kind, "username": s.username, "name": s.name}
+
+
+# --- `tg dialogs`, `tg folders` ------------------------------------------------
+
+DIALOG_PREVIEW = 80
+
+
+def dialog_json(view: DialogView) -> dict[str, object]:
+    """One `tg dialogs --json` row (documented in README → JSON output)."""
+    return {
+        "id": view.id,
+        "kind": view.kind,
+        "title": view.title,
+        "username": view.username,
+        "unread": view.unread,
+        "mentions": view.mentions,
+        "pinned": view.pinned,
+        "muted": view.muted,
+        "last_id": view.last_id,
+        "last_date": view.last_date.isoformat() if view.last_date else None,
+        "last_text": view.last_text,
+    }
+
+
+def dialog_line(view: DialogView) -> str:
+    name = f"@{view.username}" if view.username else view.title
+    marks = (" 📌" if view.pinned else "") + (" 🔕" if view.muted else "")
+    counts = []
+    if view.unread:
+        counts.append(f"{view.unread} unread")
+    if view.mentions:
+        counts.append(f"{view.mentions} mention{'s' if view.mentions > 1 else ''}")
+    unread = f" [{', '.join(counts)}]" if counts else ""
+    preview = view.last_text.replace("\n", " ⏎ ")
+    if len(preview) > DIALOG_PREVIEW:
+        preview = preview[:DIALOG_PREVIEW] + "…"
+    return f"{view.id} {view.kind} {name}{marks}{unread} — {preview}"
+
+
+def folder_json(folder: Folder, unread: int | None = None) -> dict[str, object]:
+    """One `tg folders --json` entry; `unread` only with `--counts`."""
+    doc: dict[str, object] = {"id": folder.id, "title": folder.title, "kind": folder.kind}
+    if unread is not None:
+        doc["unread"] = unread
+    return doc
+
+
+def folder_line(folder: Folder, unread: int | None = None, chats: int | None = None) -> str:
+    shared = " (shared)" if folder.kind == "shared" else ""
+    count = f" [{unread} unread]" if unread else ""
+    members = f" · {chats} chat{'' if chats == 1 else 's'}" if chats is not None else ""
+    return f"{folder.id} {folder.title}{shared}{count}{members}"
+
+
+def folders_pass_json(
+    at: datetime, scan: int, entries: Sequence[FolderChats], rows: Sequence[DialogView]
+) -> dict[str, object]:
+    """The `tg folders --chats --json` document (documented in README → Dialogs and folders)."""
+    return {
+        "at": at.astimezone(UTC).isoformat(),
+        "scan": scan,
+        "folders": [
+            {
+                **folder_json(e.folder, e.unread),
+                "pinned": list(e.pinned),
+                "chats": list(e.chats),
+            }
+            for e in entries
+        ],
+        "dialogs": [dialog_json(r) for r in rows],
+    }
+
+
+# --- `tg watch` ---------------------------------------------------------------
+
+
+def event_json(event: WatchEvent) -> dict[str, object]:
+    """One `tg watch --jsonl` line (documented in README → `tg watch`)."""
+    if isinstance(event, MessageEvent):
+        return {"event": "edit" if event.edit else "message", **message_json(event.view)}
+    if isinstance(event, TypingEvent):
+        return {
+            "event": "typing",
+            "chat_id": event.chat_id,
+            "date": _iso(event.date),
+            "sender": _sender_json(event.sender),
+            "action": event.action,
+        }
+    return {
+        "event": "delete",
+        "chat_id": event.chat_id,
+        "date": _iso(event.date),
+        "ids": list(event.ids),
+    }
+
+
+def ready_json(peers: list[dict[str, object]], date: datetime) -> dict[str, object]:
+    """The line `tg watch` prints once it is subscribed and any replay is done."""
+    return {"event": "ready", "date": _iso(date), "peers": peers}
+
+
+def event_lines(
+    event: WatchEvent, *, now: datetime, tz: tzinfo | None = None, chat: str | None = None
+) -> list[str]:
+    """Compact `tg watch` lines. `chat` names the chat when several are watched."""
+    if isinstance(event, MessageEvent):
+        view = replace(event.view, chat_title=chat) if chat else event.view
+        return compact(view, now=now, tz=tz, peer_hint=str(view.chat_id), truncate=LIST_TRUNCATE)
+    tz = tz or now.tzinfo or UTC
+    local = event.date.astimezone(tz)
+    head = local.strftime("%m-%d %H:%M" if local.year == now.year else "%Y-%m-%d %H:%M")
+    where = f"[{chat}] " if chat else ""
+    if isinstance(event, TypingEvent):
+        return [f"~ {head} {where}{_who(event.sender)}: {event.action}"]
+    return [f"✗ {head} {where}deleted " + " ".join(f"#{i}" for i in event.ids)]
