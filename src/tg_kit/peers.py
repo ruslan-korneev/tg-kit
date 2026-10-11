@@ -1,8 +1,8 @@
 """Peer specs: parse (pure) and resolve (network, cache first).
 
 Accepted: me/self · @username · username · t.me/username[/ID] · t.me/c/123/45 ·
-numeric user id · -100… channel · -… basic group · +phone (contacts only) ·
-title:Some Chat (unique dialog title match; writes need --yes).
+numeric user id, else the bare group/channel id apps show · -100… channel · -… basic group ·
++phone (contacts only) · title:Some Chat (unique dialog title match; writes need --yes).
 """
 
 from __future__ import annotations
@@ -192,18 +192,7 @@ async def resolve(  # noqa: C901 — one branch per spec kind
 
     if spec.kind == "id":
         assert spec.peer_id is not None  # noqa: S101 — narrows a type already fixed by the parser for this kind
-        row = session.find(peer_id=spec.peer_id)
-        if row is None:
-            await _scan_dialogs(client)
-            row = session.find(peer_id=spec.peer_id)
-        if row is None:
-            msg = (
-                f"id {spec.peer_id} is not in the local cache "
-                f"or the latest {DIALOG_SCAN_LIMIT} dialogs"
-            )
-            raise NotFoundError(
-                msg, hint="resolve it by @username first (tg resolve @name), then use the id"
-            )
+        row = await _by_id(client, session, spec.peer_id)
         if self_id is not None and row.id == self_id:
             return await _self_peer(client, session, self_id)
         return _peer_from_row(row, utils, types)
@@ -221,6 +210,57 @@ async def resolve(  # noqa: C901 — one branch per spec kind
 
     assert spec.title is not None  # noqa: S101 — narrows a type already fixed by the parser for this kind
     return await _by_title(client, spec.title, utils)
+
+
+async def _by_id(client: Any, session: Any, peer_id: int) -> Any:
+    """The cached row for a numeric id; a miss costs one dialogs scan, as before.
+
+    A marked id (negative) is looked up as given. A bare positive id is first a
+    user id; Telegram apps also show groups and channels by their bare id, so it
+    is then tried as the channel `-100<id>` and the basic group `-<id>`. A user
+    wins; a channel and a group sharing the bare id is refused, never guessed.
+    """
+    candidates = _id_forms(peer_id)
+    rows = _find_each(session, candidates)
+    if rows[0] is None:
+        await _scan_dialogs(client)
+        rows = _find_each(session, candidates)
+    if rows[0] is not None:
+        return rows[0]
+    hits = [r for r in rows if r is not None]
+    if len(hits) > 1:
+        listing = "; ".join(f"{r.kind or 'chat'} {r.id} ({r.name})" for r in hits)
+        msg = f"id {peer_id} matches more than one chat: {listing}"
+        raise UsageError(msg, hint=f"pass the marked id: {' or '.join(str(r.id) for r in hits)}")
+    if hits:
+        return hits[0]
+    if len(candidates) == 1:
+        msg = f"id {peer_id} is not in the local cache or the latest {DIALOG_SCAN_LIMIT} dialogs"
+        raise NotFoundError(
+            msg, hint="resolve it by @username first (tg resolve @name), then use the id"
+        )
+    msg = (
+        f"id {peer_id} is not in the local cache or the latest {DIALOG_SCAN_LIMIT} dialogs "
+        f"(tried as user {peer_id}, channel {candidates[1]}, group {candidates[2]})"
+    )
+    raise NotFoundError(
+        msg,
+        hint=(
+            "pass its @username or t.me/name link, or pin the chat in a Telegram app "
+            f"so the {DIALOG_SCAN_LIMIT}-dialog scan reaches it"
+        ),
+    )
+
+
+def _id_forms(peer_id: int) -> tuple[int, ...]:
+    """The marked ids a typed id may mean: as given if negative, else user, channel, group."""
+    if peer_id <= 0:
+        return (peer_id,)
+    return (peer_id, -(_CHANNEL_MARK + peer_id), -peer_id)
+
+
+def _find_each(session: Any, ids: tuple[int, ...]) -> list[Any]:
+    return [session.find(peer_id=i) for i in ids]
 
 
 async def _self_peer(client: Any, session: Any, self_id: int | None) -> Peer:
