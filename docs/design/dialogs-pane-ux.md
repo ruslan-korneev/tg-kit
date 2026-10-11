@@ -2875,12 +2875,17 @@ v2 · 60 columns · ⏎ on ≡ all topics: one stream, each message labelled wit
 
 The view works like this:
 
-- **The forum's row** in Chats has the `⌗` glyph. Its symbol sums its topics: mentions first,
-  then unread. ⏎ opens **Topics**, a new view between Chats and Chat (§4.2):
-  `Chats ──⏎ on a forum──▶ Topics ──⏎──▶ Chat (one topic, or all)`. `h` goes back one level, as
-  everywhere.
-- **The breadcrumb** is the card's title: `tg › Work › Project team`, and `› Design review` once a
-  topic is open. At 44 columns `tg ›` goes first.
+- **The forum's row** in Chats has the `⌗` glyph. Its symbol sums its topics, mentions first,
+  then unread, once `tg topics` has run for it in this session; before that the row shows the
+  chat's own `unread` and `mentions` from the pass. ⏎ opens **Topics**, a new view between Chats
+  and Chat (§4.2): `Chats ──⏎ on a forum──▶ Topics ──⏎──▶ Chat (one topic, or all)`. `h` goes
+  back one level, as everywhere.
+- **Where Topics sits.** In the dock, Topics is the lower card, like an open chat. CHATS keeps
+  3 rows above it, with `›` on the forum's row (§10.5, "the folded layout follows the cursor").
+  Inline it takes the body. The mockups draw the card alone.
+- **The breadcrumb** is the card's title: `tg › Work › Project team`. Once a topic is open, the
+  chat card's title extends it: `tg › Work › Project team › Design review`, or `› all topics` for
+  `≡`. Under 52 columns `tg ›` goes first.
 - **Topic rows** use the chat row (§10.4). The glyph is `●` in the topic's colour (§10.2), and
   General is `#`, dim. The symbol follows §10.3's order, with `⊘` for a closed topic. `≡ all
   topics` is the first row: its symbol sums the topics', and its preview is the newest topic's last message,
@@ -2892,8 +2897,14 @@ The view works like this:
   - ⏎ on a message opens the send sheet. The packet carries the chat and the topic
     (`<tg-packet … topic="12" topic_title="Design review">`), and the packet contract in
     `dialogs-pane.md` gains the two attributes.
-  - `n` writes into the open topic (`tg send PEER --topic ID`). In the merged stream it is "not
-    now": `n: write · open a topic`.
+    The packet-level `topic` and `topic_title` are set only when every packed message shares one
+    `topic_id`. A mixed set carries none at the packet level, and each message keeps its own
+    `topic_id` where the packet's message entries carry it.
+  - `n` writes into the open topic (`tg send PEER --topic ID`). On a topic row it opens that
+    topic with the send box. On `≡` and in the merged stream it is "not now": `n: write · open a
+    topic`.
+  - `t` on a topic row opens the topic with its summary.
+  - `g` reloads `tg topics`.
   - `w` on the forum row watches every topic, and on a topic row that topic.
   - `a` on a topic row opens the agent card for (chat, topic). On the forum row it is "not now":
     `a: agent · open a topic`. Levels are a group's, all but delegate (decision 8).
