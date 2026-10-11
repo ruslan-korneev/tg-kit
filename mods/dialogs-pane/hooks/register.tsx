@@ -32,10 +32,11 @@ import { NO_ME, triageDialogs } from './triage/view'
 import { MAX_WATCHED, parseWatched } from './triage/watch'
 // ── routing ──
 import type { AgentInfo, HookStream, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
-import type { BroadcastRow, LedgerEntry, Leg, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, TgMessage } from '../types'
+import type { BroadcastRow, LedgerEntry, Leg, Overlay, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, RouteIntent, SenderClass, SheetStep, TgMessage } from '../types'
 import { buildPacket, type Packet } from './packet/build'
 import { expandReplyChain } from './packet/expand'
-import { BroadcastPicker, DraftRow, Ledger, RoutePicker } from './routing/components'
+import { Redactor, redactMessage } from './packet/redact'
+import { BroadcastPicker, DraftRow, Inspect, Ledger, SendSheet, TargetList } from './routing/components'
 import {
   addEntry,
   addNewLeg,
@@ -45,8 +46,8 @@ import {
   draftOf,
   feedPin,
   ledgerStatus,
+  intentLabel,
   legsOf,
-  nextIntent,
   onMainTurnStart,
   onRadar,
   onTurnComplete,
@@ -60,8 +61,25 @@ import {
   routeOfRows,
   selectedMessages,
   spawnDescription,
-  toIntent,
 } from './routing/route'
+import {
+  CLASS_LABEL,
+  SHEET_INTENTS,
+  bandIntent,
+  inspectView,
+  isRemembered,
+  legSplit,
+  rememberedWith,
+  mainLegIntent,
+  nextLegIntent,
+  parseLastIntents,
+  ringedIntent,
+  setClass,
+  sheetIntent,
+  sheetTitle,
+  targetText,
+  type LastIntents,
+} from './routing/sheet'
 import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
@@ -73,6 +91,7 @@ import {
   chatKind,
   hiddenKeys,
   menu as menuSections,
+  type ChatKind,
   type KeyContext,
   type RunKey,
   type Seat,
@@ -220,6 +239,8 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || event === null || (await read($, mode)) !== 'hidden') return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const isBot = event.kind === 'bot'
+    const sendAs = intentLabel(bandIntent(event.kind, (await lastIntents($)).last).intent)
+    // The message's Text truncates in the row as drawn; T5's two-row band gives it the width.
     const room = Math.max(10, e.props.bodyColumns - event.label.length - 52)
     return (
       <Box flexDirection="row" gap={2}>
@@ -232,7 +253,7 @@ export const register: Register = (on, options) => {
             them (ctrl+x tab or a click); typed at the prompt they are text. */}
         <Text dimColor>ctrl+x tab:</Text>
         <Button key="band:main" plain autoFocus onPress={() => bandToMain($)}>
-          ⏎ send to main
+          {`⏎ send to main as ${sendAs}`}
         </Button>
         <Button key="band:open" plain hotkey="o" onPress={() => openFromBand($)}>
           open
@@ -515,7 +536,7 @@ async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   if (view.kind === 'card') return 'card'
   if (view.kind === 'ledger') return 'activity'
   const shown = (await read($, overlay)).kind // ── routing ──
-  if (shown === 'picker' || shown === 'broadcast') return 'sheet'
+  if (shown === 'sheet' || shown === 'broadcast') return 'sheet'
   if (shown === 'ledger') return 'activity'
   if ((await read($, bottest)).diff !== null) return 'diff'
   if ((await read($, triage)).editor !== null) return 'editor'
@@ -531,6 +552,10 @@ async function keyPeer($: $, where: Where): Promise<PeerRef | undefined> {
     return dialog === undefined ? undefined : peerRefOf(dialog)
   }
   return (await read($, thread))?.peer
+}
+
+function sheetStepOf(shown: Overlay): KeyContext['facts']['sheet'] {
+  return shown.kind === 'sheet' ? shown.step : shown.kind === 'broadcast' ? 'broadcast' : null
 }
 
 async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band'>): Promise<KeyContext> {
@@ -561,7 +586,7 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       summary: peer !== undefined && tri.summary?.peerId === peer.id ? tri.summary.status : 'none',
       isSavedLens: tri.lens !== null,
       isAgentOn: view.kind === 'card' && pilot.running.includes(view.dialogId),
-      isPicker: (await read($, overlay)).kind === 'picker',
+      sheet: sheetStepOf(await read($, overlay)),
     },
   }
 }
@@ -600,7 +625,10 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'buttons':
       return focusButtons($)
     case 'agent':
-      return apToggleCard($)
+      // In the send sheet a picks another agent (§6); elsewhere it opens the card.
+      return where === 'sheet' ? setStep($, 'targets') : apToggleCard($)
+    case 'inspect':
+      return where === 'sheet' ? setStep($, 'inspect') : openSheet($, 'inspect')
     case 'watch':
       await toggleWatch($, await watchTarget($))
       return ringCursor($)
@@ -621,9 +649,6 @@ async function runKey($: $, id: RunKey): Promise<void> {
     case 'diff':
       await toggleDiff($)
       return ringCursor($)
-    case 'intent':
-      await update($, intent, nextIntent)
-      return
     case 'foryou':
       await toggleRanking($)
       return ringCursor($)
@@ -678,11 +703,12 @@ async function back($: $): Promise<void> {
     await update($, autopilot, value => ({ ...value, view: { kind: 'none' } }))
   } else if (where === 'sheet') {
     const shown = await read($, overlay)
-    // Broadcast came from the picker: back to it, with the same messages.
+    // Broadcast came from the targets, and every other step from the intents: back one step.
     if (shown.kind === 'broadcast') {
-      await update($, overlay, () => ({ kind: 'picker', ids: shown.ids }))
-      return moveRing($, 'route:main')
+      await update($, overlay, () => ({ kind: 'sheet', ids: shown.ids, sender: shown.sender, step: 'targets', to: { kind: 'main' }, isRedacted: shown.isRedacted }))
+      return setStep($, 'targets')
     }
+    if (shown.kind === 'sheet' && shown.step !== 'intents') return setStep($, 'intents')
     await closeOverlay($)
   } else if (where === 'activity') {
     await closeOverlay($)
@@ -747,24 +773,33 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   const isBase = where === 'chats' || where === 'chat'
   // Inline Chats: the strip shares the header row; the dock gives it a row of its own.
   const isInlineChats = seat === 'inline' && where === 'chats' && !isMenu
-  // The dock's strip draws `s: search` while the keys are Chats' or the chat's (s exists there only).
-  const hasSearchKey = seat === 'dock' && isBase
-  const strip = isMenu || where === 'editor' || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', hasSearchKey })
+  // The dock's strip draws `s: search` while the keys are Chats' or the chat's (s exists there only);
+  // over a layer its Button stays, without the hotkey, as the lens tabs keep theirs. The engine
+  // keeps the ring by its place among the Buttons (seen live on 2.1.296: closing the sheet put it
+  // one row above the cursor while `s` came back), so the strip draws the same Buttons in every view.
+  const search = seat === 'inline' ? 'none' : isBase ? 'key' : 'click'
+  const strip = isMenu || where === 'editor' || (seat === 'inline' && where !== 'chats') ? null : await drawStrip($, els, { isLive: where === 'chats', search })
   const none = { elements: [], rows: 0 }
-  const top = isMenu || !isBase ? none : await drawTop($, els, seat, width)
+  // What runs on top stays over the sheet too: it sits above the cursor row, which keeps its ring (see search).
+  const top = isMenu || !(isBase || where === 'sheet') ? none : await drawTop($, els, seat, width)
   const temps = isMenu || !isBase ? none : await drawTemps($, els, where, width)
-  const chrome = 2 + (strip !== null && !isInlineChats ? 1 : 0) + top.rows + temps.rows
+  // The send sheet's intents and Ask field take the bar's place (§5.1): four rows docked, two inline.
+  const shown = await read($, overlay)
+  const sheetBar = isMenu || where !== 'sheet' ? null : await drawSheetBar($, els, seat, width, seating.isFocused)
+  const isAsking = shown.kind === 'sheet' && shown.step === 'ask'
+  const sheetRows = sheetBar === null ? 1 : seat === 'dock' ? (isAsking ? 3 : 4) : isAsking ? 3 : 2
+  const chrome = 1 + sheetRows + (strip !== null && !isInlineChats ? 1 : 0) + top.rows + temps.rows
   const room = Math.max(3, rows - chrome)
   const slot = isMenu
     ? [Menu(els, { sections: menuSections(context), onKey: id => runMenuKey($, id) })]
     : seat === 'dock'
       ? await drawDock($, els, where, width, room)
       : await drawInline($, els, where, width, room)
-  const drawn = new Set(bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])))
-  if (strip !== null && hasSearchKey) drawn.add('s')
-  // Views that draw a key of the table themselves: the lens editor's save, the picker's intent chip.
+  const drawn = new Set(sheetBar === null ? bar.flatMap(key => (key.hotkey === null ? [] : [key.hotkey])) : [])
+  if (strip !== null && search === 'key') drawn.add('s')
+  // Views that draw a key of the table themselves: the lens editor's save, the sheet's a, i and h.
   if (!isMenu && where === 'editor') drawn.add('z')
-  if (!isMenu && context.facts.isPicker) drawn.add('i')
+  if (sheetBar !== null && !isAsking) for (const key of ['a', 'i', 'h']) drawn.add(key)
   // A failed load draws its own `g: reload` (LoadState): the list's, or the chat's, where they show.
   const isListShown = !isMenu && (seat === 'dock' ? where !== 'editor' : where === 'chats')
   const isThreadShown = !isMenu && isBase && (seat === 'dock' || where === 'chat')
@@ -784,7 +819,7 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
     top: top.elements,
     slot,
     temps: temps.elements,
-    bar: ActionBar(els, { keys: bar, isFocused: seating.isFocused, onKey }),
+    bar: sheetBar ?? ActionBar(els, { keys: bar, isFocused: seating.isFocused, onKey }),
     hidden: HiddenKeys(els, { keys: hiddenKeys(barContext, drawn), onKey }),
   })
 }
@@ -806,8 +841,14 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
       return `tg › ${label}`
     case 'card':
       return `tg › agent for ${label}`
-    case 'sheet':
-      return `tg › send · ${label}`
+    case 'sheet': {
+      // The intents sit under the open chat, which the header names (§5.1); the other steps say what they are.
+      const shown = await read($, overlay)
+      if (shown.kind === 'broadcast') return `tg › several agents · ${label}`
+      if (shown.kind === 'sheet' && shown.step === 'targets') return `tg › send to · ${label}`
+      if (shown.kind === 'sheet' && shown.step === 'inspect') return `tg › inspect · ${label}`
+      return `tg › ${label}`
+    }
     case 'diff':
       return `tg › diff · ${label}`
     case 'activity':
@@ -843,7 +884,7 @@ async function chipsOf($: $): Promise<{ text: string; color?: string }[]> {
   return recording === null ? [] : [{ text: `${GLYPH.unread} rec ${recording.steps.length}`, color: TOKEN.danger }]
 }
 
-async function drawStrip($: $, els: Els, props: { isLive: boolean; hasSearchKey: boolean }): Promise<RenderElement> {
+async function drawStrip($: $, els: Els, props: { isLive: boolean; search: 'key' | 'click' | 'none' }): Promise<RenderElement> {
   const where = await read($, nav)
   const state = await read($, triage)
   return Strip(els, {
@@ -854,7 +895,7 @@ async function drawStrip($: $, els: Els, props: { isLive: boolean; hasSearchKey:
     isRanked: state.isRanked,
     query: where.query,
     isLive: props.isLive,
-    hasSearchKey: props.hasSearchKey,
+    search: props.search,
     onLens: async (lens: Lens) => {
       await update($, nav, value => ({ ...value, view: 'dialogs', lens, dialogCursor: 0 }))
       await selectSavedLens($, null)
@@ -948,8 +989,10 @@ async function drawLower($: $, els: Els, where: Where, width: number, rows: numb
       return over === null ? [] : [over]
     }
     case 'sheet': {
+      // Targets, inspect and the legs take the lower part; the intents leave the chat on screen above them.
       const over = await drawOverlay($, els, width, rows)
-      return over === null ? [] : [over]
+      if (over !== null) return [over]
+      return drawThread($, els, width, rows, false, true)
     }
     case 'diff': {
       const diff = await drawBottestDiff($, els, width, rows)
@@ -1012,7 +1055,8 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, isAct
   )
 }
 
-async function drawThread($: $, els: Els, width: number, rows: number, isActive: boolean): Promise<RenderElement[]> {
+/** `isActive`: the cursor's column, ringed; the sheet draws the cursor (`isCursorShown`) but keeps the ring. */
+async function drawThread($: $, els: Els, width: number, rows: number, isActive: boolean, isCursorShown = isActive): Promise<RenderElement[]> {
   const { Text } = els
   const open = await read($, thread)
   if (open === null) return [<Text dimColor>⏎ on a chat opens it here.</Text>]
@@ -1031,12 +1075,13 @@ async function drawThread($: $, els: Els, width: number, rows: number, isActive:
     MessageCard(els, {
       ...bt(els, message),
       message,
-      isCursor: isActive && shown.start + index === cursor,
+      isCursor: isCursorShown && shown.start + index === cursor,
+      isRinged: isActive,
       isSelected: chosen.ids.includes(message.id),
       isAnchor: chosen.anchor === message.id,
       width,
       now: at,
-      // ⏎ (or a click) on a message: where to send it. The send sheet (T2) takes this over.
+      // ⏎ (or a click) on a message: the send sheet for it (§5.1).
       onPress: async () => {
         await update($, nav, value => ({ ...value, view: 'thread', messageCursor: shown.start + index }))
         await openSheet($)
@@ -1641,8 +1686,9 @@ function watchEnded(ended: ProcessSpawnResult, stderr: string): string {
 // ── /watch hub ──
 
 // ── routing ──
-// Phase 2: the route picker (⏎ on a message) and its agent radar, broadcast,
-// the packet ledger, live pins and drafted replies. Pure rules and drawing are
+// Phase 2, and dialogs-pane-ux.md §5.1 (T2): the send sheet (⏎ on a message),
+// its targets from the agent radar, inspect, broadcast, the packet ledger,
+// live pins and drafted replies. Pure rules and drawing are
 // in ./routing; every `$` call is here.
 //
 // The ledger lives in $.state, not $.store: its states (… / ✓) and its agents
@@ -1653,7 +1699,6 @@ const RADAR_MS = 5_000
 const PIN_FLUSH_MS = 1_500
 
 const route = atom({ plugin: 'dialogs-pane', key: 'route' } as const, { kind: 'one', to: { kind: 'main' } })
-const intent = atom({ plugin: 'dialogs-pane', key: 'intent' } as const, 'fix')
 const isRedacted = atom({ plugin: 'dialogs-pane', key: 'isRedacted' } as const, true)
 const overlay = atom({ plugin: 'dialogs-pane', key: 'overlay' } as const, { kind: 'none' })
 const radar = atom({ plugin: 'dialogs-pane', key: 'radar' } as const, [])
@@ -1692,7 +1737,7 @@ async function refreshRadar($: $): Promise<void> {
   await update($, ledger, value => onRadar(value, entries, at))
 }
 
-/** Keeps the radar fresh while the picker is up or a packet is with an agent, and the ages moving. */
+/** Keeps the radar fresh while the sheet is up or a packet is with an agent, and the ages moving. */
 async function routingTick($: $): Promise<void> {
   const shown = (await read($, overlay)).kind
   const isWaiting = (await read($, ledger)).some(
@@ -1707,39 +1752,100 @@ async function routingTick($: $): Promise<void> {
   await refreshStatus($)
 }
 
-// --- the overlay: route picker, broadcast, ledger ---
+// --- the overlay: the send sheet and its steps, broadcast, ledger ---
+
+const STORE_INTENTS = 'send.intents'
 
 async function closeOverlay($: $): Promise<void> {
   await update($, overlay, () => ({ kind: 'none' }))
   await ringCursor($)
 }
 
+/** The last intent per kind of sender, kept across sessions (§8 T2): ⏎ in the sheet repeats it. */
+async function lastIntents($: $): Promise<{ last: LastIntents; stored: unknown }> {
+  const stored = await $.store.get(STORE_INTENTS)
+  return { last: parseLastIntents(stored), stored }
+}
+
+async function rememberIntent($: $, sender: SenderClass, intent: RouteIntent): Promise<void> {
+  await $.store.set(STORE_INTENTS, rememberedWith(await $.store.get(STORE_INTENTS), sender, intent))
+}
+
+/** The ring on the sheet's intent ⏎ sends: the last one used for this kind of sender. */
+async function ringIntent($: $, sender: SenderClass): Promise<void> {
+  await moveRing($, `sheet:intent:${ringedIntent((await lastIntents($)).last, sender)}`)
+}
+
+/** The chat kind of the open thread, as §4.6 tells them apart. */
+function openChatKind(open: { peer: PeerRef }): ChatKind {
+  return chatKind(open.peer.kind, isBotFather(open.peer.arg))
+}
+
 /**
- * ⏎ on a message: the route picker for the marked set, or for the message
- * under the cursor when nothing is marked. A digit there sends. The send sheet
- * (T2) replaces the picker; until then it is the sheet's place.
+ * ⏎ on a message (or the marked set): the send sheet with its sender's intents
+ * (§4.6), sending to main until `a` picks another. `i` in a chat opens it on
+ * inspect. Digits there send at once.
  */
-async function openSheet($: $): Promise<void> {
+async function openSheet($: $, step: SheetStep = 'intents'): Promise<void> {
   const marked = (await read($, selection)).ids
   const message = await cursorMessage($)
   const ids = marked.length > 0 ? marked : message === undefined ? [] : [message.id]
-  if (ids.length === 0) return
-  await update($, overlay, () => ({ kind: 'picker', ids }))
+  const open = await read($, thread)
+  if (ids.length === 0 || open === null) return
+  const sender = setClass(selectedMessages(await threadMessages($), ids), openChatKind(open))
+  // Each sheet starts from the pane's redaction; inspect turns it off for this packet alone.
+  const redact = await read($, isRedacted)
+  await update($, overlay, () => ({ kind: 'sheet', ids, sender, step, to: { kind: 'main' }, isRedacted: redact }))
   await refreshRadar($)
-  await moveRing($, 'route:main')
+  if (step === 'inspect') await moveRing($, 'sheet:redact')
+  else await ringIntent($, sender)
 }
 
-/** A target is picked: the packet goes there now, under the intent the picker shows. */
-async function chooseRoute($: $, ids: readonly number[], to: Recipient): Promise<void> {
-  const chosen = { kind: 'one', to } as const
-  await update($, route, () => chosen)
+async function setStep($: $, step: SheetStep): Promise<void> {
+  const shown = await update($, overlay, value => (value.kind === 'sheet' ? { ...value, step } : value))
+  if (shown.kind !== 'sheet') return
+  if (step === 'intents') await ringIntent($, shown.sender)
+  else if (step === 'ask') await moveRing($, 'sheet:ask')
+  else if (step === 'inspect') await moveRing($, 'sheet:redact')
+  else await moveRing($, shown.to.kind === 'main' ? 'route:main' : shown.to.kind === 'new' ? 'route:new' : `route:agent:${shown.to.agentId}`)
+}
+
+/** A digit of the sheet: that intent goes now to the sheet's target; the last digit opens the Ask field. */
+async function pickIntent($: $, chosen: RouteIntent): Promise<void> {
+  const shown = await read($, overlay)
+  if (shown.kind !== 'sheet') return
+  if (chosen === 'raw') return setStep($, 'ask')
+  await sendSheet($, shown, chosen, '')
+}
+
+/** The Ask field: its words are the intent line; an empty field goes back to the intents. */
+async function submitAsk($: $, words: string): Promise<void> {
+  const shown = await read($, overlay)
+  if (shown.kind !== 'sheet') return
+  if (words.trim() === '') return setStep($, 'intents')
+  await sendSheet($, shown, 'raw', words)
+}
+
+async function sendSheet($: $, shown: Extract<Overlay, { kind: 'sheet' }>, chosen: RouteIntent, words: string): Promise<void> {
+  await rememberIntent($, shown.sender, chosen)
+  const chosenRoute = { kind: 'one', to: shown.to } as const
+  await update($, route, () => chosenRoute)
   await closeOverlay($)
-  await sendIds($, ids, legsOf(chosen, await read($, intent)))
+  await sendIds($, shown.ids, legsOf(chosenRoute, chosen), { sender: shown.sender, isRedacted: shown.isRedacted, words })
 }
 
-async function openBroadcast($: $, ids: number[]): Promise<void> {
-  const rows = broadcastRows(await read($, radar), await read($, intent))
-  await update($, overlay, () => ({ kind: 'broadcast', rows, ids }))
+/** A target from `a`: the sheet goes back to its intents, sending there now. */
+async function chooseTarget($: $, to: Recipient): Promise<void> {
+  await update($, overlay, value => (value.kind === 'sheet' ? { ...value, to } : value))
+  await setStep($, 'intents')
+}
+
+async function openBroadcast($: $): Promise<void> {
+  const shown = await read($, overlay)
+  if (shown.kind !== 'sheet') return
+  const { last } = await lastIntents($)
+  const rows = broadcastRows(await read($, radar), mainLegIntent(last, shown.sender), legSplit(shown.sender))
+  await update($, overlay, () => ({ kind: 'broadcast', rows, ids: shown.ids, sender: shown.sender, isRedacted: shown.isRedacted }))
   await moveRing($, 'leg:0:on')
 }
 
@@ -1757,7 +1863,7 @@ async function finishBroadcast($: $): Promise<void> {
   }
   await update($, route, () => chosen)
   await closeOverlay($)
-  await sendIds($, shown.ids, legsOf(chosen, await read($, intent)))
+  await sendIds($, shown.ids, chosen.legs, { sender: shown.sender, isRedacted: shown.isRedacted, words: '' })
 }
 
 async function openLedger($: $): Promise<void> {
@@ -1784,27 +1890,100 @@ async function jumpTo($: $, entry: LedgerEntry): Promise<void> {
   await moveRing($, `msg:${target}`)
 }
 
+/** What the sheet is about: its messages, the parents at hand, and the packet they make now. */
+async function sheetFacts($: $, shown: Extract<Overlay, { kind: 'sheet' }>, intentNow: RouteIntent) {
+  const open = await read($, thread)
+  const messages = await threadMessages($)
+  const selected = selectedMessages(messages, shown.ids)
+  const { known, toFetch } = parentsAtHand(selected, messages)
+  const peer = open === null ? null : peerOf(open.peer, loaded(await read($, dialogs)) ?? [])
+  // One redactor for the packet and the lines inspect shows, so their placeholders agree.
+  const redactor = shown.isRedacted ? new Redactor() : null
+  const packet =
+    peer === null || selected.length === 0
+      ? null
+      : previewPacket({ selected, context: known, peer, intent: sheetIntent(intentNow, shown.sender), redact: redactor ?? false })
+  return { open, selected, known, toFetch, redactor, packet }
+}
+
+/**
+ * The sheet where the bar was (its intents and the Ask field), or null when a
+ * step of it takes the lower part instead (targets, inspect) or it is not up.
+ */
+async function drawSheetBar($: $, els: Els, seat: Seat, width: number, isFocused: boolean): Promise<RenderElement | null> {
+  const shown = await read($, overlay)
+  if (shown.kind !== 'sheet' || (shown.step !== 'intents' && shown.step !== 'ask')) return null
+  const { last, stored } = await lastIntents($)
+  const ringed = ringedIntent(last, shown.sender)
+  const facts = await sheetFacts($, shown, ringed)
+  const agent = shown.to.kind === 'agent' ? shown.to.agentId : null
+  const state = shown.to.kind === 'main' ? ((await read($, isMainBusy)) ? 'running' : 'idle') : ((await read($, radar)).find(one => one.agentId === agent)?.state ?? 'idle')
+  return SendSheet(els, {
+    seat,
+    width,
+    title: sheetTitle(facts.selected, facts.known.length + facts.toFetch.length),
+    target: targetText(shown.to, state),
+    intents: SHEET_INTENTS[shown.sender],
+    ringed,
+    who: CLASS_LABEL[shown.sender],
+    isRemembered: isRemembered(stored, shown.sender),
+    masked: facts.packet?.redactions.length ?? 0,
+    isRedacted: shown.isRedacted,
+    isAsking: shown.step === 'ask',
+    isFocused,
+    onIntent: chosen => pickIntent($, chosen),
+    onAsk: words => submitAsk($, words),
+    onAgent: () => setStep($, 'targets'),
+    onInspect: () => setStep($, 'inspect'),
+    onBack: () => back($),
+  })
+}
+
+/** The steps of the sheet that take the lower part (targets, inspect, the legs), and the ledger. */
 async function drawOverlay($: $, els: Els, width: number, rows: number): Promise<RenderElement | null> {
   const shown = await read($, overlay)
   switch (shown.kind) {
     case 'none':
       return null
-    case 'picker': {
-      const { ids } = shown
-      return RoutePicker(els, {
-        ids,
-        radar: await read($, radar),
-        isMainBusy: await read($, isMainBusy),
-        intent: await read($, intent),
-        isRedacted: await read($, isRedacted),
-        masked: await maskedCount($, ids),
+    case 'sheet': {
+      if (shown.step === 'intents' || shown.step === 'ask') return null
+      const { last } = await lastIntents($)
+      const ringed = ringedIntent(last, shown.sender)
+      const facts = await sheetFacts($, shown, ringed)
+      const title = sheetTitle(facts.selected, facts.known.length + facts.toFetch.length)
+      if (shown.step === 'targets') {
+        return TargetList(els, {
+          title,
+          to: shown.to,
+          radar: await read($, radar),
+          isMainBusy: await read($, isMainBusy),
+          width,
+          onMain: () => chooseTarget($, { kind: 'main' }),
+          onAgent: (agent: RadarEntry) => chooseTarget($, { kind: 'agent', agentId: agent.agentId, label: agent.label }),
+          onNew: () => chooseTarget($, { kind: 'new' }),
+          onSeveral: () => openBroadcast($),
+        })
+      }
+      const open = facts.open
+      const redactor = facts.redactor
+      const shownMessages = (list: readonly TgMessage[]) => (redactor === null ? [...list] : list.map(message => redactMessage(message, redactor)))
+      return Inspect(els, {
+        target: shown.to.kind === 'main' ? 'main' : shown.to.kind === 'new' ? 'a new agent' : shown.to.label,
+        view: inspectView({
+          peer: open?.peer.label ?? '?',
+          kind: open === null ? '?' : CHAT_KIND_LABEL[openChatKind(open)],
+          intent: ringed,
+          isRedacted: shown.isRedacted,
+          shown: shownMessages(facts.selected),
+          parents: shownMessages(facts.known),
+          toFetch: facts.toFetch.length,
+          replay: facts.packet?.replay ?? null,
+          redactions: facts.packet?.redactions ?? [],
+          width,
+        }),
+        isRedacted: shown.isRedacted,
         width,
-        onMain: () => chooseRoute($, ids, { kind: 'main' }),
-        onAgent: (agent: RadarEntry) => chooseRoute($, ids, { kind: 'agent', agentId: agent.agentId, label: agent.label }),
-        onNew: () => chooseRoute($, ids, { kind: 'new' }),
-        onBroadcast: () => openBroadcast($, ids),
-        onIntent: () => update($, intent, nextIntent),
-        onRedact: () => update($, isRedacted, value => !value),
+        onRedact: () => update($, overlay, value => (value.kind === 'sheet' ? { ...value, isRedacted: !value.isRedacted } : value)),
       })
     }
     case 'broadcast':
@@ -1814,8 +1993,8 @@ async function drawOverlay($: $, els: Els, width: number, rows: number): Promise
         width,
         onToggle: index => editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, isOn: !leg.isOn } : leg))),
         onIntent: index =>
-          editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, intent: nextIntent(leg.intent) } : leg))),
-        onAdd: () => editLegs($, addNewLeg),
+          editLegs($, legs => legs.map((leg, at) => (at === index ? { ...leg, intent: nextLegIntent(shown.sender, leg.intent) } : leg))),
+        onAdd: () => editLegs($, legs => addNewLeg(legs, legSplit(shown.sender))),
         onDone: () => finishBroadcast($),
       })
     case 'ledger':
@@ -1827,22 +2006,6 @@ async function drawOverlay($: $, els: Els, width: number, rows: number): Promise
         onJump: entry => jumpTo($, entry),
       })
   }
-}
-
-/** What redaction would mask in a packet of `ids`, so the picker can say it before sending. */
-async function maskedCount($: $, ids: readonly number[]): Promise<number> {
-  const open = await read($, thread)
-  const messages = await threadMessages($)
-  const selected = selectedMessages(messages, ids)
-  if (open === null || selected.length === 0 || !(await read($, isRedacted))) return 0
-  const { known } = parentsAtHand(selected, messages)
-  return previewPacket({
-    selected,
-    context: known,
-    peer: peerOf(open.peer, loaded(await read($, dialogs)) ?? []),
-    intent: await read($, intent),
-    isRedacted: true,
-  }).redactions.length
 }
 
 // --- sending a packet ---
@@ -1929,7 +2092,7 @@ async function deliverNew($: $, base: Base, packet: Packet): Promise<void> {
  */
 async function sendPacket(
   $: $,
-  input: { peer: PeerRef; selected: TgMessage[]; known: readonly TgMessage[]; legs: readonly Leg[] },
+  input: { peer: PeerRef; selected: TgMessage[]; known: readonly TgMessage[]; legs: readonly Leg[]; how: SendHow },
 ): Promise<{ failed: number; fetchFailure: TgFailure | null }> {
   let fetchFailure: TgFailure | null = null
   const expanded = await expandReplyChain(
@@ -1944,7 +2107,7 @@ async function sendPacket(
     { known: input.known },
   )
   const peer = peerOf(input.peer, loaded(await read($, dialogs)) ?? [])
-  const redact = await read($, isRedacted)
+  const { sender, isRedacted: redact, words } = input.how
   const before = (await read($, ledger)).length
   await Promise.all(
     input.legs.map(async leg => {
@@ -1952,7 +2115,7 @@ async function sendPacket(
         messages: expanded.messages,
         context: expanded.context,
         peer,
-        intent: toIntent(leg.intent),
+        intent: sheetIntent(leg.intent, sender, words),
         redact,
       })
       const base: Base = {
@@ -1977,8 +2140,11 @@ async function sendPacket(
   return { failed: added.filter(entry => entry.state.kind === 'failed').length, fetchFailure }
 }
 
-/** The picker's send: these messages, along the legs; the marks clear once every leg went. */
-async function sendIds($: $, ids: readonly number[], legs: readonly Leg[]): Promise<void> {
+/** How a sheet sends: whose intents, this packet's redaction, the Ask field's words. */
+type SendHow = { sender: SenderClass; isRedacted: boolean; words: string }
+
+/** The sheet's send: these messages, along the legs; the marks clear once every leg went. */
+async function sendIds($: $, ids: readonly number[], legs: readonly Leg[], how: SendHow): Promise<void> {
   const open = await read($, thread)
   const messages = await threadMessages($)
   const selected = selectedMessages(messages, ids)
@@ -1986,7 +2152,7 @@ async function sendIds($: $, ids: readonly number[], legs: readonly Leg[]): Prom
     $.ui.toast('tg: those messages are no longer loaded; ⏎ on one sends it.')
     return
   }
-  const sent = await sendPacket($, { peer: open.peer, selected, known: messages, legs })
+  const sent = await sendPacket($, { peer: open.peer, selected, known: messages, legs, how })
   const why = sent.fetchFailure === null ? '' : ` Reply-chain parents missing: ${sent.fetchFailure.kind}.`
   if (sent.failed === 0) {
     await update($, selection, () => NO_SELECTION)
@@ -1996,7 +2162,7 @@ async function sendIds($: $, ids: readonly number[], legs: readonly Leg[]): Prom
   }
 }
 
-/** The Hidden band's ⏎: the dialog's newest message to main, under the picker's intent. */
+/** The Hidden band's ⏎: the dialog's newest message to main, under the intent the band names. */
 async function bandToMain($: $): Promise<void> {
   const event = await read($, band)
   const dialog = (loaded(await read($, dialogs)) ?? []).find(one => one.id === event?.dialogId)
@@ -2012,11 +2178,13 @@ async function bandToMain($: $): Promise<void> {
     $.ui.toast(`tg: could not fetch #${messageId} (${found.ok ? 'not found' : found.failure.kind}).`)
     return
   }
+  const { sender, intent } = bandIntent(dialog.kind, (await lastIntents($)).last)
   const sent = await sendPacket($, {
     peer,
     selected: found.value,
     known: [],
-    legs: [{ to: { kind: 'main' }, intent: await read($, intent) }],
+    legs: [{ to: { kind: 'main' }, intent }],
+    how: { sender, isRedacted: await read($, isRedacted), words: '' },
   })
   if (sent.failed === 0) await update($, band, () => null)
   await refreshStatus($)

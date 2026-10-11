@@ -212,7 +212,17 @@ export type Triage = {
 // packet goes, what went to whom, live pins and drafted replies.
 
 /** The packet module's intent ids (hooks/packet/intents.ts `INTENT_IDS`). */
-export type RouteIntent = 'fix' | 'reproduce' | 'explain' | 'test' | 'draft_reply' | 'raw'
+export type RouteIntent = 'fix' | 'reproduce' | 'explain' | 'test' | 'do_it' | 'draft_reply' | 'raw'
+
+/**
+ * Who wrote the message the send sheet is for (docs/design/dialogs-pane-ux.md §4.6):
+ * a bot; a person in a chat the owner can write to; anyone else (a channel, the
+ * owner, a person where the owner cannot write). Each has its own intents.
+ */
+export type SenderClass = 'bot' | 'person' | 'other'
+
+/** The send sheet's steps: its intents, `a` the targets, `i` inspect, the last digit's field. */
+export type SheetStep = 'intents' | 'targets' | 'inspect' | 'ask'
 
 /** One live agent of this session, as `$.agent.list()` names it. */
 export type AgentRef = { agentId: string; label: string }
@@ -223,22 +233,26 @@ export type Recipient = { kind: 'main' } | ({ kind: 'agent' } & AgentRef) | { ki
 /** One recipient of a broadcast, with an intent of its own. */
 export type Leg = { to: Recipient; intent: RouteIntent }
 
-/** Where the picker's send goes: one recipient under the picker's intent, or a broadcast. */
+/** Where a send went: one recipient under the sheet's intent, or a broadcast. */
 export type Route = { kind: 'one'; to: Recipient } | { kind: 'broadcast'; legs: Leg[] }
 
 /** `$.agent.list()` statuses folded into the radar's three. */
 export type AgentState = 'idle' | 'running' | 'done'
 export type RadarEntry = AgentRef & { type: string; state: AgentState }
 
-/** A broadcast being put together in the picker: each leg on or off. */
+/** A broadcast being put together from the sheet's targets: each leg on or off. */
 export type BroadcastRow = Leg & { isOn: boolean }
 
 /** What the pane draws over the dialogs and thread. */
 export type Overlay =
   | { kind: 'none' }
-  /** ⏎ on a message: where to send `ids` (the marked set, or the cursor's message). */
-  | { kind: 'picker'; ids: number[] }
-  | { kind: 'broadcast'; rows: BroadcastRow[]; ids: number[] }
+  /**
+   * ⏎ on a message: the send sheet for `ids` (the marked set, or the cursor's
+   * message), with the intents of `sender`, sending to `to`. `isRedacted` is this
+   * packet's alone (inspect toggles it); the next sheet starts redacted again.
+   */
+  | { kind: 'sheet'; ids: number[]; sender: SenderClass; step: SheetStep; to: Recipient; isRedacted: boolean }
+  | { kind: 'broadcast'; rows: BroadcastRow[]; ids: number[]; sender: SenderClass; isRedacted: boolean }
   | { kind: 'ledger'; cursor: number }
 
 /** Who a ledger entry went to; a spawned agent is known once it started. */
@@ -571,11 +585,10 @@ declare module 'claude-code' {
       triage: Triage
       // ── routing ──
       route: Route
-      intent: RouteIntent
       isRedacted: boolean
       overlay: Overlay
       radar: RadarEntry[]
-      /** Whether the main loop is in a turn: main's AgentChip in the route picker. */
+      /** Whether the main loop is in a turn: main's state in the send sheet. */
       isMainBusy: boolean
       ledger: LedgerEntry[]
       pins: Pin[]

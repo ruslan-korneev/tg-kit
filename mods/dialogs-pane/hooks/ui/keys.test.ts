@@ -147,3 +147,40 @@ describe('hidden keys and the menu', () => {
     expect(keyDef('dismiss').hotkey).toBe('d')
   })
 })
+
+describe('the send sheet (§5.1)', () => {
+  test('a picks another agent in every kind of chat, Saved and BotFather too; there the card does not exist', () => {
+    for (const kind of CHAT_KINDS) {
+      const sheet = at('sheet', kind, { sheet: 'intents' })
+      expect(exists(keyDef('agent'), sheet)).toBe(true)
+      expect(keyDef('agent').label(sheet)).toBe('another agent')
+    }
+    expect(exists(keyDef('agent'), at('chat', 'saved'))).toBe(false)
+    expect(exists(keyDef('agent'), at('chat', 'botfather'))).toBe(false)
+  })
+
+  test('its own keys and digits work on the intents; its other steps answer h', () => {
+    const live = (where: Where, sheet: KeyFacts['sheet']) =>
+      [...actionBar(at(where, 'bot', { sheet })), ...hiddenKeys(at(where, 'bot', { sheet }), new Set())].map(one => one.id)
+    expect(live('sheet', 'intents')).toEqual(expect.arrayContaining(['agent', 'inspect', 'back']))
+    for (const step of ['targets', 'inspect', 'ask', 'broadcast'] as const) {
+      expect(live('sheet', step)).not.toContain('agent')
+      expect(live('sheet', step)).not.toContain('inspect')
+      expect(live('sheet', step)).toContain('back')
+    }
+    const entries = (sheet: KeyFacts['sheet']) => menu(at('sheet', 'bot', { sheet })).flatMap(section => section.entries)
+    expect(entries('intents').find(entry => entry.def.id === 'intents')?.needs).toBeNull()
+    expect(entries('intents').find(entry => entry.def.id === 'target')?.needs).toBe('needs a: another agent')
+    expect(entries('targets').find(entry => entry.def.id === 'target')?.needs).toBeNull()
+    expect(entries('targets').find(entry => entry.def.id === 'intents')?.needs).toBe('needs the intents (h)')
+    expect(keyDef('back').label(at('sheet', 'bot', { sheet: 'intents' }))).toBe('cancel')
+    expect(keyDef('back').label(at('sheet', 'bot', { sheet: 'targets' }))).toBe('back')
+  })
+
+  test('i inspects from a chat with messages, and is not the intent cycle any more', () => {
+    expect(keyDef('inspect').hotkey).toBe('i')
+    expect(ids(hiddenKeys(at('chat', 'person'), new Set()))).toContain('inspect')
+    expect(ids(hiddenKeys(at('chat', 'person', { rows: 0 }), new Set()))).not.toContain('inspect')
+    expect(KEYS.some(def => def.label(at('sheet', 'bot', { sheet: 'intents' })) === 'intent')).toBe(false)
+  })
+})

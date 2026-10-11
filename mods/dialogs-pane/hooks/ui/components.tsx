@@ -92,6 +92,8 @@ export function MessageCard(
   props: {
     message: TgMessage
     isCursor: boolean
+    /** The cursor row takes the ring; false while the send sheet holds it (the ▸ still shows). */
+    isRinged?: boolean
     isSelected: boolean
     isAnchor: boolean
     width: number
@@ -108,16 +110,18 @@ export function MessageCard(
   const id = `#${message.id}`
   const stamp = props.stamp ?? null
   const body = [mediaTag(message), message.text].filter(part => part !== '').join(' ')
-  // cursor(1) time(11) sender(6) text, then " ⏱1.4s" and " #id": one column spare so nothing wraps.
-  const textWidth = Math.max(10, props.width - 20 - id.length - (stamp === null ? 0 : stamp.text.length + 1))
+  // cursor(1) mark(1) time(11) sender(6) text, then " ⏱1.4s" and " #id": one column spare so nothing wraps.
+  const textWidth = Math.max(10, props.width - 21 - id.length - (stamp === null ? 0 : stamp.text.length + 1))
   const color = isErrorText(message.text) ? TOKEN.danger : undefined
+  // Marks are ▪ in their own column (§7.1): inverse text is the engine's focus ring.
+  const mark = props.isSelected ? GLYPH.marked : props.isAnchor ? 'v' : ' '
   return (
     <Box key={`card:${message.id}`} flexDirection="column">
-      <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onPress}>
-        <Text color={TOKEN.accent}>{props.isCursor ? GLYPH.cursor : props.isAnchor ? 'v' : ' '}</Text>
+      <Button key={`msg:${message.id}`} plain autoFocus={props.isCursor && props.isRinged !== false ? true : undefined} onPress={props.onPress}>
+        <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}${mark}`}</Text>
         <Text dimColor> {shortTime(message.date, props.now).padEnd(9)} </Text>
         <Text color={sender === 'bot' ? TOKEN.bot : undefined}>{pad(sender, 6)}</Text>
-        <Text color={color} inverse={props.isSelected}>
+        <Text color={color}>
           {pad(oneLine(body, textWidth), textWidth)}
         </Text>
         {stamp === null ? null : <Text color={stamp.isSlow ? TOKEN.warn : undefined} dimColor={!stamp.isSlow}> {stamp.text}</Text>}

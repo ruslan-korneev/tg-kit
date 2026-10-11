@@ -67,8 +67,8 @@ export function Strip(
     isRanked: boolean
     query: string
     isLive: boolean
-    /** The dock draws `s: search` here; inline has it in the action bar. */
-    hasSearchKey: boolean
+    /** The dock draws `s: search` here (`key`), or the Button alone over a layer (`click`); inline has it in the action bar. */
+    search: 'key' | 'click' | 'none'
     onLens: (lens: Lens) => void
     onSaved: (id: string) => void
     onSearch: () => void
@@ -88,11 +88,11 @@ export function Strip(
       </Box>
       <Box flexDirection="row" columnGap={1} flexShrink={0}>
         {props.query === '' ? null : <Text dimColor>{`"${props.query}"`}</Text>}
-        {props.hasSearchKey ? (
-          <Button key="key:search" plain hotkey="s" dimColor onPress={props.onSearch}>
+        {props.search === 'none' ? null : (
+          <Button key="key:search" plain hotkey={props.search === 'key' ? 's' : undefined} dimColor onPress={props.onSearch}>
             search
           </Button>
-        ) : null}
+        )}
       </Box>
     </Box>
   )

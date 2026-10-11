@@ -20,7 +20,8 @@ import type {
   TgMessage,
 } from '../../types'
 import { buildPacket, type Packet } from '../packet/build'
-import { INTENTS, INTENT_IDS, type Intent, type IntentId } from '../packet/intents'
+import { INTENTS, type Intent, type IntentId } from '../packet/intents'
+import type { Redactor } from '../packet/redact'
 import type { Peer } from '../packet/types'
 import { GLYPH } from '../ui/model'
 
@@ -29,23 +30,10 @@ import { GLYPH } from '../ui/model'
 const INTENTS_MATCH: [RouteIntent, IntentId] extends [IntentId, RouteIntent] ? true : never = true
 void INTENTS_MATCH
 
-// --- intents ---
-
-const INTENT_ORDER: readonly RouteIntent[] = INTENT_IDS
-
-/** The picker's intent chip: Fix → Reproduce → Explain → Test → Draft reply → Raw → Fix. */
-export function nextIntent(intent: RouteIntent): RouteIntent {
-  const at = INTENT_ORDER.indexOf(intent)
-  return INTENT_ORDER[(at + 1) % INTENT_ORDER.length] ?? 'fix'
-}
+// --- intents (which ones a message offers: ./sheet) ---
 
 export function intentLabel(intent: RouteIntent): string {
   return INTENTS[intent].label
-}
-
-/** Raw sends the packet alone: no instruction line under it. */
-export function toIntent(intent: RouteIntent): Intent {
-  return intent === 'raw' ? { id: 'raw', text: '' } : { id: intent }
 }
 
 // --- the agent radar ---
@@ -60,7 +48,7 @@ const RADAR_STATE = {
   killed: 'done',
 } as const satisfies Record<AgentStatus, AgentState>
 
-/** `$.agent.list()` as the picker shows it: live agents first, then finished ones. */
+/** `$.agent.list()` as the sheet's targets show it: live agents first, then finished ones. */
 export function radarOf(list: readonly AgentInfo[]): RadarEntry[] {
   const rank: Record<AgentState, number> = { idle: 0, running: 1, done: 2 }
   return list
@@ -101,39 +89,37 @@ export function routeLabel(route: Route): string {
   return `⇉ broadcast ×${on}`
 }
 
-/** What a send delivers: one leg under the picker's intent, or the broadcast's own legs. */
+/** What a send delivers: one leg under the sheet's intent, or the broadcast's own legs. */
 export function legsOf(route: Route, intent: RouteIntent): Leg[] {
   return route.kind === 'one' ? [{ to: route.to, intent }] : route.legs
 }
 
-// Idea 18's split: one reproduces, one writes the test, one drafts the reply.
-const SPLIT: readonly RouteIntent[] = ['reproduce', 'test', 'draft_reply']
-
 /**
- * The broadcast picker's rows: main under the picker's intent (on), each live
- * agent and one new agent (off), with the split intents handed round.
+ * The broadcast's rows: main under the sheet's intent (on), each live agent
+ * and one new agent (off), with `split` (idea 18, the sender's intents: ./sheet
+ * `legSplit`) handed round.
  */
-export function broadcastRows(radar: readonly RadarEntry[], intent: RouteIntent): BroadcastRow[] {
+export function broadcastRows(radar: readonly RadarEntry[], intent: RouteIntent, split: readonly RouteIntent[]): BroadcastRow[] {
   const agents = radar.filter(agent => agent.state !== 'done')
   const rows: BroadcastRow[] = [{ to: { kind: 'main' }, intent, isOn: true }]
   agents.forEach((agent, index) => {
     rows.push({
       to: { kind: 'agent', agentId: agent.agentId, label: agent.label },
-      intent: SPLIT[index % SPLIT.length] ?? 'fix',
+      intent: split[index % split.length] ?? intent,
       isOn: false,
     })
   })
-  rows.push({ to: { kind: 'new' }, intent: SPLIT[agents.length % SPLIT.length] ?? 'fix', isOn: false })
+  rows.push({ to: { kind: 'new' }, intent: split[agents.length % split.length] ?? intent, isOn: false })
   return rows
 }
 
-export function addNewLeg(rows: readonly BroadcastRow[]): BroadcastRow[] {
+export function addNewLeg(rows: readonly BroadcastRow[], split: readonly RouteIntent[]): BroadcastRow[] {
   const fresh = rows.filter(row => row.to.kind === 'new').length
-  return [...rows, { to: { kind: 'new' }, intent: SPLIT[fresh % SPLIT.length] ?? 'fix', isOn: true }]
+  return [...rows, { to: { kind: 'new' }, intent: split[fresh % split.length] ?? rows[0]?.intent ?? 'explain', isOn: true }]
 }
 
-/** The broadcast the picker settles on; null when no row is on. */
-export function routeOfRows(rows: readonly BroadcastRow[]): Route | null {
+/** The broadcast the legs settle on; null when no row is on. */
+export function routeOfRows(rows: readonly BroadcastRow[]): Extract<Route, { kind: 'broadcast' }> | null {
   const legs = rows.filter(row => row.isOn).map(({ to, intent }) => ({ to, intent }))
   return legs.length === 0 ? null : { kind: 'broadcast', legs }
 }
@@ -160,7 +146,7 @@ export function selectedMessages(messages: readonly TgMessage[], ids: readonly n
 
 /**
  * Reply-chain parents the thread already holds, and the ones a send fetches
- * with `tg msg` (one hop: what the picker can say before anything runs).
+ * with `tg msg` (one hop: what the sheet can say before anything runs).
  */
 export function parentsAtHand(
   selected: readonly TgMessage[],
@@ -182,20 +168,20 @@ export function parentsAtHand(
   return { known, toFetch }
 }
 
-/** The picker's preview: the packet as it stands with the parents at hand. */
+/** The sheet's preview: the packet as it stands with the parents at hand. */
 export function previewPacket(input: {
   selected: readonly TgMessage[]
   context: readonly TgMessage[]
   peer: Peer
-  intent: RouteIntent
-  isRedacted: boolean
+  intent: Intent
+  redact: boolean | Redactor
 }): Packet {
   return buildPacket({
     messages: input.selected,
     context: input.context,
     peer: input.peer,
-    intent: toIntent(input.intent),
-    redact: input.isRedacted,
+    intent: input.intent,
+    redact: input.redact,
   })
 }
 

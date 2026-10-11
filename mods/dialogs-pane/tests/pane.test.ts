@@ -6,7 +6,7 @@ import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-
 
 import { KEYS, hotkeyTable } from '../hooks/ui/keys'
 import type { TgDialog } from '../types'
-import { DIALOGS, MESSAGES } from './fixtures'
+import { DIALOGS, messagesFor } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const SURFACES = ['terminal', 'desktop'] as const
@@ -88,7 +88,7 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
 }
 
 const happy = (argv: readonly string[]) =>
-  argv[1] === 'dialogs' ? json(KINDS) : argv[1] === 'allow' ? json([]) : argv[1] === 'whoami' ? json({ username: null, name: 'Me' }) : json(MESSAGES)
+  argv[1] === 'dialogs' ? json(KINDS) : argv[1] === 'allow' ? json([]) : argv[1] === 'whoami' ? json({ username: null, name: 'Me' }) : json(messagesFor(argv[2]))
 
 const runTg = (args = '', columns = 160) =>
   ({ command: 'tg', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns } }) as const
@@ -223,7 +223,7 @@ describe('the frame', () => {
 })
 
 describe('keys', () => {
-  test('h walks back: the marks, the picker, the card, then up to Chats', async ($, on) => {
+  test('h walks back: the marks, the sheet one step at a time, the card, then up to Chats', async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
     await ui.press({ key: 'key:up' })
@@ -232,12 +232,24 @@ describe('keys', () => {
     expect((await ui.find({ key: 'key:back' }))?.text).toContain('clear')
     await ui.press({ key: 'key:back' })
     expect(await ui.find({ key: 'marks' })).toBeUndefined()
-    // ⏎ on a message opens the picker (the send sheet's place until T2); h cancels it.
+    // ⏎ on a message opens the send sheet in the bar's place; a and i open its steps, h walks back.
     await ui.press({ key: 'msg:677791' })
+    expect(await ui.find({ key: 'sheet' })).toBeDefined()
+    expect(await ui.find({ key: 'bar' })).toBeUndefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › @example_bot')
+    expect((await ui.find({ key: 'key:back' }))?.text).toBe('cancel')
+    await ui.press({ key: 'key:agent' })
     expect(await ui.find({ key: 'route:main' })).toBeDefined()
-    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › send')
+    expect((await ui.find({ key: 'key:back' }))?.text).toBe('back')
     await ui.press({ key: 'key:back' })
     expect(await ui.find({ key: 'route:main' })).toBeUndefined()
+    await ui.press({ key: 'key:inspect' })
+    expect(await ui.find({ key: 'inspect' })).toBeDefined()
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'sheet:intent:fix' })).toBeDefined()
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'sheet' })).toBeUndefined()
+    expect(await ui.find({ key: 'bar' })).toBeDefined()
     // a: the agent card takes the lower part, the list stays; h closes it.
     await ui.press({ key: 'key:agent' })
     expect(await ui.find({ key: 'ap:card' })).toBeDefined()
@@ -251,7 +263,7 @@ describe('keys', () => {
     await ui.unmount()
   })
 
-  test("x, v and the menu's whole-thread mark; ⏎ with marks offers them to the picker", async ($, on) => {
+  test("x, v and the menu's whole-thread mark; ⏎ with marks opens the sheet for them", async ($, on) => {
     const { ui } = await openPane($, on)
     await openChat(ui, 1001)
     await ui.press({ key: 'key:range' })
@@ -262,7 +274,7 @@ describe('keys', () => {
     await ui.press({ key: 'menu:whole' })
     expect(await ui.find({ type: 'Text', text: '▪ 3 marked' })).toBeDefined()
     await ui.press({ key: 'msg:677791' })
-    expect(await ui.find({ type: 'Text', text: 'send 3 messages to' })).toBeDefined()
+    expect((await ui.find({ key: 'sheet' }))?.text).toContain('send 3 messages')
     await ui.unmount()
   })
 
@@ -304,7 +316,23 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
       { name: `chat ${id} inline`, props: INLINE, steps: [`dialog:${id}`] },
       { name: `menu ${id}`, props: DOCK, steps: [`dialog:${id}`, 'key:menu'] },
     ]),
-    { name: 'picker', props: DOCK, steps: ['dialog:1001', 'msg:677791'] },
+    // The send sheet (T2) and its steps, for each sender §4.6 tells apart, in both seats.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        { name: `sheet bot ${seat}`, props, steps: ['dialog:1001', 'msg:677791'] },
+        { name: `sheet person ${seat}`, props, steps: ['dialog:1004', 'msg:92'] },
+        { name: `sheet channel ${seat}`, props, steps: ['dialog:1005', 'msg:7'] },
+        { name: `sheet group member ${seat}`, props, steps: ['dialog:1002', 'msg:499'] },
+        { name: `sheet Saved ${seat}`, props, steps: ['dialog:1003', 'msg:677791'] },
+        { name: `sheet BotFather ${seat}`, props, steps: ['dialog:1006', 'msg:677791'] },
+        { name: `sheet targets ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'key:agent'] },
+        { name: `sheet inspect ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'key:inspect'] },
+        { name: `sheet ask ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'sheet:intent:raw'] },
+        { name: `sheet several ${seat}`, props, steps: ['dialog:1001', 'msg:677791', 'key:agent', 'route:broadcast'] },
+        { name: `sheet menu ${seat}`, props, steps: ['dialog:1004', 'msg:92', 'key:menu'] },
+      ]
+    }),
     { name: 'card', props: DOCK, steps: ['dialog:1004', 'key:agent'] },
     { name: 'card menu', props: DOCK, steps: ['dialog:1004', 'key:agent', 'key:menu'] },
     { name: 'activity', props: INLINE, steps: ['key:activity'] },
