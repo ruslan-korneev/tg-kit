@@ -224,20 +224,23 @@ describe('what runs and the kill switch (§4.6, §5.6, T4)', () => {
 })
 
 describe('rows that come and go (T4b)', () => {
-  test('the layers: the summary closes with t or h, a drafted reply with h, a field with h', () => {
+  test('the layers: the summary closes with t or h, a field with h', () => {
     expect(ids(actionBar(at('summary', 'person', { summary: 'ok' })))).toEqual(['summary', 'back', 'menu'])
     expect(actionBar(at('summary', 'person', { summary: 'ok' })).find(one => one.id === 'back')?.label).toBe('close')
-    expect(ids(actionBar(at('draft', 'person')))).toEqual(['back', 'menu'])
     // A field holds every printable key; its bar row is the field itself, so only what the ring reaches lives.
     expect(ids(hiddenKeys(at('field', 'person', { isRunning: true }), new Set()))).toEqual(['back', 'hide', 'stop'])
   })
 
-  test('e opens a drafted reply from the chats or a chat, and is not listed while none waits', () => {
-    expect(exists(keyDef('edit'), at('chat', 'person'))).toBe(true)
-    expect(ids(hiddenKeys(at('chat', 'person', { hasDraft: true }), new Set()))).toContain('edit')
+  test('the cursor on a draft (§4.6): ⏎ send draft, e edit, d drop, a agent; a message\'s keys wait for a message; e is not in Chats', () => {
+    const onDraft = at('chat', 'person', { row: 'draft' })
+    expect(actionBar(onDraft).map(key => `${key.hotkey ?? '⏎'} ${key.label}`)).toEqual(['⏎ send draft', 'e edit', 'd drop', 'a agent', 'm menu'])
+    expect(ids(actionBar(at('chat', 'bot', { row: 'draft' }), 64))).toEqual(['senddraft', 'edit', 'dismiss', 'agent', 'menu'])
+    for (const id of ['send', 'mark', 'range', 'inspect'] as const) expect(menu(onDraft).flatMap(section => section.entries).find(entry => entry.def.id === id)?.needs).toBe('needs a message under the cursor')
+    // On a message, the draft's keys are not drawn, and e is not listed: nothing to edit there.
+    expect(ids(actionBar(at('chat', 'person')))).not.toContain('senddraft')
     expect(ids(hiddenKeys(at('chat', 'person'), new Set()))).not.toContain('edit')
     expect(menu(at('chat', 'person')).flatMap(section => section.entries).some(entry => entry.def.id === 'edit')).toBe(false)
-    expect(menu(at('chats', null, { hasDraft: true })).flatMap(section => section.entries).find(entry => entry.def.id === 'edit')?.label).toBe('open draft')
+    expect(exists(keyDef('edit'), at('chats', null))).toBe(false)
   })
 
   test('an open range shows its end on the bar, after ⏎; d dismisses a notice from the chats too', () => {

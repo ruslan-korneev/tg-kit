@@ -305,11 +305,12 @@ export function pinnedContext(pins: readonly Pin[], peers: readonly Peer[], isRe
 // --- drafted replies (idea 20) ---
 
 /** An agent's answer to a Draft reply packet becomes a draft of a reply to its newest message. */
-export function draftOf(entry: LedgerEntry, answer: string): ReplyDraft | null {
+export function draftOf(entry: LedgerEntry, answer: string, at: number): ReplyDraft | null {
   const text = answer.trim()
   const replyTo = entry.messageIds.reduce((top, id) => Math.max(top, id), 0)
   if (entry.intent !== 'draft_reply' || text === '' || replyTo === 0) return null
-  return { peer: entry.peer, replyTo, text, from: recipientLabel(entry.to), step: { kind: 'draft' } }
+  // A row of its chat after the message it answers; the pane moves it after the newest one its thread has.
+  return { peer: entry.peer, replyTo, text, from: recipientLabel(entry.to), step: { kind: 'draft' }, at, after: replyTo, isEditing: false }
 }
 
 /**

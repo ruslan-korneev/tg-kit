@@ -163,8 +163,6 @@ export type Nav = {
   isMenuOpen: boolean
   /** `s`: the search field is up, in the bar's row. */
   isSearching: boolean
-  /** `e`: the drafted reply is open as a layer over the lower part (T4b); `h` closes it and it waits on. */
-  isDraftOpen: boolean
 }
 
 export type Thread = { peer: PeerRef; load: Load<TgMessage[]> }
@@ -331,8 +329,13 @@ export type DraftStep =
   | { kind: 'sent'; ids: number[] }
   | { kind: 'failed'; reason: string }
 
-/** An agent's result drafted as a reply to the message it was about (idea 20). */
-export type ReplyDraft = { peer: PeerRef; replyTo: number; text: string; from: string; step: DraftStep }
+/**
+ * An agent's result drafted as a reply to the message it was about (idea 20):
+ * a row of its chat's thread (dialogs-pane-ux.md §8 T3), after `after`, the
+ * newest message the thread had when it landed (`at`), so it never lands above
+ * the cursor. `isEditing`: `e` turned its text into a field, in the row's place.
+ */
+export type ReplyDraft = { peer: PeerRef; replyTo: number; text: string; from: string; step: DraftStep; at: number; after: number; isEditing: boolean }
 
 // ── /routing ──
 
@@ -474,10 +477,18 @@ export type ApEntry = {
   undo: ApUndo | null
 }
 
-/** `unfolded`: the band shows the whole text after ⏎ found it cut short; only then does ⏎ send it. */
-export type ApDraftState = { kind: 'ready' } | { kind: 'unfolded' } | { kind: 'editing' } | { kind: 'sending' } | { kind: 'failed'; reason: string }
+/** `editing`: `e` turned the text into a field (the row's, the band's); `failed`: the send failed, with tg's reason. */
+export type ApDraftState = { kind: 'ready' } | { kind: 'editing' } | { kind: 'sending' } | { kind: 'failed'; reason: string }
 
-/** A reply waiting for you in the band: ⏎ send (or open, when the band cuts it short), e edit, x drop, o open. */
+/** The guard's verdict on a draft, from `tg send … --yes --dry-run` as it lands and after each edit: shown before ⏎ sends it. */
+export type DraftCheck = { kind: 'checking' } | { kind: 'planned'; isAllowed: boolean; reason: string } | { kind: 'failed'; reason: string }
+
+/**
+ * A reply waiting for you: a row of its chat's thread after `after`, the
+ * newest message it had when the draft landed (`at`), so it never lands above
+ * the cursor (dialogs-pane-ux.md §8 T3); For you and the band show it too.
+ * ⏎ sends it as the owner's own write once the guard's verdict allows it.
+ */
 export type ApDraft = {
   seq: number
   peer: PeerRef
@@ -486,6 +497,9 @@ export type ApDraft = {
   confidence: number | null
   reasons: string[]
   state: ApDraftState
+  check: DraftCheck
+  at: number
+  after: number
 }
 
 /** A `listen` dialog's summary of a burst. */

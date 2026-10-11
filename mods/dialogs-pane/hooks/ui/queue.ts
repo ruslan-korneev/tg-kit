@@ -2,10 +2,11 @@
 // §8 T5): the footer label, the hint tail, the status line's alarms, the band's
 // queue of what needs the owner, and the transcript's one row per packet. Pure:
 // register.tsx reads the state and makes every `$` call.
-import type { ApDraft, ApNote, ApUndoWindow, BandEvent, DgStatus, LedgerEntry, PeerRef, RouteIntent } from '../../types'
+import type { ApNote, ApUndoWindow, BandEvent, DgStatus, LedgerEntry, PeerRef, RouteIntent } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
 import { intentLabel } from '../routing/route'
+import type { DraftView } from './drafts'
 import { GLYPH, cells, oneLine, type SummaryParts } from './model'
 
 // --- the footer label (SessionMode) ---
@@ -66,7 +67,7 @@ export type BandTask = { id: number; peer: PeerRef; status: DgStatus; reason: st
 
 export type BandItem =
   | ({ kind: 'hold' } & BandHold)
-  | { kind: 'draft'; key: string; draft: ApDraft }
+  | { kind: 'draft'; key: string; draft: DraftView }
   | { kind: 'undo'; key: string; undo: ApUndoWindow }
   | { kind: 'reply'; key: string; event: BandEvent }
   | { kind: 'summary'; key: string; note: ApNote }
@@ -78,13 +79,16 @@ export type OnScreen = {
   chat: number | null
   /** For you is drawn: its agent rows are the drafts and the undo window. */
   isForYou: boolean
+  /** The drafts whose rows the pane draws (their chat's thread, For you): read and sent there (§8 T3). */
+  drafts: readonly string[]
 }
 
-export const NOTHING_ON_SCREEN: OnScreen = { chat: null, isForYou: false }
+export const NOTHING_ON_SCREEN: OnScreen = { chat: null, isForYou: false, drafts: [] }
 
 export type QueueInput = {
   holds: readonly BandHold[]
-  drafts: readonly ApDraft[]
+  /** Every draft waiting, autopilot's and routing's (./drafts). */
+  drafts: readonly DraftView[]
   /** The undo window while it is open. */
   undo: ApUndoWindow | null
   reply: BandEvent | null
@@ -98,9 +102,9 @@ export type QueueInput = {
 
 /**
  * The band's items, most urgent first. A hard stop always shows: it mirrors
- * the engine's dialog. The rest are left out while the pane draws them: the
- * drafts and the undo window are For you's agent rows, a reply and a task's
- * news belong to their chat's thread (the task card sits on top of it).
+ * the engine's dialog. The rest are left out while the pane draws them: a
+ * draft's row in its thread or For you, the undo window in For you, a reply
+ * and a task's news in their chat's thread (the task card sits on top of it).
  * Only a task that ended makes news, and only done or failed: the owner
  * stopped the others.
  */
@@ -110,7 +114,7 @@ export function bandQueue(input: QueueInput): BandItem[] {
   const reply = input.reply
   const items: BandItem[] = [
     ...input.holds.map((hold): BandItem => ({ kind: 'hold', ...hold })),
-    ...(onScreen.isForYou ? [] : input.drafts.map((draft): BandItem => ({ kind: 'draft', key: `draft:${draft.seq}`, draft }))),
+    ...input.drafts.filter(draft => !onScreen.drafts.includes(draft.key)).map((draft): BandItem => ({ kind: 'draft', key: draft.key, draft })),
     ...(onScreen.isForYou || input.undo === null ? [] : [{ kind: 'undo', key: `undo:${input.undo.seq}`, undo: input.undo } as const]),
     ...(reply === null || !input.watched.includes(reply.dialogId) || inThread(reply.dialogId) ? [] : [{ kind: 'reply', key: `reply:${reply.dialogId}`, event: reply } as const]),
     ...[...input.notes].reverse().map((note): BandItem => ({ kind: 'summary', key: `note:${note.seq}`, note })),

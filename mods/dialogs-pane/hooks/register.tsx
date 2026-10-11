@@ -24,12 +24,12 @@ import { NO_ME, RANK_SYSTEM, parseMe, parseVerdicts, pruneVerdicts, rankPrompt, 
 import { SUMMARY_LIMIT, SUMMARY_MAX_TOKENS, SUMMARY_SYSTEM, SUMMARY_TIMEOUT_MS, TRIAGE_MODEL, summaryPrompt } from './triage/summary'
 import { MAX_WATCHED, parseWatched } from './triage/watch'
 // ── routing ──
-import type { AgentInfo, HookStream, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
+import type { AgentInfo, HookStream, ProcessRunResult, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import type { BroadcastRow, LedgerEntry, Leg, Overlay, Pin, PinWatch, Recipient, RadarEntry, ReplyDraft, RouteIntent, SenderClass, SheetStep, TgMessage } from '../types'
 import { buildPacket, type Packet } from './packet/build'
 import { expandReplyChain } from './packet/expand'
 import { Redactor, redactMessage } from './packet/redact'
-import { BroadcastPicker, DraftRow, Inspect, SendSheet, TargetList } from './routing/components'
+import { BroadcastPicker, Inspect, SendSheet, TargetList } from './routing/components'
 import {
   addEntry,
   addNewLeg,
@@ -76,7 +76,8 @@ import {
 import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/watch'
 // ── /routing ──
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
-import { DialogRow, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
+import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
+import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
@@ -160,7 +161,6 @@ const nav = atom({ plugin: 'dialogs-pane', key: 'nav' } as const, {
   folderStart: 0,
   isMenuOpen: false,
   isSearching: false,
-  isDraftOpen: false,
 })
 const dialogs = atom({ plugin: 'dialogs-pane', key: 'dialogs' } as const, { status: 'idle' })
 const thread = atom({ plugin: 'dialogs-pane', key: 'thread' } as const, null)
@@ -322,8 +322,13 @@ export const register: Register = (on, options) => {
     })
     // Only a real answer becomes a draft: an error or an interrupt says nothing to send.
     const answer = e.reason === 'answer' ? e.answer : ''
-    const drafted = closed.map(entry => draftOf(entry, answer)).findLast(one => one !== null)
-    if (drafted !== undefined && drafted !== null) await update($, draft, () => drafted)
+    const drafted = closed.map(entry => draftOf(entry, answer, at)).findLast(one => one !== null)
+    if (drafted !== undefined && drafted !== null) {
+      // A row of its chat after the newest message the thread has (§8 T3), checked by the guard as it lands.
+      const landed = { ...drafted, after: await newestIn($, drafted.peer.id, drafted.replyTo) }
+      await keepThreadCursor($, () => update($, draft, () => landed))
+      await checkDraft($)
+    }
     return done
   })
 
@@ -472,7 +477,9 @@ async function loadThread($: $, peer: PeerRef): Promise<void> {
   }
   const messages = result.value
   await update($, thread, () => ({ peer, load: { status: 'ok', value: messages } }))
-  await update($, nav, value => ({ ...value, messageCursor: Math.max(0, messages.length - 1) }))
+  // The cursor on the newest message; the chat's drafts wait after it (§8 T3).
+  const items = await threadItems($)
+  await update($, nav, value => ({ ...value, messageCursor: Math.max(0, items.findLastIndex(item => item.kind === 'message')) }))
 }
 
 /** `g`: the open chat again; on a list, what waits applies at once and a pass runs or queues (§8 T9). */
@@ -499,18 +506,47 @@ async function cursorDialog($: $): Promise<TgDialog | undefined> {
   return row?.kind === 'chat' ? row.dialog : undefined
 }
 
+/** The open chat's thread as drawn: its messages, and its drafts as rows after the message each followed (§8 T3). */
+async function threadItems($: $): Promise<ThreadRow[]> {
+  const open = await read($, thread)
+  if (open === null) return []
+  return threadRows(await threadMessages($), (await draftViewsNow($)).filter(one => one.peer.id === open.peer.id))
+}
+
+/** The thread's row under the cursor: a message or a draft. */
+async function cursorItem($: $): Promise<ThreadRow | undefined> {
+  const items = await threadItems($)
+  return items[clamp((await read($, nav)).messageCursor, items.length)]
+}
+
+/** The message under the cursor; none while the cursor is on a draft. */
 async function cursorMessage($: $): Promise<TgMessage | undefined> {
-  const messages = await threadMessages($)
-  return messages[clamp((await read($, nav)).messageCursor, messages.length)]
+  const item = await cursorItem($)
+  return item?.kind === 'message' ? item.message : undefined
+}
+
+/** The cursor sits on the thread's last row, and it is a message: new messages take it along. */
+async function isOnNewest($: $): Promise<boolean> {
+  const items = await threadItems($)
+  const cursor = (await read($, nav)).messageCursor
+  return items.length === 0 || (cursor >= items.length - 1 && items.at(-1)?.kind === 'message')
+}
+
+/** The cursor onto the thread's last row (after isOnNewest said it was there). */
+async function toNewest($: $): Promise<void> {
+  const count = (await threadItems($)).length
+  await update($, nav, value => ({ ...value, messageCursor: Math.max(0, count - 1) }))
 }
 
 /**
  * How many rows each list's window showed when last drawn: a move scrolls the
  * window by the same rule the drawing uses. The module's own, as it is a fact
  * of the last drawing rather than state; a reload starts it over at 0, which
- * the next drawing corrects.
+ * the next drawing corrects. The thread's are terminal rows, with each of its
+ * rows' heights: a draft takes its whole text (./ui/drafts).
  */
 const windowRows = { dialogs: 0, messages: 0, folders: 0 }
+let threadHeights: number[] = []
 
 /**
  * The cursor of one list moved by a step: its window start is first settled
@@ -527,8 +563,9 @@ function cursorTo(value: Nav, list: 'dialogs' | 'messages' | 'folders', cursor: 
     const drawn = edgeStart(value.folderStart, value.folderCursor, rows, length)
     return { ...value, folderCursor: cursor, folderStart: edgeStart(drawn, cursor, rows, length) }
   }
-  const drawn = edgeStart(value.messageStart, value.messageCursor, rows, length)
-  return { ...value, messageCursor: cursor, messageStart: edgeStart(drawn, cursor, rows, length) }
+  const heights = Array.from({ length }, (_, index) => threadHeights[index] ?? 1)
+  const drawn = windowStart(value.messageStart, value.messageCursor, heights, rows)
+  return { ...value, messageCursor: cursor, messageStart: windowStart(drawn, cursor, heights, rows) }
 }
 
 /** Moves the cursor in the active list; answers the key of the row it lands on. */
@@ -545,10 +582,10 @@ async function moveCursor($: $, by: number): Promise<string | undefined> {
     const row = list[moved.dialogCursor]
     return row === undefined ? undefined : rowKey((await read($, folders)).gen, row)
   }
-  const messages = await threadMessages($)
-  const moved = await update($, nav, value => cursorTo(value, 'messages', clamp(value.messageCursor + by, messages.length), messages.length))
-  const message = messages[moved.messageCursor]
-  return message === undefined ? undefined : `msg:${message.id}`
+  const items = await threadItems($)
+  const moved = await update($, nav, value => cursorTo(value, 'messages', clamp(value.messageCursor + by, items.length), items.length))
+  const item = items[moved.messageCursor]
+  return item === undefined ? undefined : threadRowKey(item)
 }
 
 async function followRing($: $, element: string): Promise<void> {
@@ -563,11 +600,10 @@ async function followRing($: $, element: string): Promise<void> {
     const items = await folderItems($)
     const index = items.findIndex(item => item.key === element)
     if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'folders', index, items.length), view: 'folders' }))
-  } else if (kind === 'msg') {
-    const id = Number(raw)
-    const messages = await threadMessages($)
-    const index = messages.findIndex(message => message.id === id)
-    if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'messages', index, messages.length), view: 'thread' }))
+  } else if (kind === 'msg' || kind === 'draft') {
+    const items = await threadItems($)
+    const index = items.findIndex(item => threadRowKey(item) === element)
+    if (index >= 0) await update($, nav, value => ({ ...cursorTo(value, 'messages', index, items.length), view: 'thread' }))
   } else if (kind === 'act') {
     await followActivity($, Number(raw)) // ── running ──
   }
@@ -589,8 +625,8 @@ async function ringCursor($: $): Promise<void> {
   if (where === 'activity') {
     await ringActivity($) // ── running ──
   } else if (where === 'chat') {
-    const message = await cursorMessage($)
-    if (message !== undefined) await moveRing($, `msg:${message.id}`)
+    const item = await cursorItem($)
+    if (item !== undefined) await moveRing($, threadRowKey(item))
   } else if (where === 'folders') {
     const items = await folderItems($)
     const item = items[clamp((await read($, nav)).folderCursor, items.length)]
@@ -611,10 +647,9 @@ async function openAtCursor($: $): Promise<void> {
 }
 
 async function selectAtCursor($: $, how: 'toggle' | 'range'): Promise<void> {
-  const messages = await threadMessages($)
-  const message = messages[clamp((await read($, nav)).messageCursor, messages.length)]
+  const message = await cursorMessage($)
   if (message === undefined) return
-  const order = messages.map(one => one.id)
+  const order = (await threadMessages($)).map(one => one.id)
   await update($, selection, value =>
     how === 'toggle' ? toggleSelected(value, message.id) : rangeSelect(value, order, message.id),
   )
@@ -624,8 +659,8 @@ async function selectAtCursor($: $, how: 'toggle' | 'range'): Promise<void> {
 
 /**
  * The view the keys act on, under the menu: a layer (the card, Activity, the
- * send sheet, a diff, a drafted reply, the summary, the send box or the search
- * field) or where the cursor is: the Folders list, For you, Chats, the chat.
+ * send sheet, a diff, the summary, the send box or the search field) or where
+ * the cursor is: the Folders list, For you, Chats, the chat.
  */
 async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   if ((await read($, autopilot)).view.kind === 'card') return 'card' // ── autopilot ──
@@ -633,10 +668,9 @@ async function underWhere($: $): Promise<Exclude<Where, 'menu' | 'band'>> {
   const shown = (await read($, overlay)).kind // ── routing ──
   if (shown === 'sheet' || shown === 'broadcast') return 'sheet'
   if ((await read($, bottest)).diff !== null) return 'diff'
-  // T4b's layers: the drafted reply and the summary over the lower part, a field in the bar's row.
+  // T4b's layers: the summary over the lower part, a field in the bar's row.
   const where = await read($, nav)
   const open = await read($, thread)
-  if (where.isDraftOpen && (await read($, draft)) !== null) return 'draft'
   const summary = (await read($, triage)).summary
   if (open !== null && summary !== null && summary.peerId === open.peer.id && where.view === 'thread') return 'summary'
   if (where.isSearching || (open !== null && (await read($, bottest)).composing)) return 'field'
@@ -687,7 +721,6 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       // ── running ── what 0 stops: every follow, autopilot and Worker (§5.6).
       isRunning: pilot.running.length > 0 || (await read($, pins)).length > 0 || tasks.some(isLive),
       hasFinished: tasks.some(task => !isLive(task)),
-      hasDraft: (await read($, draft)) !== null, // ── routing ──
       undoLeft: undoLeft(pilot.undo, Math.max(pilot.now, await $.clock.now())),
       hasNotice: where === 'card' ? view.kind === 'card' && view.notice !== null : bt.notice !== null || (await stopNoticeNow($, Infinity)) !== null,
       marks: chosen.ids.length,
@@ -698,7 +731,8 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       isWatched: peer !== undefined && tri.watched.some(one => one.id === peer.id),
       isFollowed: peer !== undefined && (await read($, pins)).some(pin => pin.peer.id === peer.id),
       summary: peer !== undefined && tri.summary?.peerId === peer.id ? tri.summary.status : 'none',
-      row: where === 'foryou' ? await forYouRowKind($) : null, // ── folders ──
+      // For you's row (── folders ──); in a chat, a draft's row (§8 T3).
+      row: where === 'foryou' ? await forYouRowKind($) : where === 'chat' && (await cursorItem($))?.kind === 'draft' ? 'draft' : null,
       card: where === 'card' && view.kind === 'card' && peer !== undefined ? await cardFacts($, view, peer) : null, // ── autopilot ──
       sheet: sheetStepOf(await read($, overlay)),
     },
@@ -720,8 +754,11 @@ async function runKey($: $, id: RunKey): Promise<void> {
       if (where === 'card') return apStep($, 'options') // ── autopilot ── o: the card's options
       if (where === 'activity') return openActivityRow($, (await read($, activity))?.cursor ?? 0)
       return where === 'folders' ? openFolderAt($, (await read($, nav)).folderCursor) : openAtCursor($)
-    case 'senddraft':
-      return openAtCursor($)
+    case 'senddraft': {
+      if (where === 'foryou') return openAtCursor($)
+      const item = await cursorItem($)
+      return item?.kind === 'draft' ? enterDraft($, item.draft.ref) : undefined
+    }
     case 'send':
       return openSheet($)
     case 'start': {
@@ -780,11 +817,13 @@ async function runKey($: $, id: RunKey): Promise<void> {
       return startSearch($)
     case 'edit':
       if (where === 'foryou') return editAgentRow($) // ── folders ──
-      return where === 'card' ? apEditField($) : openDraft($)
+      if (where === 'card') return apEditField($)
+      return editAtCursor($)
     case 'dismiss':
       if (where === 'foryou' && (await cursorRow($))?.kind === 'agent') return dropAgentRow($) // ── folders ──
       if (where === 'card') return apNotice($, null)
       if (where === 'activity') return dismissEnded($)
+      if (where === 'chat' && (await cursorItem($))?.kind === 'draft') return dropAtCursor($)
       // The notice row's notice: a write's result, or what 0 stopped.
       await update($, bottest, value => ({ ...value, notice: null }))
       await update($, lastStop, () => null) // ── running ──
@@ -840,9 +879,6 @@ async function back($: $): Promise<void> {
     await update($, activity, () => null)
   } else if (where === 'diff') {
     await update($, bottest, value => ({ ...value, diff: null }))
-  } else if (where === 'draft') {
-    // It waits on: its notice says e: open.
-    await update($, nav, value => ({ ...value, isDraftOpen: false }))
   } else if (where === 'summary') {
     await hideSummary($)
   } else if (where === 'field') {
@@ -1028,8 +1064,6 @@ async function locationOf($: $, where: Where, isMenu: boolean, isInlineChats: bo
       return 'tg › activity'
     case 'summary':
       return `tg › summary · ${label}`
-    case 'draft':
-      return `tg › draft · ${(await read($, draft))?.peer.label ?? label}`
     case 'field':
       return (await read($, nav)).isSearching ? 'tg › search' : `tg › ${label}`
     case 'menu':
@@ -1087,8 +1121,9 @@ async function drawFieldBar($: $, els: Els): Promise<RenderElement | null> {
 
 /**
  * The notice the pane shows now: what a write is doing (`… pressing`), what it
- * brought back or why it was refused, what `0` stopped, a drafted reply that
- * waits. The dock draws it in the running strip's row, inline in the notice row.
+ * brought back or why it was refused, what `0` stopped. A drafted reply is a
+ * row of its chat (§8 T3), not a notice. The dock draws it in the running
+ * strip's row, inline in the notice row.
  */
 async function noticeNow($: $, width: number): Promise<Notice | null> {
   const bt = await read($, bottest)
@@ -1096,8 +1131,6 @@ async function noticeNow($: $, width: number): Promise<Notice | null> {
   if (bt.notice !== null) return bt.notice
   const stop = await stopNoticeNow($, width) // ── running ──
   if (stop !== null) return stop
-  const replyDraft = await read($, draft) // ── routing ──
-  if (replyDraft !== null && replyDraft.step.kind !== 'sent') return { tone: 'warn', text: `${LEVEL_GLYPH.draft} draft for ${replyDraft.peer.label} waits · e: open` }
   return passNotice($) // ── folders ──
 }
 
@@ -1157,10 +1190,6 @@ async function drawLower($: $, els: Els, seat: Seat, where: Where, width: number
     case 'summary': {
       const summary = await drawSummary($, els, width) // ── triage ──
       return summary === null ? [] : [summary]
-    }
-    case 'draft': {
-      const view = await drawDraft($, els, width) // ── routing ──
-      return view === null ? [] : [view]
     }
     case 'chats':
     case 'chat':
@@ -1242,6 +1271,8 @@ async function drawDialogList($: $, els: Els, width: number, rows: number, mode:
 /**
  * `active`: the cursor's column, its row ringed. `idle`: Chats hold the cursor.
  * `static`: under the send sheet's intents, ▸ shown and no ring stops at all.
+ * The window is counted in terminal rows: a message takes one, two with its
+ * buttons, a draft its whole text, so a draft is drawn whole or not at all.
  */
 async function drawThread($: $, els: Els, width: number, rows: number, mode: 'active' | 'idle' | 'static'): Promise<RenderElement[]> {
   const { Text } = els
@@ -1252,20 +1283,38 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
   if (waiting !== null) return [waiting]
   const messages = loaded(open.load) ?? []
   if (messages.length === 0) return [<Text dimColor>No messages in this chat yet.</Text>]
-  const where = await read($, nav)
   const chosen = await read($, selection)
-  const cursor = clamp(where.messageCursor, messages.length)
+  const layout = await threadLayout($, width, rows)
+  windowRows.messages = rows
+  threadHeights = layout.heights
+  lastThread = { width, rows } // ── footer ──
   const bt = await bottestCards($, open.peer, messages, width)
-  // A card with buttons takes two rows; budget for some of them.
-  const window = Math.max(1, Math.floor(rows / 1.5))
-  windowRows.messages = window
-  const start = edgeStart(where.messageStart, cursor, window, messages.length)
-  const shown = { start, items: windowAt(messages, start, window) }
-  return shown.items.map((message, index) =>
-    MessageCard(els, {
+  return layout.shown.map((item, index) => {
+    const row = layout.start + index
+    const isCursor = mode !== 'idle' && row === layout.cursor
+    const toRow = () => update($, nav, value => ({ ...value, view: 'thread', messageCursor: row }))
+    if (item.kind === 'draft') {
+      return DraftCard(els, {
+        draft: item.draft,
+        isCursor,
+        isStatic: mode === 'static',
+        width,
+        onPress: async () => {
+          await toRow()
+          await enterDraft($, item.draft.ref)
+        },
+        onSave: async text => {
+          // The field's drawing has the row's head as a ring stop, before it: the ring goes back to it.
+          await moveRing($, item.draft.key)
+          await saveDraft($, item.draft.ref, text)
+        },
+      })
+    }
+    const { message } = item
+    return MessageCard(els, {
       ...bt(els, message),
       message,
-      isCursor: mode !== 'idle' && shown.start + index === cursor,
+      isCursor,
       isStatic: mode === 'static',
       isSelected: chosen.ids.includes(message.id),
       isAnchor: chosen.anchor === message.id,
@@ -1273,11 +1322,25 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
       now: at,
       // ⏎ (or a click) on a message: the send sheet for it (§5.1).
       onPress: async () => {
-        await update($, nav, value => ({ ...value, view: 'thread', messageCursor: shown.start + index }))
+        await toRow()
         await openSheet($)
       },
-    }),
-  )
+    })
+  })
+}
+
+/**
+ * The open thread's window for `rows` terminal rows at `width`: the rows it
+ * holds whole, from where it starts. The drawing and the band (which leaves
+ * out a draft the pane draws) read the same answer.
+ */
+async function threadLayout($: $, width: number, rows: number): Promise<{ shown: ThreadRow[]; start: number; cursor: number; heights: number[] }> {
+  const items = await threadItems($)
+  const where = await read($, nav)
+  const heights = items.map(item => rowHeight(item, width))
+  const cursor = clamp(where.messageCursor, items.length)
+  const start = windowStart(where.messageStart, cursor, heights, rows)
+  return { shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights }
 }
 
 // ── triage ──
@@ -1415,15 +1478,14 @@ async function onTriageEvent($: $, entry: Listening, event: WatchEvent, isReplay
   if (event.event !== 'delete') entry.recent = [...entry.recent, event.message].slice(-RECENT)
   const open = await read($, thread)
   if (open?.peer.id === peer.id && open.load.status === 'ok') {
-    const atEnd = (await read($, nav)).messageCursor >= open.load.value.length - 1
-    const after = await update($, thread, value =>
+    const atEnd = await isOnNewest($)
+    await update($, thread, value =>
       value?.peer.id === peer.id && value.load.status === 'ok'
         ? { ...value, load: { status: 'ok', value: applyToMessages(value.load.value, event, message => message) } }
         : value,
     )
-    // A cursor on the newest message follows new ones; one placed higher stays.
-    const count = after !== null && after.load.status === 'ok' ? after.load.value.length : 0
-    if (atEnd) await update($, nav, value => ({ ...value, messageCursor: Math.max(0, count - 1) }))
+    // A cursor on the newest message follows new ones; one placed higher, or on a draft, stays.
+    if (atEnd) await toNewest($)
   }
   if (event.event !== 'message') return
   const { message } = event
@@ -2385,7 +2447,7 @@ async function flushAgentPins($: $): Promise<void> {
   )
 }
 
-// --- drafted replies: dry run first, then the same tg send; the owner's, so --yes ---
+// --- drafted replies: a row of their chat (§8 T3); the dry run as they land, then the same tg send; the owner's, so --yes ---
 
 /** The step of `of`, only while it is still the draft in the row: a turn can put another in its place meanwhile. */
 async function setDraftStep($: $, of: ReplyDraft, step: ReplyDraft['step']): Promise<void> {
@@ -2425,36 +2487,6 @@ async function checkDraft($: $): Promise<void> {
 }
 
 /** send reply: only after a check the guard allowed, and the same argv minus --dry-run. */
-/** `e` on a waiting draft's notice: the drafted reply as a layer, ringed on its main Button. */
-async function openDraft($: $): Promise<void> {
-  const current = await read($, draft)
-  if (current === null) return
-  await update($, nav, value => ({ ...value, isDraftOpen: true, isMenuOpen: false }))
-  await moveRing($, current.step.kind === 'planned' && current.step.isAllowed ? 'draft:send' : 'draft:check')
-}
-
-/**
- * The drafted reply over the lower part (dock) or the body (inline), opened with
- * `e`: check, send reply, edit, drop as before. It took a row under the lists
- * while it waited; now its notice does, in a row that is always there (T4b).
- */
-async function drawDraft($: $, els: Els, width: number): Promise<RenderElement | null> {
-  const current = await read($, draft)
-  if (current === null) return null
-  return DraftRow(els, {
-    draft: current,
-    width,
-    onCheck: () => checkDraft($),
-    onSend: () => sendDraft($),
-    onDrop: async () => {
-      await update($, draft, () => null)
-      await update($, nav, value => ({ ...value, isDraftOpen: false }))
-      await ringCursor($)
-    },
-    onEdit: text => update($, draft, value => (value === null ? null : { ...value, text, step: { kind: 'draft' } })),
-  })
-}
-
 async function sendDraft($: $): Promise<void> {
   const current = await read($, draft)
   if (current === null || current.step.kind !== 'planned' || !current.step.isAllowed) return
@@ -2468,6 +2500,7 @@ async function sendDraft($: $): Promise<void> {
     return
   }
   await setDraftStep($, current, { kind: 'sent', ids })
+  // The thread again, with the reply in it: the draft's row was the cursor's, and the sent message takes it.
   const open = await read($, thread)
   if (open?.peer.id === current.peer.id) await loadThread($, open.peer)
 }
@@ -2577,15 +2610,14 @@ async function onWatchEvent($: $, peer: PeerRef, event: WatchEvent, isReplay: bo
 async function mergeIntoThread($: $, peer: PeerRef, incoming: readonly MessageView[]): Promise<void> {
   if (incoming.length === 0) return
   const before = await threadMessages($)
+  const atEnd = await isOnNewest($)
   const open = await update($, thread, value =>
     value === null || value.peer.id !== peer.id || value.load.status !== 'ok'
       ? value
       : { ...value, load: { status: 'ok', value: mergeMessages(value.load.value, incoming) } },
   )
   const after = open?.load.status === 'ok' ? open.load.value : before
-  if (after.length > before.length) {
-    await update($, nav, value => (value.messageCursor >= before.length - 1 ? { ...value, messageCursor: after.length - 1 } : value))
-  }
+  if (after.length > before.length && atEnd) await toNewest($)
 }
 
 // --- the allowlist, and whether the open peer may be written to ---
@@ -2718,13 +2750,11 @@ async function sendFromBox($: $, text: string): Promise<void> {
 /** `b`: the ring onto the first chip of the message at the cursor, or of the newest with buttons. */
 async function focusButtons($: $): Promise<void> {
   const messages = await threadMessages($)
-  const cursor = clamp((await read($, nav)).messageCursor, messages.length)
-  const atCursor = messages[cursor]
-  const index =
-    atCursor !== undefined && atCursor.buttons.length > 0 ? cursor : messages.findLastIndex(one => one.buttons.length > 0)
-  const target = messages[index]
+  const atCursor = await cursorMessage($)
+  const target = atCursor !== undefined && atCursor.buttons.length > 0 ? atCursor : messages.findLast(one => one.buttons.length > 0)
   const first = target?.buttons[0]?.[0]
   if (target === undefined || first === undefined) return say($, 'info', 'No message in this thread has buttons.')
+  const index = (await threadItems($)).findIndex(item => item.kind === 'message' && item.message.id === target.id)
   await update($, nav, value => ({ ...value, view: 'thread', messageCursor: index }))
   await moveRing($, chipKey(target.id, first))
 }
@@ -2822,13 +2852,15 @@ async function drawBottestDiff($: $, els: Els, width: number, rows: number): Pro
 // dialog is read again right before sending; a reply leaves through the
 // bottest write runner as `tg send PEER - --plain --json` (calls.reply), so tg's
 // guard and allow.toml decide. Only the owner's own keys pass --yes: ⏎ on a
-// draft the band shows whole, and `u`'s delete (design doc §9 decision 9).
-// Pure rules are in ./autopilot; every `$` call is here. Keys (./ui/keys): a
-// the card (pane), u undo (pane and band); a draft's ⏎ e d o in the band. The
-// kill switch: `/tg stop` (or `/tg autopilot off`), "stop all" (0).
+// draft read whole, and `u`'s delete (design doc §9 decision 9). A draft is a
+// row of its chat (dialogs-pane-ux.md §8 T3), For you's row and the band's
+// item. Pure rules are in ./autopilot and ./ui/drafts; every `$` call is here.
+// Keys (./ui/keys): a the card (pane), u undo (pane and band); a draft's ⏎ e d
+// on its row and in the band. The kill switch: `/tg stop` (or `/tg autopilot
+// off`), "stop all" (0).
 import type { PluginOptions } from 'claude-code'
 
-import type { ApDialog, ApDraft, ApOutcome, ApPhase, ApRung, ApTopic, ApUndo, ApView, Autopilot, CardStep } from '../types'
+import type { ApDialog, ApDraft, ApOutcome, ApPhase, ApRung, ApTopic, ApUndo, ApView, Autopilot, CardStep, DraftCheck } from '../types'
 import { CardLadder, CardOptions, cardChip } from './autopilot/components'
 import { AP_LEVELS, LEVEL_GLYPH, defaultDialog, parseDialogs as parseApDialogs, parseQuiet, rateText, toggleTopic } from './autopilot/config'
 import {
@@ -3066,7 +3098,7 @@ async function apYouAnswered($: $, rt: ApRuntime): Promise<void> {
   rt.seq = null
   rt.burst = NO_BURST
   if (seq !== null) await apPatch($, seq, { outcome: { kind: 'skipped', reason: 'you replied' } })
-  await update($, autopilot, value => ({ ...value, drafts: value.drafts.filter(one => one.peer.id !== rt.peer.id) }))
+  await keepThreadCursor($, () => update($, autopilot, value => ({ ...value, drafts: value.drafts.filter(one => one.peer.id !== rt.peer.id) })))
   await apSetPhase($, rt.peer.id, 'listening')
   await refreshStatus($)
 }
@@ -3266,12 +3298,19 @@ async function apFresh($: $, rt: ApRuntime, ids: readonly number[]): Promise<Mes
   return rt.burst.messages.filter(one => !ids.includes(one.id))
 }
 
+/**
+ * A reply that waits for the owner: a row of its chat after the newest message
+ * the thread has (so never above the cursor, §4.3), checked by the guard as it
+ * lands, so its verdict shows before ⏎ (§8 T3).
+ */
 async function apToDraft($: $, rt: ApRuntime, ids: readonly number[], said: Spoken, reasons: string[]): Promise<void> {
   const seq = rt.seq ?? 0
   const last = rt.burst.messages.filter(one => ids.includes(one.id)).at(-1)
-  const draft: ApDraft = { seq, peer: rt.peer, incoming: messageText(last), text: said.text, confidence: said.confidence, reasons, state: { kind: 'ready' } }
-  await update($, autopilot, value => ({ ...value, drafts: putDraft(value.drafts, draft) }))
+  const after = await newestIn($, rt.peer.id, Math.max(0, ...ids))
+  const draft: ApDraft = { seq, peer: rt.peer, incoming: messageText(last), text: said.text, confidence: said.confidence, reasons, state: { kind: 'ready' }, check: { kind: 'checking' }, at: await $.clock.now(), after }
+  await keepThreadCursor($, () => update($, autopilot, value => ({ ...value, drafts: putDraft(value.drafts, draft) })))
   await apDone($, rt, ids, { kind: 'drafted', reasons })
+  await apCheckDraft($, seq)
 }
 
 function writeFailure(result: WriteResult & { ok: false }, peer: PeerRef, at: number): string {
@@ -3359,9 +3398,9 @@ async function apUndo($: $): Promise<void> {
   await refreshStatus($)
 }
 
-// --- drafts in the band ---
+// --- drafts: rows of their chat, For you's rows, the band's items (§8 T3) ---
 
-/** The draft the band shows (the first), or one For you's row names by `seq` (── folders ──). */
+/** The draft For you's row or the band names by `seq`, or the first (the band's). */
 async function apDraftOf($: $, seq?: number): Promise<ApDraft | null> {
   const drafts = (await read($, autopilot)).drafts
   return (seq === undefined ? drafts[0] : drafts.find(one => one.seq === seq)) ?? null
@@ -3372,12 +3411,38 @@ async function apSetDraft($: $, seq: number, change: (draft: ApDraft) => ApDraft
 }
 
 /**
- * ⏎ on a draft the band shows whole: the owner has read it, so it is their own
- * write and passes --yes (decision 9); BotFather stays read-only.
+ * The guard's verdict on a draft, as the owner would send it (`tg send …
+ * --yes --dry-run`, decision 9): run as it lands and after each edit, so it
+ * shows before ⏎. A verdict for a text since edited is dropped; BotFather is
+ * refused here and runs nothing (the repo's rule).
+ */
+async function apCheckDraft($: $, seq: number): Promise<void> {
+  const draft = await apDraftOf($, seq)
+  if (draft === null) return
+  const isSame = (one: ApDraft) => one.text === draft.text
+  if (isBotFather(draft.peer.arg)) return apSetDraft($, seq, one => ({ ...one, check: { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) } }))
+  await apSetDraft($, seq, one => ({ ...one, check: { kind: 'checking' } }))
+  let ran: ProcessRunResult
+  try {
+    ran = await $.process.run([...calls.reply(draft.peer.arg, true), '--dry-run'], { stdin: draft.text, timeoutMs: TG_TIMEOUT_MS })
+  } catch (error) {
+    return apSetDraft($, seq, one => (isSame(one) ? { ...one, check: { kind: 'failed', reason: `tg did not run: ${reasonOf(error)}` } } : one))
+  }
+  const plan = ran.exitCode === 0 ? parsePlan(ran.stdout) : null
+  const failure = failureOf(ran.exitCode, ran.stderr)
+  const check: DraftCheck =
+    plan !== null ? { kind: 'planned', ...plan } : { kind: 'failed', reason: failure.kind === 'error' || failure.kind === 'not-found' ? failure.message : failureText(failure, await $.clock.now()) }
+  await apSetDraft($, seq, one => (isSame(one) ? { ...one, check } : one))
+}
+
+/**
+ * Sends a draft the owner read whole: their own write, so --yes (decision 9),
+ * and only once the guard's verdict allows it. Its row leaves the thread; the
+ * sent message takes the next one.
  */
 async function apSendDraft($: $, seq?: number): Promise<void> {
   const draft = await apDraftOf($, seq)
-  if (draft === null || draft.state.kind === 'sending') return
+  if (draft === null || draft.state.kind === 'sending' || draft.check.kind !== 'planned' || !draft.check.isAllowed) return
   if (isBotFather(draft.peer.arg)) {
     await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'failed', reason: readOnlyText({ kind: 'botfather' }) } }))
     return
@@ -3398,29 +3463,128 @@ async function apSendDraft($: $, seq?: number): Promise<void> {
   }
   const sent = result.sent.map(one => one.id)
   for (const id of sent) rt?.sentIds.add(id)
-  await update($, autopilot, value => ({
-    ...value,
-    drafts: value.drafts.filter(one => one.seq !== draft.seq),
-    ledger: patchEntry(value.ledger, draft.seq, { reply: draft.text, outcome: { kind: 'sent', ids: sent, by: 'you' } }),
-  }))
+  await keepThreadCursor($, () =>
+    update($, autopilot, value => ({
+      ...value,
+      drafts: value.drafts.filter(one => one.seq !== draft.seq),
+      ledger: patchEntry(value.ledger, draft.seq, { reply: draft.text, outcome: { kind: 'sent', ids: sent, by: 'you' } }),
+    })),
+  )
   await refreshStatus($)
 }
 
 async function apDropDraft($: $, seq?: number): Promise<void> {
   const draft = await apDraftOf($, seq)
   if (draft === null) return
-  await update($, autopilot, value => ({
-    ...value,
-    drafts: value.drafts.filter(one => one.seq !== draft.seq),
-    ledger: patchEntry(value.ledger, draft.seq, { outcome: { kind: 'dropped' } }),
-  }))
+  await keepThreadCursor($, () =>
+    update($, autopilot, value => ({
+      ...value,
+      drafts: value.drafts.filter(one => one.seq !== draft.seq),
+      ledger: patchEntry(value.ledger, draft.seq, { outcome: { kind: 'dropped' } }),
+    })),
+  )
   await refreshStatus($)
 }
 
-/** ⏎ on a draft the band cuts short: the pane on its dialog, as `o`, and the band shows it whole; ⏎ then sends. */
-async function apUnfoldDraft($: $, draft: ApDraft): Promise<void> {
-  await apSetDraft($, draft.seq, one => ({ ...one, state: { kind: 'unfolded' } }))
-  await apOpen($, draft.peer)
+/** Every draft waiting, autopilot's and routing's, as their rows draw them. */
+async function draftViewsNow($: $): Promise<DraftView[]> {
+  return draftViews((await read($, autopilot)).drafts, await read($, draft))
+}
+
+async function draftViewOf($: $, ref: DraftRef): Promise<DraftView | undefined> {
+  return (await draftViewsNow($)).find(one => one.key === draftKey(ref))
+}
+
+/** The newest message id the chat's open thread has, or `fallback`: a draft lands after it (§4.3). */
+async function newestIn($: $, peerId: number, fallback: number): Promise<number> {
+  const open = await read($, thread)
+  const loadedNewest = open?.peer.id === peerId ? (await threadMessages($)).reduce((top, one) => Math.max(top, one.id), 0) : 0
+  return Math.max(fallback, loadedNewest)
+}
+
+/**
+ * ⏎ on a draft's row (or For you's, or the band's once it shows it whole):
+ * sent when the guard allowed it; checked first when it has no verdict yet,
+ * or its last one did not allow it; told to wait while a check or a send runs.
+ */
+async function enterDraft($: $, ref: DraftRef): Promise<void> {
+  const view = await draftViewOf($, ref)
+  if (view === undefined || view.isEditing) return
+  if (view.isBusy) return say($, 'info', `${LEVEL_GLYPH.draft} ${view.verdict.text}`)
+  if (!view.canSend) return checkDraftRef($, ref)
+  if (ref.kind === 'autopilot') await apSendDraft($, ref.seq)
+  else await sendDraft($) // ── routing ──
+}
+
+async function checkDraftRef($: $, ref: DraftRef): Promise<void> {
+  if (ref.kind === 'autopilot') await apCheckDraft($, ref.seq)
+  else await checkDraft($) // ── routing ──
+}
+
+/** `e` on a draft: its text becomes a field, in its row's place; the ring goes to it. */
+async function editDraft($: $, ref: DraftRef, isEditing: boolean): Promise<void> {
+  if (ref.kind === 'autopilot') await apSetDraft($, ref.seq, one => ({ ...one, state: isEditing ? { kind: 'editing' } : { kind: 'ready' } }))
+  else await update($, draft, value => (value === null ? null : { ...value, isEditing })) // ── routing ──
+}
+
+/** The field's ⏎: the text kept (an empty one keeps the old), the field gone, and the guard asked again. */
+async function saveDraft($: $, ref: DraftRef, text: string): Promise<void> {
+  const kept = (old: string) => (text.trim() === '' ? old : text)
+  if (ref.kind === 'autopilot') {
+    await apSetDraft($, ref.seq, one => ({ ...one, text: kept(one.text), state: { kind: 'ready' } }))
+  } else {
+    await update($, draft, value => (value === null ? null : { ...value, text: kept(value.text), isEditing: false, step: { kind: 'draft' } })) // ── routing ──
+  }
+  await checkDraftRef($, ref)
+}
+
+async function dropDraft($: $, ref: DraftRef): Promise<void> {
+  if (ref.kind === 'autopilot') return apDropDraft($, ref.seq)
+  await keepThreadCursor($, () => update($, draft, () => null)) // ── routing ──
+}
+
+/** `e` in a chat, the cursor on a draft's row. */
+async function editAtCursor($: $): Promise<void> {
+  const item = await cursorItem($)
+  if (item?.kind !== 'draft') return
+  await editDraft($, item.draft.ref, true)
+  await moveRing($, `${item.draft.key}:text`)
+}
+
+/** `d` in a chat, the cursor on a draft's row. */
+async function dropAtCursor($: $): Promise<void> {
+  const item = await cursorItem($)
+  if (item?.kind === 'draft') await dropDraft($, item.draft.ref)
+}
+
+/**
+ * A change that may take a draft's row out of the open thread or put one in:
+ * the cursor stays on its row, and the window on its first one; when the
+ * cursor's own row leaves, the next row takes its place, or the one before
+ * it at the end (and the ring goes there, a row the old drawing has in the
+ * same place).
+ */
+async function keepThreadCursor($: $, change: () => Promise<unknown>): Promise<void> {
+  const before = (await threadItems($)).map(threadRowKey)
+  const at = await read($, nav)
+  await change()
+  const after = (await threadItems($)).map(threadRowKey)
+  if (before.length === 0 || after.length === 0) return
+  const kept = keptCursor(before, after, clamp(at.messageCursor, before.length), clamp(at.messageStart, before.length))
+  await update($, nav, value => ({ ...value, messageCursor: kept.cursor, messageStart: kept.start }))
+  // The cursor's own row left at the end: the one before it, which the old drawing has in the same place, takes the ring.
+  if (!after.includes(before[clamp(at.messageCursor, before.length)] ?? '') && kept.cursor < at.messageCursor && (await read($, mode)) === 'open' && (await underWhere($)) === 'chat') await ringCursor($)
+}
+
+/** ⏎ on a draft For you or the band shows cut short: the pane opens on its row, and ⏎ there sends what was read whole (decision 9). */
+async function openDraftRow($: $, ref: DraftRef): Promise<void> {
+  const view = await draftViewOf($, ref)
+  if (view === undefined) return
+  await apOpen($, view.peer)
+  const index = (await threadItems($)).findIndex(item => item.kind === 'draft' && item.draft.key === view.key)
+  if (index < 0) return
+  await update($, nav, value => ({ ...value, view: 'thread', messageCursor: index }))
+  await ringCursor($)
 }
 
 /** `o` on a draft or a summary: the pane, on that dialog. */
@@ -4509,9 +4673,12 @@ async function dgRelay($: $, task: DgTask, said: WorkerSaid): Promise<void> {
   }
   const seq = await apLog($, { at, peer: task.peer, level: dialog.level, incoming, reply: spoken.text, confidence: spoken.confidence, topics: spoken.topics, checks: [], outcome: { kind: 'working' }, undo: null })
   const toDraft = async (reasons: string[]) => {
-    const draft: ApDraft = { seq, peer: task.peer, incoming: incoming[0]?.text ?? '', text: spoken.text, confidence: spoken.confidence, reasons, state: { kind: 'ready' } }
-    await update($, autopilot, value => ({ ...value, drafts: putDraft(value.drafts, draft), ledger: patchEntry(value.ledger, seq, { outcome: { kind: 'drafted', reasons } }) }))
+    // A row of its chat, after its newest message, checked by the guard as it lands (§8 T3).
+    const after = await newestIn($, task.peer.id, 0)
+    const draft: ApDraft = { seq, peer: task.peer, incoming: incoming[0]?.text ?? '', text: spoken.text, confidence: spoken.confidence, reasons, state: { kind: 'ready' }, check: { kind: 'checking' }, at: await $.clock.now(), after }
+    await keepThreadCursor($, () => update($, autopilot, value => ({ ...value, drafts: putDraft(value.drafts, draft), ledger: patchEntry(value.ledger, seq, { outcome: { kind: 'drafted', reasons } }) })))
     await refreshStatus($)
+    await apCheckDraft($, seq)
   }
   if (said.kind === 'fail') return toDraft([`the task failed: ${oneLine(said.text, 60)}`])
   const action = spoken.action === 'reply' || spoken.action === 'draft' || spoken.action === 'escalate' ? spoken.action : 'draft'
@@ -4820,7 +4987,7 @@ async function drawActivity($: $, els: Els, width: number, rows: number): Promis
 // g, opening the pane (§4.3). Keys (./ui/keys): 1–9 folder, h up to the
 // Folders list, y For you, g reload. Pure rules in ./folders.
 import type { AgentItem, Folder, Folders, ForYouWhy, ListView, Nav, Notice as PaneNotice } from '../types'
-import { FoldersList, ForYouList, type FolderItem, type ForYouItem } from './folders/components'
+import { FoldersList, ForYouList, forYouTextRoom, type FolderItem, type ForYouItem } from './folders/components'
 import {
   HIDDEN_GAP_MS,
   NO_PASS,
@@ -4859,8 +5026,8 @@ let passNext: Timer | null = null
 let passCountdown: Timer | null = null
 /** What this module last wrote to $.store, so an unchanged view is not written again. */
 let lastStored = ''
-/** Cells a For you row leaves for the text, as last drawn: ⏎ sends a draft only when it fit (decision 9). */
-let forYouRoom = 0
+/** For you's width as last drawn: ⏎ sends a draft only when its whole text fit its row there (decision 9). */
+let forYouWidth = 0
 
 /** One row in Chats' place: a chat, or one of For you's agent rows. */
 type ListRow = { kind: 'chat'; dialog: TgDialog } | { kind: 'agent'; item: AgentItem }
@@ -5431,21 +5598,24 @@ async function agentPeer($: $, item: AgentItem): Promise<PeerRef | undefined> {
 
 /**
  * ⏎ on an agent's row: a draft whose whole text is on screen sends with
- * --yes (the owner read it, decision 9); one cut short shows whole first, and
- * the next ⏎ sends. Routing's drafted reply opens as its layer; an undo
+ * --yes (the owner read it, decision 9) once the guard allows it; one cut
+ * short opens its chat on its row, the one place a draft is read whole and
+ * sent (§8 T3). Routing's drafted reply is a draft like autopilot's. An undo
  * window's row opens its chat.
  */
 async function pressAgentRow($: $, item: AgentItem): Promise<void> {
   switch (item.kind) {
-    case 'draft': {
-      const one = await apDraftOf($, item.seq)
-      if (one === null) return
-      const isWhole = one.state.kind === 'unfolded' || (!one.text.includes('\n') && cells(one.text) + 2 <= forYouRoom)
-      if (isWhole) return apSendDraft($, item.seq)
-      return apSetDraft($, item.seq, value => ({ ...value, state: { kind: 'unfolded' } }))
+    case 'draft':
+    case 'reply': {
+      const ref: DraftRef = item.kind === 'draft' ? { kind: 'autopilot', seq: item.seq } : { kind: 'reply' }
+      const view = await draftViewOf($, ref)
+      if (view === undefined) return
+      // The row's text cell as drawn (ForYouList): the whole draft in it is a draft read whole.
+      const gen = (await read($, folders)).gen
+      const drawn = (await forYouItems($, gen)).find(one => one.key === rowKey(gen, { kind: 'agent', item }))
+      if (fitsRow(`"${view.text}"`, forYouTextRoom(forYouWidth, drawn?.right ?? ''))) return enterDraft($, ref)
+      return openDraftRow($, ref)
     }
-    case 'reply':
-      return openDraft($)
     case 'undo': {
       const peer = await agentPeer($, item)
       if (peer === undefined) return
@@ -5459,11 +5629,9 @@ async function pressAgentRow($: $, item: AgentItem): Promise<void> {
 async function editAgentRow($: $): Promise<void> {
   const row = await cursorRow($)
   if (row?.kind !== 'agent') return
-  if (row.item.kind === 'reply') return openDraft($)
-  if (row.item.kind === 'draft') {
-    await apSetDraft($, row.item.seq, value => ({ ...value, state: { kind: 'editing' } }))
-    await ringCursor($)
-  }
+  if (row.item.kind === 'undo') return
+  await editDraft($, row.item.kind === 'draft' ? { kind: 'autopilot', seq: row.item.seq } : { kind: 'reply' }, true)
+  await ringCursor($)
 }
 
 /** `d` on an agent's row: drops the draft or closes the undo window; the row stays, drawn done, until the list reshapes. */
@@ -5471,7 +5639,7 @@ async function dropAgentRow($: $): Promise<void> {
   const row = await cursorRow($)
   if (row?.kind !== 'agent') return
   if (row.item.kind === 'draft') await apDropDraft($, row.item.seq)
-  else if (row.item.kind === 'reply') await update($, draft, () => null)
+  else if (row.item.kind === 'reply') await dropDraft($, { kind: 'reply' })
   else await apCloseUndo($, { state: 'expired' })
   await ringCursor($)
 }
@@ -5487,7 +5655,7 @@ async function forYouItems($: $, gen: number): Promise<ForYouItem[]> {
     if (row.kind === 'chat') {
       const { glyph, color } = dialogGlyph(row.dialog.kind)
       const unread = row.dialog.unread === 0 ? '' : `${row.dialog.muted ? '·' : ''}${row.dialog.unread}`
-      return { key, section: 'people', glyph, glyphColor: color, name: dialogLabel(row.dialog), label: why[String(row.dialog.id)] ?? '', text: row.dialog.last_text, isWhole: false, isEditing: false, right: `${unread.padStart(4)} ${shortTime(row.dialog.last_date, at).padStart(9)}`, isGone: false }
+      return { key, section: 'people', glyph, glyphColor: color, name: dialogLabel(row.dialog), label: why[String(row.dialog.id)] ?? '', text: row.dialog.last_text, isEditing: false, right: `${unread.padStart(4)} ${shortTime(row.dialog.last_date, at).padStart(9)}`, isGone: false }
     }
     const item = row.item
     if (item.kind === 'draft') {
@@ -5495,15 +5663,15 @@ async function forYouItems($: $, gen: number): Promise<ForYouItem[]> {
       const entry = pilot.ledger.find(value => value.seq === item.seq)
       if (one === undefined) {
         const label = entry?.outcome.kind === 'sent' ? `${GLYPH.done} sent` : entry?.outcome.kind === 'dropped' ? 'dropped' : 'done'
-        return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: entry?.peer.label ?? '', label, text: entry?.reply ?? '', isWhole: false, isEditing: false, right: '', isGone: true }
+        return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: entry?.peer.label ?? '', label, text: entry?.reply ?? '', isEditing: false, right: '', isGone: true }
       }
       const label = one.state.kind === 'sending' ? `${GLYPH.working} sending` : one.state.kind === 'failed' ? `${GLYPH.error} failed` : 'draft'
       const right = one.state.kind === 'failed' ? one.state.reason : one.confidence === null ? '' : `conf ${one.confidence.toFixed(2)}`
-      return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: one.peer.label, label, text: one.text, isWhole: one.state.kind === 'unfolded', isEditing: one.state.kind === 'editing', right, isGone: false }
+      return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: one.peer.label, label, text: one.text, isEditing: one.state.kind === 'editing', right, isGone: false }
     }
     if (item.kind === 'reply') {
       const isLive = reply !== null && reply.step.kind !== 'sent'
-      return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: reply?.peer.label ?? '', label: isLive ? 'draft reply' : 'done', text: reply?.text ?? '', isWhole: false, isEditing: false, right: isLive ? 'e: open' : '', isGone: !isLive }
+      return { key, section: 'agents', glyph: LEVEL_GLYPH.draft, name: reply?.peer.label ?? '', label: isLive ? 'draft reply' : 'done', text: reply?.text ?? '', isEditing: isLive && reply.isEditing, right: isLive ? `from ${reply.from}` : '', isGone: !isLive }
     }
     const undo = pilot.undo !== null && pilot.undo.seq === item.seq && at < pilot.undo.until ? pilot.undo : null
     const entry = pilot.ledger.find(value => value.seq === item.seq)
@@ -5514,7 +5682,6 @@ async function forYouItems($: $, gen: number): Promise<ForYouItem[]> {
       name: undo?.peer.label ?? entry?.peer.label ?? '',
       label: undo === null ? 'sent' : 'sent',
       text: undo?.text ?? entry?.reply ?? '',
-      isWhole: false,
       isEditing: false,
       right: undo === null ? '' : `u: undo ${Math.max(0, Math.ceil((undo.until - at) / 1000))}s`,
       isGone: undo === null,
@@ -5535,7 +5702,7 @@ async function drawForYou($: $, els: Els, width: number, rows: number, mode: 'ac
   // Two rows always go to the section lines, so a section that appears does not move the window.
   const window = Math.max(1, rows - 2)
   windowRows.dialogs = window
-  forYouRoom = Math.max(10, width - 2 - 2 - 14 - 13 - 1)
+  forYouWidth = width
   const cursor = clamp(where.dialogCursor, items.length)
   const start = edgeStart(where.dialogStart, cursor, window, items.length)
   return ForYouList(els, {
@@ -5552,8 +5719,9 @@ async function drawForYou($: $, els: Els, width: number, rows: number, mode: 'ac
     },
     onSave: async (index, text) => {
       const row = (await listRows($))[index]
-      if (row?.kind !== 'agent' || row.item.kind !== 'draft') return
-      await apSetDraft($, row.item.seq, value => ({ ...value, text: text.trim() === '' ? value.text : text, state: { kind: 'ready' } }))
+      if (row?.kind !== 'agent' || row.item.kind === 'undo') return
+      await saveDraft($, row.item.kind === 'draft' ? { kind: 'autopilot', seq: row.item.seq } : { kind: 'reply' }, text)
+      await ringCursor($)
     },
   })
 }
@@ -5610,6 +5778,8 @@ async function emptyText($: $): Promise<string> {
 
 /** The seat the pane was last drawn in: docked, the open chat shows under Chats. */
 let lastSeat: Seat | null = null
+/** The thread's room as last drawn: the band leaves out a draft whose row the thread's window holds (§4.5). */
+let lastThread: { width: number; rows: number } | null = null
 /** tg's last answer was "not logged in" (exit 3): the status line's third alarm. A hot reload forgets it until tg next answers. */
 let isLoggedOut = false
 /** What the status line last got; undefined until the first write, so a fresh module always writes once. */
@@ -5653,10 +5823,12 @@ async function onScreen($: $): Promise<OnScreen> {
   const where = await read($, nav)
   const open = await read($, thread)
   const isDock = lastSeat === 'dock'
-  return {
-    chat: open !== null && (isDock || where.view === 'thread') ? open.peer.id : null,
-    isForYou: where.list.kind === 'foryou' && where.query === '' && (isDock || where.view === 'dialogs'),
-  }
+  const chat = open !== null && (isDock || where.view === 'thread') ? open.peer.id : null
+  const isForYou = where.list.kind === 'foryou' && where.query === '' && (isDock || where.view === 'dialogs')
+  // The drafts whose rows are drawn: every one For you lists, and the ones the thread's window holds whole.
+  const listed = isForYou ? (await draftViewsNow($)).map(one => one.key) : []
+  const inThread = chat === null || lastThread === null ? [] : (await threadLayout($, lastThread.width, lastThread.rows)).shown.flatMap(item => (item.kind === 'draft' ? [item.draft.key] : []))
+  return { chat, isForYou, drafts: [...listed, ...inThread] }
 }
 
 /** The band's queue now; `seen`: what counts as on screen (`/tg status` lists everything). */
@@ -5664,7 +5836,7 @@ async function bandNow($: $, seen?: OnScreen): Promise<BandItem[]> {
   const pilot = await read($, autopilot)
   return bandQueue({
     holds: (await dgAlarms($)).holds,
-    drafts: pilot.drafts,
+    drafts: await draftViewsNow($),
     undo: pilot.undo !== null && pilot.now < pilot.undo.until ? pilot.undo : null,
     reply: await read($, band),
     watched: (await read($, triage)).watched.map(peer => peer.id),
@@ -5709,14 +5881,14 @@ function bandActions($: $, item: BandItem, width: number): BandActions {
     case 'hold':
       return { ...base, primary: () => apOpen($, item.peer), open: () => apOpen($, item.peer), dismiss: none }
     case 'draft': {
-      const { seq } = item.draft
+      const { ref } = item.draft
       return {
         ...base,
-        primary: () => bandDraftEnter($, seq, width),
-        open: () => apOpen($, item.draft.peer),
-        dismiss: () => apDropDraft($, seq),
-        edit: () => apSetDraft($, seq, one => ({ ...one, state: { kind: 'editing' } })),
-        save: text => apSetDraft($, seq, one => ({ ...one, text: text.trim() === '' ? one.text : text, state: { kind: 'ready' } })),
+        primary: () => bandDraftEnter($, ref, width),
+        open: () => openDraftRow($, ref),
+        dismiss: () => dropDraft($, ref),
+        edit: () => editDraft($, ref, true),
+        save: text => saveDraft($, ref, text),
       }
     }
     case 'undo':
@@ -5743,16 +5915,16 @@ function bandActions($: $, item: BandItem, width: number): BandActions {
 }
 
 /**
- * ⏎ on a draft's item: it sends when its whole text shows on its row (or the
- * band unfolded it), as the owner's own write (decision 9); a longer one
- * unfolds and opens its chat first (T0d), so the next ⏎ sends what was read.
- * Read again at the press: the draft may have changed since it was drawn.
+ * ⏎ on a draft's item: it sends when its whole text shows on its row and the
+ * guard allowed it, as the owner's own write (decision 9); otherwise the pane
+ * opens on the draft's row in its chat, the one place it is read whole and
+ * sent (§8 T3). Read again at the press: the draft may have changed since.
  */
-async function bandDraftEnter($: $, seq: number, width: number): Promise<void> {
-  const draft = await apDraftOf($, seq)
-  if (draft === null) return
-  if (draft.state.kind === 'unfolded' || draftFits(draft.text, width)) return apSendDraft($, seq)
-  return apUnfoldDraft($, draft)
+async function bandDraftEnter($: $, ref: DraftRef, width: number): Promise<void> {
+  const view = await draftViewOf($, ref)
+  if (view === undefined) return
+  if (view.canSend && draftFits(view.text, width)) return enterDraft($, ref)
+  return openDraftRow($, ref)
 }
 
 /** `d` on news: it leaves the band; the key is kept so the same news does not come back. */

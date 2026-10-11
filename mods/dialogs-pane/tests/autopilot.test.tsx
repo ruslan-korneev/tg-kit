@@ -4,10 +4,10 @@
 // process.run / process.spawn hooks beneath the plugin and the Speaker by a
 // model.complete hook; nothing real runs and nothing is sent anywhere.
 import type { CommandSpec, ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, RenderPropsOf } from 'claude-code'
-import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing'
+import { describe, expect, mock, test, type Engine, type MockClock, type Mounted } from 'claude-code/testing'
 
 import type { TgMessage } from '../types'
-import { DIALOGS, findChat, folderRun } from './fixtures'
+import { DIALOGS, chatKey, findChat, folderRun } from './fixtures'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
@@ -84,6 +84,8 @@ function world(
   options: {
     model?: (e: ModelCompleteInput, seen: World) => ModelCompleteResult
     allow?: number[]
+    /** What a dry run answers, when it is not the plain allow (it may wait on something meanwhile). */
+    dryRun?: (ran: Ran) => Promise<ProcessRunResult>
     /** What `tg allow list` answers instead of the list (a failed read). */
     allowRun?: () => ProcessRunResult | null
     send?: (ran: Ran) => ProcessRunResult
@@ -102,7 +104,7 @@ function world(
     return { value: undefined }
   })
   on('session.id', () => ({ value: 'session-a' }))
-  on('process.run', (_$, e) => {
+  on('process.run', async (_$, e) => {
     const ran: Ran = { argv: e.argv, stdin: e.init?.stdin }
     seen.runs.push(ran)
     const [, cmd] = e.argv
@@ -110,6 +112,9 @@ function world(
     if (cmd === 'folders') return { value: folderRun(e.argv, json(DIALOGS)) }
     if (cmd === 'read') return { value: json(seen.history) }
     if (cmd === 'allow') return { value: options.allowRun?.() ?? json((options.allow ?? [GROUP]).map(id => ({ id }))) }
+    // The guard's dry run, as a draft lands (§8 T3): the owner's own write passes --yes (decision 9).
+    if (cmd === 'send' && e.argv.includes('--dry-run') && options.dryRun !== undefined) return { value: await options.dryRun(ran) }
+    if (cmd === 'send' && e.argv.includes('--dry-run')) return { value: json({ action: 'send', target: { id: Number(e.argv[2]) }, steps: [], guard: { allowed: true, reason: e.argv.includes('--yes') ? 'confirmed with --yes' : 'allowlisted' } }) }
     if (cmd === 'send') {
       if (options.send !== undefined) return { value: options.send(ran) }
       const sent = message(nextSent++, ran.stdin ?? '', { out: true })
@@ -195,7 +200,7 @@ function watchMessage(child: Child | undefined, one: TgMessage) {
   child?.line({ event: 'message', ...one })
 }
 
-const sends = (seen: World) => seen.runs.filter(one => one.argv[1] === 'send')
+const sends = (seen: World) => seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run'))
 const replyCalls = (seen: World) => seen.asked.filter(one => !one.prompt.includes('<draft-reply>'))
 const checkCalls = (seen: World) => seen.asked.filter(one => one.prompt.includes('<draft-reply>'))
 
@@ -469,7 +474,7 @@ describe('auto', () => {
 })
 
 describe('draft and listen', () => {
-  test("draft outside allow.toml: the band shows the reply; e edits, ⏎ sends it as the owner's own, with --yes", async ($, on) => {
+  test("a 3 ⏎ outside allow.toml starts draft, and its draft sends: the band shows the reply; e edits, ⏎ sends it as the owner's own, with --yes", async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: 'Tomorrow is packed, can I write after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
     const { child } = await handOver($, clock, seen, '2')
@@ -511,7 +516,11 @@ describe('draft and listen', () => {
     await ui.unmount()
   })
 
-  test('at 64 columns a longer draft never sends on the first ⏎: it opens its chat and unfolds; ⏎ again sends it with --yes', async ($, on) => {
+  /** The draft's row in its chat's thread: its head is the Button ⏎ acts on. */
+  const draftRow = async (ui: { findAll: (query: { type: 'Button' }) => Promise<{ key?: string; text: string; props: Record<string, unknown> }[]> }) =>
+    (await ui.findAll({ type: 'Button' })).find(one => one.key?.startsWith('draft:ap:') === true)
+
+  test('at 64 columns a longer draft never sends from the band: ⏎ opens the pane on its row, drawn whole with the guard\'s verdict; ⏎ there sends it with --yes; no unfolded state is left', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const long = 'Tomorrow is packed with reviews until late, but I can write after 18 or call on Friday morning.'
     const seen = world(on, { model: () => answer({ action: 'reply', text: long, confidence: 0.62, topics: ['dates'], reason: '' }) })
@@ -519,8 +528,8 @@ describe('draft and listen', () => {
     watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
     await clock.advance(20_000)
     await clock.settle()
-    const reads = () => seen.runs.filter(one => one.argv[1] === 'read' && one.argv[2] === '1002').length
-    const readsBefore = reads()
+    // The guard's verdict is in before ⏎: the dry run ran as the draft landed, as the owner would send it.
+    expect(seen.runs.filter(one => one.argv.includes('--dry-run')).map(one => one.argv)).toEqual([['tg', 'send', '1002', '-', '--plain', '--json', '--yes', '--dry-run']])
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: NARROW })
     // Its row cuts it (truncate-end): ⏎ opens instead of sending what was not read (decision 9).
     expect((await band.find({ key: 'band:row2' }))?.text).toBe(`  → ${long}`)
@@ -528,12 +537,86 @@ describe('draft and listen', () => {
     await band.press({ key: 'ap:draft:send' })
     await clock.settle()
     expect(sends(seen)).toEqual([])
-    // Unfolded (T0d, until T3's rows): the whole draft wraps under its row; the pane opened the chat, as `o`.
-    expect((await band.find({ type: 'Text', text: `  → ${long}` }))?.props.wrap).toBe('wrap')
-    expect(reads()).toBeGreaterThan(readsBefore)
-    expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ send')
-    await band.press({ key: 'ap:draft:send' })
+    // The band keeps its two rows: no unfolded text (T0d's state is gone).
+    expect((await band.find({ type: 'Text', text: `  → ${long}` }))?.props.wrap).toBe('truncate-end')
+    // The pane is on the chat, the cursor on the draft's row: its whole text, wrapped, and the verdict.
+    const row = await draftRow(ui)
+    expect(row?.props.autoFocus).toBe(true)
+    expect(row?.text).toContain('✎ draft to Dev Team · escalated: dates · conf 0.62')
+    expect(await ui.find({ type: 'Text', text: long })).toMatchObject({ props: { wrap: 'wrap' } })
+    expect(await ui.find({ type: 'Text', text: '   ✓ the guard allows it' })).toBeDefined()
+    // §4.6 "the cursor on a draft": ⏎ send draft, e: edit, d: drop, a: agent.
+    expect((await ui.find({ key: 'key:senddraft' }))?.text).toBe('⏎ send draft')
+    expect([(await ui.find({ key: 'key:edit' }))?.props.hotkey, (await ui.find({ key: 'key:dismiss' }))?.text, (await ui.find({ key: 'key:agent' }))?.text]).toEqual(['e', 'drop', 'agent'])
+    await ui.press({ key: row?.key ?? '' })
     expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: long }])
+    expect(await draftRow(ui)).toBeUndefined()
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test('a draft row in its chat: e edits it in place and the guard checks the new text; d drops it; the thread keeps its rows above', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { model: () => answer({ action: 'reply', text: 'Tomorrow is packed, after 18?', confidence: 0.62, topics: ['dates'], reason: '' }) })
+    const { ui, child } = await handOver($, clock, seen, '2')
+    await ui.press({ key: await chatKey(ui, GROUP) })
+    await clock.settle()
+    watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    // It landed after the newest message, below the cursor: the cursor stays where it was.
+    const messages = (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => key.startsWith('msg:') || key.startsWith('draft:'))
+    expect(messages.at(-1)).toMatch(/^draft:ap:/)
+    expect((await ui.find({ key: messages.at(-2) ?? '' }))?.props.autoFocus).toBe(true)
+    await ui.press({ key: 'key:down' })
+    expect((await draftRow(ui))?.props.autoFocus).toBe(true)
+    // A message that comes while the cursor is on the draft joins after it; the cursor stays on the draft.
+    watchMessage(child, message(501, 'or Friday?'))
+    await clock.settle()
+    const rows = (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => key.startsWith('msg:') || key.startsWith('draft:'))
+    expect(rows.slice(-2)).toEqual([(await draftRow(ui))?.key, 'msg:501'])
+    expect((await draftRow(ui))?.props.autoFocus).toBe(true)
+    const checks = () => seen.runs.filter(one => one.argv.includes('--dry-run')).length
+    expect(checks()).toBe(1)
+    await ui.press({ key: 'key:edit' })
+    const field = `${(await draftRow(ui))?.key ?? ''}:text`
+    expect(await ui.find({ key: field })).toBeDefined()
+    await ui.input({ key: field, text: 'After 18, if that works?' })
+    expect(await ui.find({ key: field })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'After 18, if that works?' })).toBeDefined()
+    expect(checks()).toBe(2)
+    expect(sends(seen)).toEqual([])
+    expect((await ui.find({ key: 'key:dismiss' }))?.text).toBe('drop')
+    await ui.press({ key: 'key:dismiss' })
+    expect(await draftRow(ui)).toBeUndefined()
+    expect(sends(seen)).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a verdict that comes back for a text edited meanwhile is dropped: the new text keeps its own', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    let band: Mounted<'terminal', 'AbovePrompt'> | null = null
+    let isFirst = true
+    const plan = (allowed: boolean, reason: string) => run(0, JSON.stringify({ action: 'send', target: {}, steps: [], guard: { allowed, reason } }))
+    const seen = world(on, {
+      model: () => answer({ action: 'reply', text: 'Tomorrow is packed, after 18?', confidence: 0.62, topics: ['dates'], reason: '' }),
+      dryRun: async () => {
+        if (!isFirst) return plan(true, 'confirmed with --yes')
+        isFirst = false
+        // The owner edits the draft in the band while its first check is out; that check then says no.
+        await band?.press({ key: 'ap:draft:edit' })
+        await band?.input({ key: 'ap:draft:text', text: 'After 18?' })
+        return plan(false, 'readonly = true in config.toml')
+      },
+    })
+    const { ui, child } = await handOver($, clock, seen, '2')
+    band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    watchMessage(child, message(500, 'Can we call tomorrow at 10?'))
+    await clock.advance(20_000)
+    await clock.settle()
+    expect(seen.runs.filter(one => one.argv.includes('--dry-run')).map(one => one.stdin)).toEqual(['Tomorrow is packed, after 18?', 'After 18?'])
+    expect((await band.find({ key: 'band:row2' }))?.text).toBe('  → After 18?')
+    expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ send')
     await band.unmount()
     await ui.unmount()
   })
@@ -560,7 +643,7 @@ describe('draft and listen', () => {
     await ui.unmount()
   })
 
-  test('For you: a draft cut short shows whole on ⏎ and sends nothing; the next ⏎ sends it; d drops another', async ($, on) => {
+  test('For you: a draft cut short opens its chat on its row and sends nothing; ⏎ there sends it; back in For you, d drops another', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const long = 'Tomorrow is packed with reviews until late, but I can write after 18 or call on Friday morning.'
     const seen = world(on, { allow: [], model: () => answer({ action: 'reply', text: long, confidence: 0.62, topics: ['dates'], reason: '' }) })
@@ -571,15 +654,19 @@ describe('draft and listen', () => {
     await ui.press({ key: 'key:back' })
     await ui.press({ key: 'key:foryou' })
     await ui.press({ key: 'key:senddraft' })
+    await clock.settle()
     expect(sends(seen)).toEqual([])
-    expect(await ui.find({ type: 'Text', text: `"${long}"` })).toBeDefined()
+    expect((await draftRow(ui))?.props.autoFocus).toBe(true)
+    expect(await ui.find({ type: 'Text', text: long })).toBeDefined()
     await ui.press({ key: 'key:senddraft' })
     expect(sends(seen)).toEqual([{ argv: ['tg', 'send', '1002', '-', '--plain', '--json', '--yes'], stdin: long }])
-    // A new draft for the chat: it waits behind ↑ (the sent row leaves, the new one joins), and g brings it; d drops it.
+    // Back in For you (h reshapes it: the sent row is gone), a new draft for the chat waits behind ↑ while the cursor stays; g brings it; d drops it.
+    await ui.press({ key: 'key:back' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › for you')
     watchMessage(child, message(501, 'And on Friday?'))
     await clock.advance(20_000)
     await clock.settle()
-    expect((await ui.find({ key: 'running' }))?.text).toContain('↑ 2 moved · g: apply')
+    expect((await ui.find({ key: 'running' }))?.text).toContain('↑ 1 moved · g: apply')
     await ui.press({ key: 'key:reload' })
     expect((await ui.find({ key: 'key:dismiss' }))?.text).toBe('drop')
     await ui.press({ key: 'key:dismiss' })

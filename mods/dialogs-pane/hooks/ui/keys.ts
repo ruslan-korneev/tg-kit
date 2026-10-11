@@ -50,11 +50,11 @@ export const CHAT_KIND_LABEL: Record<ChatKind, string> = {
  * each in Chats' place (§4.2, §4.7); the rest are layers drawn over the lower
  * part (dock) or the body (inline).
  * `sheet` is the send sheet (§5.1) and the views it opens: targets, inspect, the
- * Ask field, a broadcast's legs. `summary` is `t`'s summary and `draft` a drafted
- * reply opened with `e`, each over the lower part; `field` is the send box (`n`)
- * or the search field (`s`) in the bar's row (T4b, §4.3 rule 1).
+ * Ask field, a broadcast's legs. `summary` is `t`'s summary, over the lower
+ * part; `field` is the send box (`n`) or the search field (`s`) in the bar's
+ * row (T4b, §4.3 rule 1). A draft is a row of its chat (§8 T3), not a view.
  */
-export const WHERES = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'draft', 'field', 'menu', 'band'] as const
+export const WHERES = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'menu', 'band'] as const
 export type Where = (typeof WHERES)[number]
 
 export type Seat = 'dock' | 'inline'
@@ -62,7 +62,11 @@ export type Seat = 'dock' | 'inline'
 export const MENU_GROUPS = ['move', 'message', 'chat', 'chats', 'pane', 'safety'] as const
 export type MenuGroup = (typeof MENU_GROUPS)[number]
 
-/** What the cursor row of For you is: a person's chat, an agent's draft, routing's drafted reply, an undo window. */
+/**
+ * What the cursor row is: For you's (a person's chat, an agent's draft,
+ * routing's drafted reply, an undo window), or `draft` in a chat on either
+ * kind of draft's row.
+ */
 export type ForYouRow = 'chat' | 'draft' | 'reply' | 'undo'
 
 /** The agent card while it is up (§5.4, §5.5): its step, and what ⏎ does now. */
@@ -82,8 +86,6 @@ export type KeyFacts = {
   isRunning: boolean
   /** Activity lists a delegate task that ended: `d` dismisses them. */
   hasFinished: boolean
-  /** A drafted reply waits (its notice says `e: open`). */
-  hasDraft: boolean
   /** Seconds left to undo the last auto reply; 0 when no window is open. */
   undoLeft: number
   hasNotice: boolean
@@ -98,7 +100,7 @@ export type KeyFacts = {
   isFollowed: boolean
   /** The summary of the chat the keys act on: what `t` does next. */
   summary: 'none' | 'loading' | 'ok' | 'error'
-  /** For you: the cursor row's kind; null elsewhere or on an empty view. */
+  /** For you: the cursor row's kind; in a chat, `draft` on a draft's row; null elsewhere or on an empty view. */
   row: ForYouRow | null
   /** The agent card's step and ⏎, while it is up; null elsewhere. */
   card: CardFacts | null
@@ -112,7 +114,6 @@ export const NO_FACTS: KeyFacts = {
   rows: 0,
   isRunning: false,
   hasFinished: false,
-  hasDraft: false,
   undoLeft: 0,
   hasNotice: false,
   marks: 0,
@@ -155,7 +156,7 @@ type Def = {
   isDigits?: true
 }
 
-const PANE: readonly Where[] = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary', 'draft']
+const PANE: readonly Where[] = ['chats', 'chat', 'folders', 'foryou', 'sheet', 'card', 'activity', 'diff', 'summary']
 const LISTS: readonly Where[] = ['chats', 'chat']
 /** Where digits pick a folder and `y` opens For you: Chats and the views in their place (§4.7); in a chat digits press buttons. */
 const FOLDERS: readonly Where[] = ['chats', 'folders', 'foryou']
@@ -177,6 +178,12 @@ const onRow =
   (...rows: readonly ForYouRow[]) =>
   (c: KeyContext) =>
     c.where !== 'foryou' || (c.facts.row !== null && rows.includes(c.facts.row)) ? null : `needs ${rows.includes('chat') ? "a person's row" : 'a draft row'}`
+
+/** A draft's keys in a chat (§4.6 "the cursor on a draft"): ⏎ `e d` on its row. */
+const onDraftRow = (c: KeyContext) => (c.where !== 'chat' || c.facts.row === 'draft' ? null : 'needs a draft row')
+
+/** A message's keys (⏎ send…, x, v, i): a message under the cursor, not a draft's row. */
+const onMessage = (c: KeyContext) => noRows('a message')(c) ?? (c.where === 'chat' && c.facts.row === 'draft' ? 'needs a message under the cursor' : null)
 
 /** The send sheet's own keys work on its intents; its other steps answer h. */
 const onIntents = (c: KeyContext) => (c.facts.sheet === 'intents' ? null : 'needs the intents (h)')
@@ -205,9 +212,9 @@ export const KEYS = [
         ? onStep('ladder', 'grant')(c)
         : (noRows(c.where === 'activity' ? 'something running' : c.where === 'folders' ? 'a folder' : 'a chat in the list')(c) ?? onRow('chat', 'undo')(c)),
   },
-  // For you: ⏎ on an agent's draft sends it when its whole text is on screen, else shows it whole first (decision 9).
-  { id: 'senddraft', key: '⏎', hotkey: null, group: 'chat', where: ['foryou'], kinds: 'any', label: () => 'send draft', needs: onRow('draft') },
-  { id: 'send', key: '⏎', hotkey: null, group: 'message', where: ['chat'], kinds: 'any', label: () => 'send…', needs: noRows('a message') },
+  // ⏎ on a draft's row, in its chat or in For you: it sends a draft whose whole text is on screen (decision 9), once the guard allows it.
+  { id: 'senddraft', key: '⏎', hotkey: null, group: 'chat', where: ['foryou', 'chat'], kinds: 'any', label: () => 'send draft', needs: c => onRow('draft', 'reply')(c) ?? onDraftRow(c), whileWaiting: 'hidden' },
+  { id: 'send', key: '⏎', hotkey: null, group: 'message', where: ['chat'], kinds: 'any', label: () => 'send…', needs: onMessage },
   // The card's ⏎ (§5.4): start or stop the rung picked, or the step it needs first (allow.toml, delegate's warning and grant).
   {
     id: 'start',
@@ -220,8 +227,8 @@ export const KEYS = [
     needs: c => (c.facts.card === null || c.facts.card.enter !== null ? null : 'needs the ladder (h)'),
     whileWaiting: 'hidden',
   },
-  { id: 'mark', key: 'x', hotkey: 'x', group: 'message', where: ['chat'], kinds: 'any', label: () => 'mark', needs: noRows('a message') },
-  { id: 'range', key: 'v', hotkey: 'v', group: 'message', where: ['chat'], kinds: 'any', label: c => (c.facts.isRangeOpen ? 'range end' : 'range'), needs: noRows('a message') },
+  { id: 'mark', key: 'x', hotkey: 'x', group: 'message', where: ['chat'], kinds: 'any', label: () => 'mark', needs: onMessage },
+  { id: 'range', key: 'v', hotkey: 'v', group: 'message', where: ['chat'], kinds: 'any', label: c => (c.facts.isRangeOpen ? 'range end' : 'range'), needs: onMessage },
   { id: 'whole', key: '', hotkey: null, group: 'message', where: ['chat'], kinds: 'any', label: () => 'mark the whole loaded thread', needs: noRows('a message') },
   {
     id: 'buttons',
@@ -274,7 +281,7 @@ export const KEYS = [
     where: ['chat', 'sheet'],
     kinds: 'any',
     label: () => 'inspect',
-    needs: c => (c.where === 'chat' ? noRows('a message')(c) : onIntents(c)),
+    needs: c => (c.where === 'chat' ? onMessage(c) : onIntents(c)),
   },
   { id: 'intents', key: '1-9', hotkey: null, group: 'message', where: ['sheet'], kinds: 'any', label: () => 'send as', needs: onIntents, isDigits: true },
   {
@@ -293,27 +300,11 @@ export const KEYS = [
     key: 'e',
     hotkey: 'e',
     group: 'chat',
-    where: ['chats', 'chat', 'foryou', 'card', 'band'],
+    // A draft's text in place, on its row (a chat, For you) or in the band; on the card, its brief or delegate's repos.
+    where: ['chat', 'foryou', 'card', 'band'],
     kinds: 'any',
-    label: c =>
-      c.where === 'card'
-        ? c.facts.card?.step === 'grant'
-          ? 'repos'
-          : 'brief'
-        : c.where === 'band' || (c.where === 'foryou' && c.facts.row === 'draft')
-          ? 'edit'
-          : 'open draft',
-    // In the lists, e opens the drafted reply its notice names (T4b); nothing to open, nothing listed.
-    needs: c =>
-      c.where === 'chats' || c.where === 'chat'
-        ? c.facts.hasDraft
-          ? null
-          : 'needs a drafted reply'
-        : c.where === 'foryou'
-          ? onRow('draft', 'reply')(c)
-          : c.where === 'card'
-            ? onStep('ladder', 'grant', 'options')(c)
-            : null,
+    label: c => (c.where === 'card' ? (c.facts.card?.step === 'grant' ? 'repos' : 'brief') : 'edit'),
+    needs: c => (c.where === 'foryou' ? onRow('draft', 'reply')(c) : c.where === 'chat' ? onDraftRow(c) : c.where === 'card' ? onStep('ladder', 'grant', 'options')(c) : null),
     whileWaiting: 'hidden',
   },
   {
@@ -323,7 +314,8 @@ export const KEYS = [
     group: 'pane',
     where: ['chats', 'chat', 'foryou', 'card', 'activity', 'band'],
     kinds: 'any',
-    label: c => (c.where === 'activity' ? 'dismiss ended tasks' : c.where === 'foryou' && c.facts.row !== 'chat' && c.facts.row !== null ? 'drop' : 'dismiss'),
+    label: c =>
+      c.where === 'activity' ? 'dismiss ended tasks' : (c.where === 'foryou' || c.where === 'chat') && c.facts.row !== 'chat' && c.facts.row !== null ? 'drop' : 'dismiss',
     needs: c =>
       c.where === 'band'
         ? null
@@ -331,7 +323,7 @@ export const KEYS = [
           ? c.facts.hasFinished
             ? null
             : 'needs a task that ended'
-          : (c.where === 'foryou' && (c.facts.row === 'draft' || c.facts.row === 'reply')) || c.facts.hasNotice
+          : ((c.where === 'foryou' || c.where === 'chat') && (c.facts.row === 'draft' || c.facts.row === 'reply')) || c.facts.hasNotice
             ? null
             : 'needs a notice',
   },
@@ -356,7 +348,7 @@ export const KEYS = [
     group: 'pane',
     // In the Folders list, the top level, h goes back down to the chats it came from: a key with no
     // meaning there would fall through to the prompt and take the keys with it (seen live).
-    where: ['chats', 'foryou', 'folders', 'chat', 'sheet', 'card', 'activity', 'diff', 'summary', 'draft', 'field', 'menu'],
+    where: ['chats', 'foryou', 'folders', 'chat', 'sheet', 'card', 'activity', 'diff', 'summary', 'field', 'menu'],
     kinds: 'any',
     label: c =>
       c.where === 'folders'
@@ -369,7 +361,7 @@ export const KEYS = [
           : 'chats'
         : (c.where === 'sheet' && c.facts.sheet === 'intents') || c.where === 'field'
           ? 'cancel'
-          : c.where === 'summary' || c.where === 'draft'
+          : c.where === 'summary'
             ? 'close'
             : 'back',
   },
@@ -443,6 +435,9 @@ const KIND_BAR: Record<ChatKind, readonly KeyId[]> = {
   botfather: ['send', 'summary', 'mark'],
 }
 
+/** §4.6 "the cursor on a draft": the draft's own keys, then the chat's card. */
+const DRAFT_BAR: readonly KeyId[] = ['senddraft', 'edit', 'dismiss', 'agent']
+
 function verbs(c: KeyContext): readonly KeyId[] {
   switch (c.where) {
     case 'chats':
@@ -460,7 +455,8 @@ function verbs(c: KeyContext): readonly KeyId[] {
       // While marking, x and f come right after ⏎ in every kind of chat, x even where the kind's bar
       // leaves it to the menu (a group's): they act on the marks, so the other verbs leave first (§4.6).
       // f stays where it exists (bot chats); elsewhere the live filter drops it.
-      const kindBar: readonly KeyId[] = c.kind === null ? ['send'] : KIND_BAR[c.kind]
+      // The cursor on a draft (§4.6): `⏎ send draft  e: edit  d: drop  a: agent  m: menu`.
+      const kindBar: readonly KeyId[] = c.facts.row === 'draft' ? DRAFT_BAR : c.kind === null ? ['send'] : KIND_BAR[c.kind]
       const isMarking = c.facts.marks > 0 || c.facts.isRangeOpen
       const marking: readonly KeyId[] = ['mark', 'diff']
       const base = isMarking ? [...kindBar.slice(0, 1), ...marking, ...kindBar.slice(1).filter(id => !marking.includes(id))] : kindBar
@@ -482,8 +478,6 @@ function verbs(c: KeyContext): readonly KeyId[] {
       }
     case 'activity':
       return ['open', 'dismiss', 'back']
-    case 'draft':
-      return ['back']
     case 'summary':
       return ['summary', 'back']
     case 'field':
@@ -597,7 +591,6 @@ const WHERE_WORDS: Record<Where, string> = {
   activity: 'Activity',
   diff: 'a diff',
   summary: 'the summary',
-  draft: 'a drafted reply',
   field: 'a field',
   menu: 'the menu',
   band: 'the band',

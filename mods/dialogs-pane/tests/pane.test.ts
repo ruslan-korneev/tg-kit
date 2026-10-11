@@ -566,6 +566,30 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
     })
   }
 
+  // A draft's row (§8 T3): the cursor on it, and its field open, in both seats; its keys are ⏎ e d a.
+  for (const props of [DOCK, INLINE]) {
+    test(`a draft's row and its field, ${props.placement}: each of a–z and 0–9 has exactly one Button; the bar is the draft's`, async ($, on) => {
+      const write = autopilotWriter(on)
+      const { ui } = await openPane($, on, props)
+      await fillBand($, write)
+      await openChat(ui, 1004)
+      await ui.press({ key: 'key:down' })
+      expect((await ui.find({ key: 'draft:ap:1' }))?.props.autoFocus).toBe(true)
+      // fillBand's undo window is open: u joins, as everywhere while it is (§4.6).
+      expect(await barKeys(ui)).toEqual(['senddraft', 'edit', 'dismiss', 'agent', ...(props === INLINE ? ['back'] : []), 'undo', 'menu'])
+      for (const step of ['row', 'field'] as const) {
+        if (step === 'field') await ui.press({ key: 'key:edit' })
+        const drawn = await hotkeys(ui)
+        for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
+        const every = await allHotkeys(ui)
+        expect(every.filter((key, index) => every.indexOf(key) !== index)).toEqual([])
+        expect([...every].sort()).toEqual([...STRAY_KEYS].sort())
+      }
+      expect(await ui.find({ key: 'draft:ap:1:text' })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+
   const ABSENT: { id: number; name: string; absent: string[] }[] = [
     { id: 1004, name: 'a person chat', absent: ['r', 'f', 'b'] },
     { id: 1005, name: 'a channel', absent: ['n', 'r', 'f'] },
@@ -849,7 +873,19 @@ function autopilotWriter(on: On) {
 async function fillBand($: Engine, write: ReturnType<typeof autopilotWriter>): Promise<void> {
   const contact: PeerRef = { id: 1004, arg: '1004', label: 'Contact A', kind: 'user' }
   const group: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
-  const draft = (seq: number, peer: PeerRef, text: string): ApDraft => ({ seq, peer, incoming: 'Can we call tomorrow at 10?', text, confidence: 0.62, reasons: ['dates'], state: { kind: 'ready' } })
+  // As the autopilot lands them: after the newest message of their chat, the guard's verdict in.
+  const draft = (seq: number, peer: PeerRef, text: string): ApDraft => ({
+    seq,
+    peer,
+    incoming: 'Can we call tomorrow at 10?',
+    text,
+    confidence: 0.62,
+    reasons: ['dates'],
+    state: { kind: 'ready' },
+    check: { kind: 'planned', isAllowed: true, reason: 'confirmed with --yes' },
+    at: seq,
+    after: 10_000_000,
+  })
   const now = Date.parse('2026-10-10T12:00:00Z')
   await write($, value => ({
     ...value,
@@ -956,7 +992,7 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
 
   for (const seat of SEATS) {
     const inline = seat.props.placement === 'inline'
-    test(`${seat.name}, the cursor on the newest of 40 messages: x, n (send, empty), s, t, a draft; nothing above the cursor moves`, async ($, on) => {
+    test(`${seat.name}, the cursor on the newest of 40 messages: x, n (send, empty), s, t, a draft landing; nothing above the cursor moves`, async ($, on) => {
       const { ui, clock } = await openStable($, on, seat.props)
       await openChat(ui, 1004)
       const base = await place(ui)
@@ -1002,17 +1038,26 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       await ui.press({ key: 'key:back' })
       expect(await ui.find({ key: 'summary' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
-      // A drafted reply lands: it waits behind its notice; e opens it as a layer, h closes it and it waits on.
+      // A drafted reply lands (§8 T3): a row of the thread after its newest message, below the cursor, so
+      // nothing above it moves; no notice, no layer. The band has it while the thread's window does not hold it.
       await landDraft($, ui)
-      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      expect(await ui.find({ key: 'notice' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
+      // j onto it: the window scrolls at its edge to hold the draft whole; e opens its field in its place, the
+      // field's ⏎ keeps the text, and the cursor and the rows above stay where j put them.
+      await ui.press({ key: 'key:down' })
+      const onDraft = await place(ui)
+      expect((await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true)?.key).toBe('draft:reply')
+      expect(await ui.find({ type: 'Text', text: 'Sure, 10 works.' })).toBeDefined()
       await ui.press({ key: 'key:edit' })
-      expect((await ui.find({ key: 'draft' }))?.text).toContain('reply to #700040 in Contact A')
-      await expectStatic(ui, inline)
-      await ui.press({ key: 'key:back' })
-      expect(await ui.find({ key: 'draft' })).toBeUndefined()
-      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
-      expect(await place(ui)).toEqual(base)
+      expect(await ui.find({ key: 'draft:reply:text' })).toBeDefined()
+      await ui.input({ key: 'draft:reply:text', text: 'Sure, 10 works for me.' })
+      expect(await ui.find({ key: 'draft:reply:text' })).toBeUndefined()
+      expect(await place(ui)).toEqual(onDraft)
+      // d drops it: the cursor goes back to the newest message, the window keeps its first row.
+      await ui.press({ key: 'key:dismiss' })
+      expect((await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true)?.key).toBe('msg:700040')
+      expect((await place(ui)).message).toBe(onDraft.message)
       await ui.unmount()
     })
 
@@ -1052,7 +1097,7 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       await ui.unmount()
     })
 
-    test(`${seat.name}, the cursor mid-way down 60 chats: s, a notice, a draft landing, e and h; nothing above the cursor moves`, async ($, on) => {
+    test(`${seat.name}, the cursor mid-way down 60 chats: s, a notice, a draft landing; nothing above the cursor moves`, async ($, on) => {
       const { ui } = await openStable($, on, seat.props)
       await openChat(ui, 1004)
       await ui.press({ key: 'key:follow' })
@@ -1060,10 +1105,10 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
         await ui.press({ key: 'key:back' })
         for (let i = 0; i < 5; i++) await ui.press({ key: 'key:down' })
       })
-      // The draft landed while the cursor was in Chats: compare from there on.
+      // The draft landed while the cursor was in Chats: a row of its chat, no notice; compare from there on.
       const base = await place(ui)
       expect(base.key).toMatch(/^dialog:/)
-      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      expect(await ui.find({ key: 'notice' })).toBeUndefined()
       await ui.press({ key: 'key:search' })
       await expectStatic(ui, true)
       await ui.input({ key: 'search', text: '' })
@@ -1072,9 +1117,8 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       await $.command.run(runTg('stop'))
       expect((await ui.find({ key: 'notice' }))?.text).toBe('■ stopped: Contact A')
       expect(await place(ui)).toEqual(base)
-      await ui.press({ key: 'key:edit' })
-      expect(await ui.find({ key: 'draft' })).toBeDefined()
-      await ui.press({ key: 'key:back' })
+      // e means nothing in Chats now: it says where it works and keeps the keys in the pane.
+      await ui.press({ key: 'stray:e' })
       expect(await place(ui)).toEqual(base)
       await ui.unmount()
     })
@@ -1147,6 +1191,20 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_SITE })
     expect((await bandShape(band)).first).toBe('ap:note:open')
     expect(await band.find({ type: 'Text', text: /j: next/ })).toBeUndefined()
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test("a draft whose row the open thread's window holds leaves the band; the other chat's stays (§8 T3)", async ($, on) => {
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const { ui } = await openPane($, on)
+    await fillBand($, write)
+    await openChat(ui, 1004)
+    expect(await ui.find({ key: 'draft:ap:1' })).toBeDefined()
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_SITE })
+    expect((await band.find({ key: 'band:row1' }))?.text).toContain('Dev Team')
+    expect(await band.find({ type: 'Text', text: /1\/3 {2}j: next/ })).toBeDefined()
     await band.unmount()
     await ui.unmount()
   })

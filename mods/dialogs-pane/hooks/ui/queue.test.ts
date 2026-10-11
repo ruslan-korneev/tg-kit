@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ApDraft, ApNote, ApUndoWindow, BandEvent, LedgerEntry, PeerRef } from '../../types'
+import type { ApNote, ApUndoWindow, BandEvent, LedgerEntry, PeerRef } from '../../types'
 import { buildPacket } from '../packet/build'
 import { BOT, PERSON, REPLY, SENT } from '../packet/fixtures'
+import { apDraftView, type DraftView } from './drafts'
 import { KEYS, helpLines } from './keys'
 import {
   NOTHING_ON_SCREEN,
@@ -58,7 +59,8 @@ describe('the status line holds alarms only (§4.1)', () => {
   })
 })
 
-const draft = (seq: number, who: PeerRef, text = 'After 18?'): ApDraft => ({ seq, peer: who, incoming: 'Can we call?', text, confidence: 0.62, reasons: ['dates'], state: { kind: 'ready' } })
+const draft = (seq: number, who: PeerRef, text = 'After 18?'): DraftView =>
+  apDraftView({ seq, peer: who, incoming: 'Can we call?', text, confidence: 0.62, reasons: ['dates'], state: { kind: 'ready' }, check: { kind: 'planned', isAllowed: true, reason: 'confirmed with --yes' }, at: seq, after: 92 })
 const undo: ApUndoWindow = { seq: 7, peer: GROUP, ids: [900], text: 'Merged, thanks', confidence: 0.93, until: 30_000 }
 const reply: BandEvent = { dialogId: 1001, label: '@example_bot', kind: 'bot', text: '⚠ Something went wrong', sender: 'bot' }
 const note: ApNote = { seq: 3, peer: GROUP, text: 'Release moved to Friday.' }
@@ -81,7 +83,7 @@ const FULL: QueueInput = {
 
 describe('the band: one queue, most urgent first (§8 T5)', () => {
   test('hold > draft > undo > watched reply > summary > task news', () => {
-    expect(bandQueue(FULL).map(item => item.key)).toEqual(['hold:g:1:1', 'draft:4', 'draft:5', 'undo:7', 'reply:1001', 'note:3', 'task:1:done'])
+    expect(bandQueue(FULL).map(item => item.key)).toEqual(['hold:g:1:1', 'draft:ap:4', 'draft:ap:5', 'undo:7', 'reply:1001', 'note:3', 'task:1:done'])
   })
 
   test('only a watched chat reaches it, and only a task that ended done or failed', () => {
@@ -90,10 +92,12 @@ describe('the band: one queue, most urgent first (§8 T5)', () => {
     expect(keys.filter(key => key.startsWith('task:'))).toEqual(['task:1:done'])
   })
 
-  test('what the pane draws is skipped: For you takes the drafts and the undo window, a thread its reply and its task news; a hold never', () => {
-    expect(bandQueue({ ...FULL, onScreen: { chat: null, isForYou: true } }).map(item => item.key)).toEqual(['hold:g:1:1', 'reply:1001', 'note:3', 'task:1:done'])
-    expect(bandQueue({ ...FULL, onScreen: { chat: 1001, isForYou: false } }).map(item => item.key)).not.toContain('reply:1001')
-    expect(bandQueue({ ...FULL, onScreen: { chat: B.id, isForYou: false } }).map(item => item.key)).toEqual(['hold:g:1:1', 'draft:4', 'draft:5', 'undo:7', 'reply:1001', 'note:3'])
+  test('what the pane draws is skipped: a draft whose row it draws, For you\'s undo window, a thread its reply and its task news; a hold never', () => {
+    expect(bandQueue({ ...FULL, onScreen: { chat: null, isForYou: true, drafts: ['draft:ap:4', 'draft:ap:5'] } }).map(item => item.key)).toEqual(['hold:g:1:1', 'reply:1001', 'note:3', 'task:1:done'])
+    expect(bandQueue({ ...FULL, onScreen: { chat: 1001, isForYou: false, drafts: [] } }).map(item => item.key)).not.toContain('reply:1001')
+    expect(bandQueue({ ...FULL, onScreen: { chat: B.id, isForYou: false, drafts: [] } }).map(item => item.key)).toEqual(['hold:g:1:1', 'draft:ap:4', 'draft:ap:5', 'undo:7', 'reply:1001', 'note:3'])
+    // A thread drawn with one draft's row in its window: that one is the pane's, the other the band's.
+    expect(bandQueue({ ...FULL, onScreen: { chat: A.id, isForYou: false, drafts: ['draft:ap:4'] } }).map(item => item.key)).toEqual(['hold:g:1:1', 'draft:ap:5', 'undo:7', 'reply:1001', 'note:3', 'task:1:done'])
   })
 
   test('d puts news away by key', () => {
@@ -102,11 +106,11 @@ describe('the band: one queue, most urgent first (§8 T5)', () => {
 
   test('j and k step round the queue; a key no longer queued shows the first', () => {
     const items = bandQueue(FULL)
-    expect(stepKey(items, null, 1)).toBe('draft:4')
+    expect(stepKey(items, null, 1)).toBe('draft:ap:4')
     expect(stepKey(items, 'task:1:done', 1)).toBe('hold:g:1:1')
     expect(stepKey(items, 'hold:g:1:1', -1)).toBe('task:1:done')
     expect(shownIndex(items, 'undo:7')).toBe(3)
-    expect(shownIndex(items, 'draft:99')).toBe(0)
+    expect(shownIndex(items, 'draft:ap:99')).toBe(0)
     expect(stepKey([], null, 1)).toBeNull()
     expect(positionText(1, 3)).toBe('2/3  j: next')
     expect(positionText(0, 1)).toBeNull()

@@ -175,6 +175,8 @@ function world(
     if (cmd === 'folders') return { value: folderRun(e.argv, json(CHATS)) }
     if (cmd === 'read') return { value: json(seen.history) }
     if (cmd === 'allow') return { value: json((options.allow ?? [PERSON]).map(id => ({ id }))) }
+    // The guard's dry run, as a draft lands (§8 T3): the owner's own write passes --yes (decision 9).
+    if (cmd === 'send' && e.argv.includes('--dry-run')) return { value: json({ action: 'send', target: { id: Number(e.argv[2]) }, steps: [], guard: { allowed: true, reason: e.argv.includes('--yes') ? 'confirmed with --yes' : 'allowlisted' } }) }
     if (cmd === 'send') {
       const sent = message(nextSent++, ran.stdin ?? '', { out: true })
       seen.history.push(sent)
@@ -368,7 +370,7 @@ const worker = async ($: Engine, command: string): Promise<ToolCallResult> =>
   // agentId rides along as the Worker's loop carries it.
   $.tool.call({ tool: 'Bash', command, agentId: WORKER } as never)
 
-const sends = (seen: World) => seen.runs.filter(one => one.argv[1] === 'send').map(one => one.stdin)
+const sends = (seen: World) => seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.stdin)
 
 /** /tg wide, the cursor on Contact B, a: its card on the ladder. */
 async function openCard($: Engine, clock: MockClock) {
@@ -637,7 +639,7 @@ describe('the Speaker in a delegate dialog', () => {
     expect(seen.sent).toEqual([{ to: WORKER, text: expect.stringContaining("The Speaker's reading: port 8080") }])
     expect(sends(seen)).toEqual(['on it', 'which port should it listen on?', 'thanks'])
     // Delegate's replies are an agent's writes: allow.toml decides, never --yes (decision 9).
-    expect(seen.runs.filter(one => one.argv[1] === 'send').map(one => one.argv.includes('--yes'))).toEqual([false, false, false])
+    expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.argv.includes('--yes'))).toEqual([false, false, false])
   })
 })
 
