@@ -78,11 +78,13 @@ import { restartPlan, watchArgv, watchLines, type WatchEvent } from './watch/wat
 import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } from './tg/tg'
 import { DialogRow, DraftCard, Divider, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
+import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, fixedCells, messageLooks, senderColumn, type MessageLook } from './ui/thread'
 import { BandItemView, CommandCard, type BandActions } from './ui/band'
 import { ActionBar, DigitKeys, Frame, Header, HiddenKeys, Menu, NoticeRow, Strip, StrayKeys, hotkeysIn, marksLead, stripRight } from './ui/frame'
 import {
   BAR_GAP,
   CHAT_KIND_LABEL,
+  CHAT_KIND_PRESS,
   STRAY_KEYS,
   strayText,
   actionBar,
@@ -90,6 +92,7 @@ import {
   helpLines,
   hiddenKeys,
   menu as menuSections,
+  pressText,
   type ChatKind,
   type CardFacts,
   type KeyContext,
@@ -699,10 +702,13 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
   const pilot = await read($, autopilot)
   const view = pilot.view
   const tasks = (await read($, delegate)).tasks
+  const kind = peer === undefined ? null : chatKind(peer.kind, isBotFather(peer.arg))
+  // ── bottest ── f's pair and the digits' chips belong to the chat's cursor message (§8 T6).
+  const atCursor = where === 'chat' ? await cursorMessage($) : undefined
   return {
     where,
     seat,
-    kind: peer === undefined ? null : chatKind(peer.kind, isBotFather(peer.arg)),
+    kind,
     facts: {
       rows:
         where === 'chats' || where === 'foryou'
@@ -721,6 +727,7 @@ async function keyContext($: $, seat: Seat, where: Exclude<Where, 'menu' | 'band
       isRangeOpen: chosen.anchor !== null,
       hasPair: diffPair(chosen.ids, messages).ok,
       hasButtons: messages.some(message => message.buttons.length > 0),
+      cursorButtons: atCursor === undefined || kind === null || !CHAT_KIND_PRESS.includes(kind) ? 0 : Math.min(MAX_DIGIT_CHIPS, atCursor.buttons.flat().length),
       isRecording: bt.recording !== null,
       isWatched: peer !== undefined && tri.watched.some(one => one.id === peer.id),
       isFollowed: peer !== undefined && (await read($, pins)).some(pin => pin.peer.id === peer.id),
@@ -952,7 +959,8 @@ async function drawPane($: $, els: Els, seating: Seating): Promise<RenderElement
   // The marks ride the bar's row (T4b): `▪ 3 marked` leads it, and the verbs get what is left.
   const lead = !isMenu && where === 'chat' ? marksLead(chosen.ids.length) : null
   // ── folders ── the Folders list's rows carry the digits: the bar says so after ⏎ (§4.6).
-  const digitsText = !isMenu && where === 'folders' ? await digitsLabel($) : null
+  // ── bottest ── in a chat, the cursor message's chips carry the digits: `1-2: press` (§4.6).
+  const digitsText = isMenu ? null : where === 'folders' ? await digitsLabel($) : where === 'chat' ? pressText(context) : null
   const bar = actionBar(barContext, width - (lead === null ? 0 : lead.length + BAR_GAP) - (digitsText === null ? 0 : digitsText.length + BAR_GAP))
   const isBase = where === 'chats' || where === 'chat'
   // Inline Chats: the strip shares the header row; the dock gives it a row of its own.
@@ -1282,7 +1290,7 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
   windowRows.messages = rows
   threadHeights = layout.heights
   lastThread = { width, rows } // ── footer ──
-  const bt = await bottestCards($, open.peer, messages, width)
+  const bt = await bottestCards($, open.peer, messages, layout.look, width, mode)
   return layout.shown.map((item, index) => {
     const row = layout.start + index
     const isCursor = mode !== 'idle' && row === layout.cursor
@@ -1306,14 +1314,15 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
     }
     const { message } = item
     return MessageCard(els, {
-      ...bt(els, message),
+      ...bt(els, message, isCursor),
       message,
       isCursor,
       isStatic: mode === 'static',
       isSelected: chosen.ids.includes(message.id),
       isAnchor: chosen.anchor === message.id,
       width,
-      now: at,
+      sender: layout.look.sender,
+      look: layout.look.looks.get(message.id) ?? { divider: null, isChipsOnRow: false },
       // ⏎ (or a click) on a message: the send sheet for it (§5.1).
       onPress: async () => {
         await toRow()
@@ -1328,13 +1337,25 @@ async function drawThread($: $, els: Els, width: number, rows: number, mode: 'ac
  * holds whole, from where it starts. The drawing and the band (which leaves
  * out a draft the pane draws) read the same answer.
  */
-async function threadLayout($: $, width: number, rows: number): Promise<{ shown: ThreadRow[]; start: number; cursor: number; heights: number[] }> {
+async function threadLayout($: $, width: number, rows: number): Promise<{ shown: ThreadRow[]; start: number; cursor: number; heights: number[]; look: ThreadLook }> {
   const items = await threadItems($)
   const where = await read($, nav)
-  const heights = items.map(item => rowHeight(item, width))
+  const look = await threadLook($, width)
+  const heights = items.map(item => rowHeight(item, width, look.looks))
   const cursor = clamp(where.messageCursor, items.length)
   const start = windowStart(where.messageStart, cursor, heights, rows)
-  return { shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights }
+  return { shown: items.slice(start, start + windowCount(start, heights, rows)), start, cursor, heights, look }
+}
+
+type ThreadLook = { sender: { width: number; gap: number }; looks: Map<number, MessageLook> }
+
+/** How the open chat draws its message rows at `width` (§7.3, ./ui/thread): the sender column, each message's divider and chips. */
+async function threadLook($: $, width: number): Promise<ThreadLook> {
+  const open = await read($, thread)
+  const messages = await threadMessages($)
+  const kind = open === null ? null : openChatKind(open)
+  const sender = senderColumn(messages, kind)
+  return { sender, looks: messageLooks(messages, width, await read($, now), sender, kind === 'botfather') }
 }
 
 // ── triage ──
@@ -2517,7 +2538,7 @@ import { diffPair, replyDiff } from './bottest/diff'
 import { chipAction, isBotFather, readOnlyText } from './bottest/keyboard'
 import { NO_TIMING, observe, pressed, sent, stampFor } from './bottest/latency'
 import { addStep, outcomeOf, scriptPath, startRecording, targetOf, toScript } from './bottest/recorder'
-import { ChipRow, DiffView, SendBox, chipKey } from './bottest/ui'
+import { Chips, DiffView, MAX_DIGIT_CHIPS, SendBox, chipKey, chipsWidth } from './bottest/ui'
 import type { Button as KeyButton, MessageView } from './packet/types'
 
 const NO_BOTTEST: BotTest = {
@@ -2811,21 +2832,41 @@ async function toggleDiff($: $): Promise<void> {
 
 // --- drawing ---
 
-/** MessageCard's bot-testing props: the latency stamp and pressable chips. */
-async function bottestCards($: $, peer: PeerRef, messages: readonly MessageView[], width: number) {
+/**
+ * MessageCard's bot-testing props: the latency stamp, and the chips, pressable
+ * in the chats §4.6 gives presses (a bot, a group's bot messages, a channel's
+ * link buttons, BotFather's `ro`), with digits on the cursor row while the
+ * thread holds the cursor; as text under a layer that holds the ring (rule 3).
+ */
+async function bottestCards($: $, peer: PeerRef, messages: readonly MessageView[], look: ThreadLook, width: number, mode: 'active' | 'idle' | 'static') {
   const state = await read($, bottest)
+  const kind = chatKind(peer.kind, isBotFather(peer.arg))
   // A press is the owner's own write (--yes): only BotFather's chips are read-only.
-  const isReadOnly = isBotFather(peer.arg)
-  return (els: Els, message: MessageView) => {
-    const stamp = stampFor(message, messages, state.timing)
-    return {
-      stamp: stamp === null ? null : { text: stamp.text, isSlow: stamp.isSlow },
-      buttonRow:
-        message.buttons.length === 0
-          ? null
-          : ChipRow(els, { message, isReadOnly, width, onChip: button => pressChip($, message, button) }),
-    }
+  const isReadOnly = kind === 'botfather'
+  const hasPresses = CHAT_KIND_PRESS.includes(kind)
+  return (els: Els, message: MessageView, isCursor: boolean) => {
+    const found = stampFor(message, messages, state.timing)
+    const stamp = found === null ? null : { text: found.text, isSlow: found.isSlow }
+    if (message.buttons.length === 0) return { stamp, chips: null }
+    const isOnRow = look.looks.get(message.id)?.isChipsOnRow === true
+    const labels = chipLabels(message.buttons, isOnRow ? CHIP_LABEL_MAX : underRowMax(message, width, look.sender, isReadOnly))
+    const element = Chips(els, {
+      message,
+      labels,
+      isDigits: hasPresses && isCursor && mode === 'active',
+      isPressable: hasPresses && mode !== 'static',
+      isReadOnly,
+      onChip: button => pressChip($, message, button),
+    })
+    return { stamp, chips: { element, cells: chipsWidth(labels, isReadOnly) } }
   }
+}
+
+/** A chip's label on the row under its message: the row shared out, between 4 and 40 characters (a URL chip carries its URL). */
+function underRowMax(message: MessageView, width: number, sender: { width: number; gap: number }, isReadOnly: boolean): number {
+  const count = Math.max(1, message.buttons.flat().length)
+  const room = width - fixedCells(sender) - (isReadOnly ? 2 + CHIP_GAP : 0) - CHIP_GAP * count - message.buttons.length
+  return Math.min(40, Math.max(4, Math.floor(room / count) - 3))
 }
 
 /** The diff in place of the thread, while one is open and both messages are still loaded. */

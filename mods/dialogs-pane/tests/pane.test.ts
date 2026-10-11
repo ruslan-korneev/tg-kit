@@ -207,7 +207,8 @@ describe('the frame', () => {
     // In the chat the strip's digits are not live: only the active column's are.
     expect(await ui.find({ key: 'digit:1' })).toBeUndefined()
     expect(await tabsOf(ui)).toEqual(['‹All chats 3›', 'For you', 'Bots'])
-    expect(await barKeys(ui)).toEqual(['send', 'write', 'record', 'mark', 'agent', 'menu'])
+    // A bot chat's bar is §4.6's: no a, which the menu lists (§8 T6).
+    expect(await barKeys(ui)).toEqual(['send', 'write', 'record', 'mark', 'menu'])
     await ui.unmount()
   })
 
@@ -549,12 +550,25 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
         { name: `a chat from bots ${seat}`, props, steps: ['digit:3', 'dialog:1001'] },
       ]
     }),
+    // T6: the cursor on a message with buttons (its chips carry 1 and 2), BotFather's ro chips.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        { name: `chips ${seat}`, props, steps: ['dialog:1001', 'key:up'] },
+        { name: `chips BotFather ${seat}`, props, steps: ['dialog:1006', 'key:up'] },
+        { name: `chips, marked ${seat}`, props, steps: ['dialog:1001', 'key:up', 'key:mark'] },
+      ]
+    }),
   ]
 
   for (const view of VIEWS) {
     test(`${view.name}: each of a–z and 0–9 has exactly one Button; the bound ones are the table's; the bar holds ≤ 7`, async ($, on) => {
-      const { ui } = await openPane($, on, view.props)
-      for (const key of view.steps) await ui.press({ key: key.startsWith('dialog:') ? await chatKey(ui, Number(key.slice('dialog:'.length))) : key })
+      const { ui, clock } = await openPane($, on, view.props)
+      for (const key of view.steps) {
+        await ui.press({ key: key.startsWith('dialog:') ? await chatKey(ui, Number(key.slice('dialog:'.length))) : key })
+        await clock.settle()
+      }
+      if (view.name.startsWith('chips ')) expect((await ui.find({ key: 'btn:677791:0:1' }))?.props.hotkey).toBe('2')
       const drawn = await hotkeys(ui)
       for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
       // Nothing falls through to the prompt (the T9 review's M1): what the view does not bind, the catch-all does, once.
@@ -986,6 +1000,68 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       expect((await ui.find({ key: 'notice' }))?.text).toBe('■ stopped: Contact A')
       // The list fills its room, so a notice the chrome did not count would push the bar past it.
       expect(rowsOf(await ui.drawn())).toBe(bodyRows)
+      await ui.unmount()
+    })
+  }
+
+  // T6: a bot thread longer than the window, a day divider a quarter of the way in, chips on every fourth message.
+  const KEYBOARD = [
+    [
+      { row: 0, col: 0, type: 'cb', text: 'Retry', data_b64: 'cmV0cnk=' },
+      { row: 0, col: 1, type: 'cb', text: 'Back', data_b64: 'YmFjaw==' },
+    ],
+  ]
+  const CHIPPED: TgMessage[] = LONG.map((message, index) => ({
+    ...message,
+    date: index < 10 ? message.date.replace('2026-10-10', '2026-10-09') : message.date,
+    keyboard: index % 4 === 1 ? ('inline' as const) : null,
+    buttons: index % 4 === 1 ? KEYBOARD : [],
+  }))
+  const chipped = (argv: readonly string[]) =>
+    argv[1] === 'read' ? json(CHIPPED) : argv[1] === 'press' ? json({ button: {}, answer: { alert: null, toast: 'Saved', url: null }, replies: [] }) : stable(argv)
+  /** The thread's ring stops, in order: its messages and their chips. */
+  const threadStops = async (ui: Ui) => (await ui.findAll({ type: 'Button' })).flatMap(one => (one.key?.startsWith('msg:') === true || one.key?.startsWith('btn:') === true ? [one.key] : []))
+
+  for (const seat of SEATS) {
+    test(`${seat.name}, a 40-message bot thread with chips and day dividers: k across the window, a digit's press, and f and its diff; the ring stays on ▸ (T6)`, async ($, on) => {
+      const { ui, clock } = await openPane($, on, seat.props, chipped)
+      await openChat(ui, 1001)
+      // k up the thread: a move inside the window changes no stop (every chip is a Button wherever the cursor is), so the
+      // ring the engine keeps by its place lands on ▸; a move past the edge scrolls by the rows it needs.
+      let chipRow: string | null = null
+      for (let move = 0; move < 14; move++) {
+        const before = { first: (await rows(ui, 'msg:'))[0], stops: await threadStops(ui) }
+        await ui.press({ key: 'key:up' })
+        const after = { first: (await rows(ui, 'msg:'))[0], stops: await threadStops(ui) }
+        if (after.first === before.first) expect(after.stops).toEqual(before.stops)
+        const ringed = (await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true && one.key?.startsWith('msg:') === true)?.key ?? ''
+        const id = Number(ringed.slice(4))
+        if (CHIPPED.find(one => one.id === id)?.buttons.length !== 0 && chipRow === null) chipRow = ringed
+        if (chipRow !== null) break
+      }
+      expect(chipRow).not.toBeNull()
+      const id = Number(chipRow?.slice(4))
+      expect((await ui.find({ key: `btn:${id}:0:1` }))?.props.hotkey).toBe('2')
+      const base = await place(ui)
+      // A digit's press: its answer lands in the notice row, which takes no row of the thread.
+      await ui.press({ key: `btn:${id}:0:0` })
+      await clock.settle()
+      expect((await ui.find({ key: 'notice' }))?.text).toBe('toast: Saved')
+      expect(await place(ui)).toEqual(base)
+      // f on two marked replies: the diff is a layer over the lower part; h closes it, h clears the marks.
+      await ui.press({ key: 'key:mark' })
+      await ui.press({ key: 'key:down' })
+      await ui.press({ key: 'key:mark' })
+      const marked = await place(ui)
+      await ui.press({ key: 'key:diff' })
+      expect(await ui.find({ key: 'bt:diff-view' })).toBeDefined()
+      await expectStatic(ui, false)
+      await ui.press({ key: 'key:back' })
+      expect(await ui.find({ key: 'bt:diff-view' })).toBeUndefined()
+      expect(await place(ui)).toEqual(marked)
+      await ui.press({ key: 'key:back' })
+      await ui.press({ key: 'key:up' })
+      expect(await place(ui)).toEqual(base)
       await ui.unmount()
     })
   }

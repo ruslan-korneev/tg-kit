@@ -88,7 +88,9 @@ describe('the action bar', () => {
         }
       }
     }
-    expect(ids(actionBar(at('chat', 'bot')))).toEqual(['send', 'write', 'record', 'mark', 'agent', 'menu'])
+    // A bot chat's bar is §4.6's: no a (the menu has it); f joins before x once the cursor reply has a pair.
+    expect(ids(actionBar(at('chat', 'bot')))).toEqual(['send', 'write', 'record', 'mark', 'menu'])
+    expect(ids(actionBar(at('chat', 'bot', { hasPair: true })))).toEqual(['send', 'write', 'record', 'diff', 'mark', 'menu'])
     expect(ids(actionBar(at('chat', 'person')))).toEqual(['send', 'write', 'agent', 'watch', 'mark', 'menu'])
     expect(ids(actionBar(at('chat', 'group')))).toEqual(['send', 'summary', 'watch', 'agent', 'write', 'menu'])
     expect(ids(actionBar(at('chat', 'channel')))).toEqual(['send', 'summary', 'watch', 'agent', 'mark', 'menu'])

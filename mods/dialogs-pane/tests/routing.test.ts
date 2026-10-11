@@ -587,7 +587,7 @@ describe('the send sheet keeps the ring on ▸ (the engine keeps it by place amo
     await ui.press({ key: 'key:send' })
     expect(await stops(ui)).toEqual([])
     expect((await ui.find({ key: 'row:677791' }))?.text.startsWith('▸')).toBe(true)
-    expect((await ui.find({ key: 'card:677791' }))?.text).toContain('[ Retry ]')
+    expect((await ui.find({ key: 'card:677791' }))?.text).toContain('[Retry]')
     await ui.press({ key: 'sheet:intent:raw' })
     expect(await stops(ui)).toEqual([])
     await ui.input({ key: 'sheet:ask', text: '' })

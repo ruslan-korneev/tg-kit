@@ -95,6 +95,8 @@ export type KeyFacts = {
   hasPair: boolean
   /** A message in the open chat has buttons. */
   hasButtons: boolean
+  /** Chips on the cursor message the digits press (the first nine), in a chat with presses (§4.6). */
+  cursorButtons: number
   isRecording: boolean
   isWatched: boolean
   isFollowed: boolean
@@ -120,6 +122,7 @@ export const NO_FACTS: KeyFacts = {
   isRangeOpen: false,
   hasPair: false,
   hasButtons: false,
+  cursorButtons: 0,
   isRecording: false,
   isWatched: false,
   isFollowed: false,
@@ -168,7 +171,9 @@ const WRITE: readonly ChatKind[] = ['bot', 'person', 'group', 'saved']
 export const CHAT_KIND_WRITE = WRITE
 const AGENT: readonly ChatKind[] = ['bot', 'person', 'group', 'channel']
 const WATCH: readonly ChatKind[] = ['bot', 'person', 'group', 'channel']
+/** Where digits press a message's buttons (§4.6 "1–9 press"): a bot, a group's bot messages, a channel's link buttons, BotFather's `ro`. */
 const BUTTONS: readonly ChatKind[] = ['bot', 'group', 'channel', 'botfather']
+export const CHAT_KIND_PRESS = BUTTONS
 
 const SUMMARY_LABEL: Record<KeyFacts['summary'], string> = { none: 'summary', loading: 'cancel summary', ok: 'hide summary', error: 'retry summary' }
 
@@ -239,6 +244,18 @@ export const KEYS = [
     kinds: BUTTONS,
     label: () => 'buttons',
     needs: c => (c.facts.hasButtons ? null : 'needs a message with buttons'),
+  },
+  // The cursor message's chips carry the digits (§5.2); BotFather's explain instead of pressing.
+  {
+    id: 'press',
+    key: '1-9',
+    hotkey: null,
+    group: 'message',
+    where: ['chat'],
+    kinds: BUTTONS,
+    label: c => (c.kind === 'botfather' ? 'press · ro' : 'press'),
+    needs: c => (c.facts.cursorButtons > 0 ? null : 'needs a message with buttons under the cursor'),
+    isDigits: true,
   },
   {
     id: 'agent',
@@ -386,7 +403,7 @@ export type KeyDef = Def & { id: KeyId }
 const TABLE: readonly KeyDef[] = KEYS
 
 /** The ids a press runs: every key but the digit groups, which their options draw. */
-export type RunKey = Exclude<KeyId, 'folder' | 'level' | 'topics' | 'intents' | 'target'>
+export type RunKey = Exclude<KeyId, 'folder' | 'level' | 'topics' | 'intents' | 'target' | 'press'>
 
 export function keyDef(id: KeyId): KeyDef {
   const def = TABLE.find(one => one.id === id)
@@ -427,7 +444,8 @@ export const MAX_BAR = 7
 
 /** §4.6 "the action bar, by context": the verbs after ⏎, in the order the owner reaches for them. */
 const KIND_BAR: Record<ChatKind, readonly KeyId[]> = {
-  bot: ['send', 'write', 'record', 'mark', 'diff', 'agent'],
+  // `1-2: press` follows ⏎ as text (the chips carry the digits); f comes before x, so x leaves first at 64 columns (§5.2).
+  bot: ['send', 'write', 'record', 'diff', 'mark'],
   person: ['send', 'write', 'agent', 'watch', 'mark'],
   group: ['send', 'summary', 'watch', 'agent', 'write'],
   channel: ['send', 'summary', 'watch', 'agent', 'mark'],
@@ -530,6 +548,18 @@ export function actionBar(c: KeyContext, width = Infinity): ShownKey[] {
         ? { ...shown(keyDef(id), c), isRinged: true as const, ...(step === 'ladder' ? {} : { button: `key:start:${step}` }) }
         : shown(keyDef(id), c),
   )
+}
+
+/**
+ * `1-2: press` after the bar's first key in a chat (§4.6 "a bot chat"): the
+ * cursor message's chips carry the digits, so the bar names them as text, as
+ * the Folders list does. Not while marking: the marked set's keys lead then.
+ */
+export function pressText(c: KeyContext): string | null {
+  const def = keyDef('press')
+  if (!isLive(def, c) || c.facts.marks > 0 || c.facts.isRangeOpen) return null
+  const count = c.facts.cursorButtons
+  return `${count === 1 ? '1' : `1-${count}`}: ${def.label(c)}`
 }
 
 /**
