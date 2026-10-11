@@ -5,7 +5,10 @@ and sends a selected message (or range, or whole dialog) to the current agent or
 as a **packet**: the full message record, not just its text.
 
 Status: phases 1–3 built on `feat/dialogs-pane`; phase 4 (`delegate`) built on `feat/mod-delegate`,
-with a second mod, `mods/dialogs-pane-guard`, that guards the Worker.
+with a second mod, `mods/dialogs-pane-guard`, that guards the Worker. The UX redesign
+([`dialogs-pane-ux.md`](dialogs-pane-ux.md), tasks T0–T10) then replaced how a person finds and drives
+all of it: the modes (§2), the design system and keymap (§4) and the lenses now live there, and the
+sections below point to it. The engines here (the packet, autopilot, delegate, the guard) stand.
 
 ## 1. What the engine gives us
 
@@ -16,60 +19,21 @@ with a second mod, `mods/dialogs-pane-guard`, that guards the Worker.
 | Send to current agent | `$.prompt.submit` (a visible user message) or `prompt.context` (pinned, re-sent each turn) |
 | Send to other agents | `$.agent.list()` → `$.session.send({ to: { agentId } })` |
 | Hidden mode | `$.ui.status(…)`, `AbovePrompt` band, `$.ui.toast(…)` |
-| Commands | `$.command.register({ name: 'tg' })` → `/tg`, `/tg send`, `/tg pin` |
+| Commands | `$.command.register({ name: 'tg', immediate: true })` → `/tg` opens, `/tg stop`, `/tg status`, `/tg help`, `/tg hide` |
 
-## 2. Modes
+## 2. Seats, not modes
 
-| Mode | Seat | When | Shows |
-| --- | --- | --- | --- |
-| **Wide** | `dock`, right of the transcript | terminal ≥110 cols, fullscreen | dialogs list + message thread + packet preview |
-| **Compact** | `inline`, above the prompt | narrow terminal, or chosen | one column: dialogs *or* thread, 8–12 rows |
-| **Hidden** | status line + one-row band | always available | unread count, watched-bot replies, last packet status |
+Replaced by [`dialogs-pane-ux.md`](dialogs-pane-ux.md) §4.1, §4.2 and decision 4: there is no mode
+to pick, and the layout follows where the engine seats the pane.
 
-`Tab` on the pane cycles Wide → Compact → Hidden. The mode is remembered in `$.store`.
+| Seat | When | Shows |
+| --- | --- | --- |
+| **Dock** | fullscreen, from 110 columns | the folder strip and chats on top, the open chat below, one action bar; a sheet or card takes the lower part |
+| **Inline** | the main screen | one view at a time (chats, a chat, a card), up to 12 rows |
+| **Hidden** | the pane closed (`q`, the engine's ✕, `/tg hide`) | the footer label (`tg 22 · ⟳1 · 2 for you`), the hint tail and the band above the prompt |
 
-### Wide
-
-```
-┌ transcript ─────────────────────────────┐┌ tg · dialogs ──────────────────── wide ┐
-│ > fix the /settings crash               ││ / search            lens: [All] Bots Unr│
-│                                         ││─────────────────────────────────────────│
-│ ● Reading src/handlers/settings.py      ││ ◆ @example_bot          2  14:02  ⌁ ⏱1.4s│
-│                                         ││ # dev-team              12  13:58        │
-│                                         ││ ★ Saved Messages            11:20        │
-│                                         ││ ◆ @BotFather   ro           yesterday    │
-│                                         │├ @example_bot ───────────────────────────┤
-│                                         ││  14:01  you   /settings                  │
-│                                         ││▸ 14:01  bot   ⚠ Something went wrong     │
-│                                         ││         [ Retry ] [ Back ]   #677791     │
-│                                         ││  14:02  bot   Main menu                  │
-│                                         ││         [ Settings ] [ Help ]            │
-│                                         │├ packet · 1 msg ─────────────────────────┤
-│                                         ││ #677791 · bot · 2 buttons · no media     │
-│                                         ││ → main  intent: [Fix]   redact: on       │
-│                                         ││ ⏎ send   a route   i intent   p pin      │
-└─────────────────────────────────────────┘└─────────────────────────────────────────┘
-```
-
-### Compact
-
-```
-┌ tg · @example_bot ──────────────────────────────────────────── compact ┐
-│  14:01  you   /settings                                                │
-│▸ 14:01  bot   ⚠ Something went wrong      [Retry] [Back]   #677791     │
-│  14:02  bot   Main menu                   [Settings] [Help]            │
-│ 1 selected → main · Fix      ⏎ send  a route  ← dialogs  Tab mode      │
-└────────────────────────────────────────────────────────────────────────┘
-> _
-```
-
-### Hidden
-
-```
-status line:  tg ● 3 unread · ◆ example_bot replied 1.4s · ✓ packet → tester
-band (only when something happened):
-  ◆ @example_bot: "⚠ Something went wrong"   ⏎ send to main   o open   x dismiss
-```
+`/tg wide` and `/tg compact` stay as aliases of `/tg`; `/tg hidden` of `/tg hide`. The mockups of
+both seats, the first open and every flow are in `dialogs-pane-ux.md` §5.
 
 ## 3. The packet
 
@@ -103,84 +67,24 @@ downloaded), reactions, views, latency (bot replies), a replay command.
 
 ## 4. Design system
 
-### Tokens (terminal palette names, so they follow the user's theme)
+Replaced by [`dialogs-pane-ux.md`](dialogs-pane-ux.md): tokens, glyphs, layout and states in §7, the
+keymap in §6 (and in the pane: `m`, `/tg help`), what each kind of chat offers in §4.6. In short:
 
-| Token | Value | Used for |
-| --- | --- | --- |
-| `accent` | cyan | pane title, focused row bar `▸`, route arrow `→` |
-| `bot` | magenta | `◆` bot glyph, bot sender label |
-| `unread` | bold + default fg | unread dialog name, count badge |
-| `muted` | dim | timestamps, ids, hints row |
-| `ok` | green | `✓` delivered / agent done |
-| `warn` | yellow | latency > 3 s, flood wait, read-only peer `ro` |
-| `danger` | red | `⚠` error replies, guard refusal |
-| `selected` | inverse | selected messages |
-
-### Glyphs
-
-`◆` bot · `#` group/channel · `★` Saved Messages · `●` unread · `▸` cursor · `⌁` pinned to an agent ·
-`⏱` latency · `✓` sent/done · `…` agent working · `ro` read-only peer (BotFather) · `⚠` error.
-
-### Components
-
-| Component | Rows | Content |
-| --- | --- | --- |
-| `LensBar` | 1 | search field + lens tabs (All / Bots / Unread / custom) |
-| `DialogRow` | 1 | glyph, name, unread badge, time, pin/latency marks |
-| `MessageCard` | 1–3 | time, sender, text (1 line, `→` expands), `ButtonRow`, id |
-| `ButtonRow` | 1 | `[ Label ]` chips; pressable when the peer is allowed |
-| `PacketTray` | 2–3 | what is selected, target, intent, redaction, hints |
-| `RoutePicker` | modal list | current agent, live agents with state, "new agent", "broadcast" |
-| `AgentChip` | inline | `name ·idle` / `name …busy` / `name ✓` |
-| `IntentChip` | inline | Fix · Reproduce · Explain · Test · Draft reply · Raw |
-| `LedgerRow` | 1 | packet → agent, intent, state, age |
-| `HintsRow` | 1 | keys valid right now, never more than five |
-
-### Keymap (pane focused)
-
-Every key is a one-letter (lowercase) or digit Button hotkey. The engine owns Tab, Esc, Space and
-`/` inside a focused pane, so they are not used.
-
-| Key | Action | Key | Action |
-| --- | --- | --- | --- |
-| `j` `k` / arrows | move | `a` | route picker |
-| `o` / `Enter` | open dialog | `i` | intent |
-| `x` | select message | `p` | pin dialog to an agent |
-| `v` | range select | `l` | packet ledger |
-| `d` | select the loaded thread | `b` | focus buttons; `⏎` presses |
-| `c` | clear selection | `n` | send box |
-| `h` | back / clear | `r` | record / stop |
-| `s` | search | `f` | diff two bot replies |
-| `m` | mode: wide → compact → hidden | `w` | watch dialog |
-| `1` `2` `3` | lenses; `4`–`9` saved lenses | `t` | summarize thread |
-| `g` | reload after an error | `y` | needs-you ranking |
-| `z` | lens editor | `q` | autopilot card |
-| `e` | edit a draft | `u` | undo an auto reply (30 s) |
-
-The Hidden band takes keys only after `ctrl+x tab` (engine limit); the band says so.
-
-### Route picker
-
-```
-┌ send 2 messages to ───────────────────────┐
-│▸ main (this session)          ·idle       │
-│  tester    subagent           …running    │
-│  reviewer  teammate           ·idle       │
-│  + new agent with this as its brief       │
-│  ⇉ broadcast with per-agent intent        │
-│ intent: [Fix] Reproduce Explain Test Raw  │
-└───────────────────────────────────────────┘
-```
-
-### States
-
-| State | Shows |
-| --- | --- |
-| not logged in | "Run `! tg login` in the prompt" — login stays a human action |
-| loading | dim `…` rows, no spinner noise |
-| flood wait | `warn` row: "Telegram asks to wait 23 s", auto-retry countdown |
-| BotFather | buttons drawn dim with `ro`; press or send → explains, runs nothing. Elsewhere the owner's own press, send and draft pass `--yes` ([dialogs-pane-ux.md](dialogs-pane-ux.md) §9, decision 9) |
-| empty lens | one line: what the lens filters, and how to change it |
+- One letter means one thing in every view and in the band; digits pick what is numbered on
+  screen (a folder, a button of the message under the cursor, an intent, a level); ⏎ is the
+  cursor row's action; `h` goes back; `m` is the menu; `0` stops everything.
+- Every view binds a–z and 0–9, so no key falls through to the prompt; a key with nothing to do
+  here says where it works.
+- The components, by file: the frame (`ui/frame.tsx`: header, folder strip, action bar, menu,
+  start block, notice row), chat and message rows (`ui/components.tsx`, `ui/thread.ts`), the
+  Folders list and For you (`folders/components.tsx`), the send sheet (`routing/components.tsx`),
+  chips, the diff and the recording sheet (`bottest/ui.tsx`), the agent card
+  (`autopilot/components.tsx`, `delegate/components.tsx`), the running strip and Activity
+  (`ui/activity.tsx`), the band (`ui/band.tsx`).
+- States (§7.4): loading rows and `…` in the header, an empty folder in one sentence, a red error
+  line with `g: retry`, a flood wait counting down, not logged in (`! tg login` is the owner's to
+  type), `tg` missing, BotFather `ro`, a refused write's reason, the guard missing, and whose the
+  keys are.
 
 ## 5. Twenty ideas
 
@@ -190,21 +94,25 @@ The Hidden band takes keys only after `ctrl+x tab` (engine limit); the band says
    the agent can reproduce without asking.
 2. **Reply-chain auto-expand.** Selecting a message pulls its `reply_to` parents even outside the
    visible range, so the agent never gets a reply without its question.
-3. **Intent chips.** Fix / Reproduce / Explain / Test / Draft reply set the instruction under the
-   packet; one key instead of typing the same prompt again.
-4. **Live pin (`p`).** Pin a dialog to an agent: new messages arrive in that agent's context each
-   turn through `prompt.context`. Unpin to stop. `⌁` marks pinned dialogs.
-5. **Redaction lens.** Phones, usernames and ids become placeholders before send; the tray shows
-   exactly what the agent will see. On by default.
+3. **Intents.** The instruction under the packet, one digit in the send sheet instead of typing the
+   same prompt again. They follow the message's sender (UX §4.6): Fix, Reproduce, Explain, Test for
+   a bot; Do it, Explain, Draft reply for a person.
+4. **Follow (`p`, the card's level 1).** New messages of a chat arrive in an agent's context each
+   turn through `prompt.context`. `p` again stops it. `⌁` marks the chat (UX decision 2: one level
+   per chat).
+5. **Redaction.** Phones, usernames and ids become placeholders before send; the send sheet's `i`
+   shows exactly what the agent will see. On by default.
 
 ### B. Bot testing
 
-6. **Pressable buttons.** Inline keyboards render as chips; `b` + `⏎` runs `tg press` and the
-   edited message appears in place.
-7. **Recorder → test.** `r` records send / wait / press steps from the pane, then hands them to an
-   agent as "turn this into a live test" or exports a shell script of `tg` calls.
-8. **Reply diff.** Select two bot replies (before/after a deploy): text diff plus keyboard-shape
-   diff (rows, labels, callback data).
+6. **Pressable buttons.** Inline keyboards render as chips; a digit presses the chips of the
+   message under the cursor (`tg press … --yes`, the owner's own write) and the edited message
+   appears in place. `b` rings the chips past the ninth.
+7. **Recorder → test.** `r … r` records send / wait / press steps in a bot chat into a shell
+   script of `tg` calls; the sheet that follows hands it to an agent as a live test (`1`) or copies
+   its path (`2`).
+8. **Reply diff (`f`).** The reply under the cursor against the last reply to the same message, or
+   two marked replies: text diff plus keyboard-shape diff (rows, labels, callback data).
 9. **Trace to code.** Send an error reply with intent Fix: the packet adds a hint to grep the repo
    for the reply's text, so the agent lands on the handler that produced it.
 10. **Latency stamps.** `⏱` on each bot reply; slow replies turn `warn`; the packet carries the
@@ -214,26 +122,26 @@ The Hidden band takes keys only after `ctrl+x tab` (engine limit); the band says
 
 11. **Watched bots in hidden mode.** The status line reports a watched bot's reply as it arrives;
     the band offers "send to main" in one key.
-12. **Lenses as tabs.** Saved filters (Bots, Unread, `--query`, a set of dialogs) become tabs in
-    `LensBar`; stored in `$.store`.
-13. **Summarize on demand (`s`).** A small model summarizes a long thread into the pane, so you
+12. **Telegram folders.** Replaced the lenses (UX §4.7, decision 5): the owner's folders in
+    Telegram's order, then the pane's For you and Bots; `1`–`9` and `h` reach them.
+13. **Summarize on demand (`t`).** A small model summarizes a long thread into the pane, so you
     decide what to send without reading 200 messages.
-14. **Needs-you ranking.** Unread dialogs ranked by whether they ask you something, mention you, or
-    are just noise; noise sinks.
+14. **Needs-you ranking.** For you (`y`): people ranked by whether they ask you something, mention
+    you, or are just noise; noise sinks.
 15. **Dry-run before any write.** Any write from the pane shows the `WritePlan` first (same object
     `--dry-run` prints) and goes through `authorize`; no new write path.
 
 ### D. Multi-agent
 
-16. **Agent radar in the route picker.** Live agents with state (idle / running / done) from
+16. **Agent radar in the send sheet's targets (`a`).** Live agents with state (idle / running / done) from
     `$.agent.list()`, so you pick a free one.
 17. **New agent from a packet.** "+ new agent" spawns an agent whose brief is the packet + intent.
 18. **Broadcast with split intents.** One packet to several agents: one reproduces, one writes the
     test, one drafts the user-facing reply.
-19. **Packet ledger.** A list of what went to whom, with state (`…` / `✓`) and age; `⏎` jumps to
-    the message in the pane.
-20. **Close the loop.** An agent's result can go back as a reply to the source message, drafted
-    into the tray, sent only after you press `⏎` and the guard allows the peer.
+19. **Activity (`l`).** What runs, and a log of what went to whom, with state (`…` / `✓`) and age,
+    merged with the autopilot ledger and the guard's stops.
+20. **Close the loop.** An agent's result can go back as a reply to the source message: a draft row
+    of its chat, sent only when you press `⏎` on it with its whole text on screen.
 
 ## 6. Autopilot: a dialog handed to an agent
 
@@ -244,7 +152,7 @@ Idea 21. You pick one or more dialogs and hand them to an agent. The agent liste
 
 | Question | Decision |
 | --- | --- |
-| Autonomy | Set per dialog: `listen`, `draft` (default), `auto` or `delegate`. An unsure reply always comes to you |
+| Autonomy | Set per dialog on the card's ladder: `follow`, `summarize` (`listen` in the code), `draft`, `auto` or `delegate`, only the ones that fit the kind of chat (UX §4.6). An unsure reply always comes to you |
 | Where it runs | Inside the Claude Code session. It stops when the session closes; no daemon |
 | Marking agent replies | Never: replies go out as plain messages from your account |
 | Packet delivery to the current agent | A visible user message: `$.prompt.submit` with the full packet. `session.append` rows are stored as meta and are not drawn |
@@ -253,16 +161,17 @@ Idea 21. You pick one or more dialogs and hand them to an agent. The agent liste
 
 | Level | Glyph | The agent… |
 | --- | --- | --- |
-| `listen` | `◉` | reads new messages and summarizes them in the band; never writes |
-| `draft` | `✎` | writes a reply into the tray; you send it with `⏎`, edit it with `e` or drop it with `x` |
+| `follow` | `⌁` | sends new messages into an agent's context each turn (idea 4); never writes |
+| `summarize` | `◉` | reads new messages and summarizes them in the band; never writes |
+| `draft` | `✎` | writes a reply as a row of its chat (and in For you and the band); you send it with `⏎`, edit it with `e` or drop it with `d` |
 | `auto` | `⟳` | sends by itself within the limits; anything outside them falls back to `draft` |
-| `delegate` | `⚡` | takes the conversation **and the work** in it: opens links, reads docs, works in a repo, and decides itself when to ask you, except for the hard stops |
+| `delegate` | `↯` | takes the conversation **and the work** in it: opens links, reads docs, works in a repo, and decides itself when to ask you, except for the hard stops. Person chats only (UX decision 8) |
 
 ### Limits for `auto` and `delegate` (per dialog)
 
 | Limit | Default | Range |
 | --- | --- | --- |
-| Replies per hour | 50 | 1 … ∞ (∞ = no limit); `+` / `-` on the dialog, or type a number in the card |
+| Replies per hour | 50 | 1 … ∞ (∞ = no limit); the card's options (`o`) |
 | One reply per burst | on | burst = messages less than 20 s apart; the gap is adjustable |
 | Escalation topics | money · dates · promises · new opinions · personal data | toggled one by one |
 | Confidence threshold | 0.8 | 0 … 1 |
@@ -373,13 +282,13 @@ Even when stops are off:
 
 **Prompt injection in `delegate`.** In this mode, whoever writes in the dialog can steer an agent
 that has tools. The grant limits how much damage that can do, and the hard stops limit what cannot
-be undone. Offer `delegate` only for dialogs you trust (work contacts, not public groups), and
-show the warning in the card once.
+be undone. The card offers `delegate` only in person chats (UX decision 8: in a group every member
+could steer it), and shows the warning before the grant.
 
 **Task card (in the pane while a task is running):**
 
 ```
-┌ ⚡ Contact B · add payment provider ─────────── 42 min ┐
+┌ ↯ Contact B · add payment provider ─────────── 42 min ┐
 │ ✓ read docs (3 pages)                                │
 │ ✓ worktree tg-pay · branch feat/payments             │
 │ … implementing webhook handler                       │
@@ -390,16 +299,18 @@ show the warning in the card once.
 
 ### Safety model
 
-- **Writes go through the guard.** An autopilot dialog must be in `allow.toml`, and each reply is
-  a `WritePlan` → `authorize` like any other write. Handing a dialog to the agent offers
-  `tg allow add` for it.
+- **Writes go through the guard.** A dialog on `auto` or `delegate` must be in `allow.toml`, and each
+  reply is a `WritePlan` → `authorize` like any other write. The card's ⏎ asks in the engine's
+  dialog, No first, naming `tg allow add PEER --yes`, runs it only on the owner's Yes, and says the
+  add is kept (UX decision 1). The owner's own writes (`n`, a draft read whole, a press) pass
+  `--yes` (decision 9).
 - **Restricted agent for `auto`.** Autopilot runs on its own subagent type. Its only tools are
   `reply`, `draft`, `escalate` and `read_history`: no Bash, no files, no web. Chat content can tell
   the agent to do something, but the agent has nothing to do it with. Only the `delegate` Worker
   gets more tools, and only the ones granted.
 - **Brief per dialog.** Tone, what the agent may and may not promise, and facts about you it may
   use. It is stored in `$.store` and shown in the setup card.
-- **Kill switch.** `/tg stop` (or `/tg autopilot off`), or "stop all" in the pane (`0`), stops
+- **Kill switch.** `/tg stop` (or `/tg autopilot off`), or `0` in the pane, stops
   every dialog and every Worker at once (TaskStop). `/tg` is registered `immediate`, so it runs
   while main is mid-turn. Stopping a dialog, the task card's "stop" and the grant's deadline
   stop its Worker. Closing the session stops them too.
@@ -442,43 +353,36 @@ A new `tg watch PEER… --jsonl` command streams new and edited messages in the 
 
 ### Mockups
 
-Dialog list with levels:
+As built, from the live run on the fake `tg` (dock, 64 columns; BotFather's row from the Bots
+folder). A chat row's level column holds the agent's glyph (`⌁` a follow, `✎` draft, `⟳` auto, `↯`
+delegate), the watch column `◎` or `ro`; the running strip under the header says what runs:
 
 ```
-│ ◆ @example_bot          2  14:02  ⌁       │
-│ ⟳ # dev-team            ·  13:58  auto 3/50│
-│ ⚡ • Contact B           ·  14:10  delegate │
-│ ✎ • Contact A           1  13:40  draft    │
-│ ◉ # announcements      14  12:00  listen   │
+│tg › chats                                        ⌁1 ⟳1   ● keys
+│⟳ Dev Team · ⌁ @example_bot → main                   0: stop all
+│1: Personal 1  2: ‹Work 12›  3: All chats 3  +15       s: search
+│▸ ⌁ ◆ @example_bot                                   2 yesterday
+│  ⟳ # Dev Team                        auto 0/50      5 yesterday
+│    • Contact A                                      1 yesterday
+│    ◆ @BotFather                                ro         10-08
 ```
 
-Handing a dialog over (`A` on a dialog):
+The card (`a` on a person chat), the ladder with every rung that fits:
 
 ```
-┌ autopilot · Contact A ────────────────────────────┐
-│ level:   listen  [draft]  auto  delegate          │
-│ brief:   short, friendly; never agree to meetings │
-│          without asking me; I'm busy until 18:00  │
-│ limits:  50/h (+/-) · 1 per burst · conf ≥ 0.8    │
-│ quiet:   off                                      │
-│ escalate: money · dates · promises · personal data│
-│ allow:   ✓ in allow.toml                          │
-│ ⏎ start   e edit brief   Esc cancel               │
-└───────────────────────────────────────────────────┘
+│─ what may an agent do in Contact A? ───────────────────────────
+│  1: ⌁ follow     new messages go to main's context
+│  2: ◉ summarize  a summary above your prompt; never writes
+│▸ 3: ✎ draft      drafts each reply; you send it
+│  4: ⟳ auto       needs allow.toml · replies alone within limit…
+│  5: ↯ delegate   needs allow.toml · replies and does the work
+│brief  none yet · e: write one (tone, promises, facts)
+│asks   money · dates · promises · new opinions · personal data
+│writes ✓ you send each draft yourself: no allow.toml needed
+│⏎ start draft  o: limits…  e: brief  h: back  m: menu
 ```
 
-A draft waiting for you (band, in any mode):
-
-```
-✎ Contact A: "Can we call tomorrow at 10?"  → draft: "Tomorrow is packed, can I write after 18?"
-  escalated: dates · conf 0.62     ⏎ send   e edit   x drop   o open
-```
-
-An auto reply that just went out (status line):
-
-```
-tg ⟳ dev-team replied "Merged, thanks" · conf 0.93 · u undo 28s
-```
+Drafts, the band, the footer label and Activity: `dialogs-pane-ux.md` §5.3–§5.7.
 
 ## 7. Open questions
 
@@ -487,7 +391,8 @@ tg ⟳ dev-team replied "Merged, thanks" · conf 0.93 · u undo 28s
 ## 8. Build plan
 
 The mod lives in this repo, at `mods/dialogs-pane/`. It is a TypeScript Claude Code mod and reads
-Telegram only through the `tg` CLI.
+Telegram only through the `tg` CLI. The phases below built the engines; the UX redesign's tasks
+(T0a–T10) are in `dialogs-pane-ux.md` §8.
 
 | Phase | Task (session) | Depends on | Scope |
 | --- | --- | --- | --- |
