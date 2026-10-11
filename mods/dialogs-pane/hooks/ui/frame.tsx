@@ -137,7 +137,7 @@ function BarKey({ Button, Text }: Els, key: ShownKey, isFocused: boolean, onKey:
   if (key.hotkey === null) {
     // `⏎ open` has a hidden twin on o, keyed key:open: this one is the click's.
     return (
-      <Button key={key.id === 'open' ? 'key:open:enter' : `key:${key.id}`} plain dimColor={!isFocused} onPress={press}>
+      <Button key={key.button ?? (key.id === 'open' ? 'key:open:enter' : `key:${key.id}`)} plain autoFocus={key.isRinged} dimColor={!isFocused} onPress={press}>
         {`⏎ ${key.label}`}
       </Button>
     )

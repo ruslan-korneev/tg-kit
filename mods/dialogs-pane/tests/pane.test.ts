@@ -70,7 +70,15 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
     return { value: undefined }
   })
   // `tg folders`: the chats `tg dialogs` answers, as one All chats folder (an account without folders).
-  on('process.run', (_$, e) => ({ value: e.argv[1] === 'folders' ? folderRun(e.argv, tg(['tg', 'dialogs', '--limit', '50', '--json'])) : tg(e.argv) }))
+  // git: the session's directory is no repo, so delegate's grant starts with no repos.
+  on('process.run', (_$, e) =>
+    e.argv[0] === 'git'
+      ? { value: failure(128, 'fatal: not a git repository') }
+      : { value: e.argv[1] === 'folders' ? folderRun(e.argv, tg(['tg', 'dialogs', '--limit', '50', '--json'])) : tg(e.argv) },
+  )
+  on('session.cwd', () => ({ value: '/tmp' }))
+  // Starting an agent takes the chat's lease, named by the session (delegate's lease, at every rung).
+  on('session.id', () => ({ value: 'session-a' }))
   on('command.register', (_$, e) => {
     seen.registered.push(e)
     return { value: { command: e.name } }
@@ -326,6 +334,133 @@ describe('keys', () => {
   })
 })
 
+describe('the agent card (§5.4, §4.6, decisions 2 and 8)', () => {
+  /** The rungs the card draws, by their keys. */
+  async function rungs(ui: Ui): Promise<string[]> {
+    return (await ui.findAll({ type: 'Button' })).flatMap(one => (String(one.props.key ?? '').startsWith('ap:level:') ? [String(one.props.key).slice('ap:level:'.length)] : []))
+  }
+
+  test('a person lists five rungs, a group four, a bot and a channel two, each on its own digit; Saved Messages and BotFather have no card', async ($, on) => {
+    const { ui } = await openPane($, on)
+    const LADDERS: [number, string[]][] = [
+      [1004, ['follow', 'listen', 'draft', 'auto', 'delegate']],
+      [1002, ['follow', 'listen', 'draft', 'auto']],
+      [1001, ['follow', 'listen']],
+      [1005, ['follow', 'listen']],
+    ]
+    for (const [id, ladder] of LADDERS) {
+      await openChat(ui, id)
+      await ui.press({ key: 'key:agent' })
+      expect(await rungs(ui)).toEqual(ladder)
+      // The digits keep their rungs: 2 is summarize everywhere.
+      expect((await ui.find({ key: 'ap:level:listen' }))?.props.hotkey).toBe('2')
+      if (ladder.includes('delegate')) expect((await ui.find({ key: 'ap:level:delegate' }))?.props.hotkey).toBe('5')
+      await ui.press({ key: 'key:back' })
+      await ui.press({ key: 'key:back' })
+    }
+    for (const id of [1003, 1006]) {
+      await openChat(ui, id)
+      expect(await ui.find({ key: 'key:agent' })).toBeUndefined()
+      expect((await allHotkeys(ui)).filter(key => key === 'a')).toHaveLength(1)
+      await ui.press({ key: 'stray:a' })
+      expect(await ui.find({ key: 'ap:card' })).toBeUndefined()
+      await ui.press({ key: 'key:back' })
+    }
+    await ui.unmount()
+  })
+
+  test('a channel: follow and summarize only, summarize picked, and the card says why nothing writes', async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1005)
+    await ui.press({ key: 'key:agent' })
+    expect((await ui.find({ key: 'ap:rung:listen' }))?.text).toMatch(/^▸ ◉ summarize/)
+    expect((await ui.find({ key: 'ap:level:follow' }))?.text).toContain("new posts go to main's context")
+    expect(await ui.find({ type: 'Text', text: 'a channel: nobody answers in it, so nothing writes here' })).toBeDefined()
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ start summarize')
+    await ui.unmount()
+  })
+
+  test('a ⏎ starts draft, outside allow.toml too (2 keys); the card closes and ✎1 counts it; on its card ⏎ stops it', async ($, on) => {
+    const { ui, seen } = await openPane($, on)
+    await openChat(ui, 1004)
+    await ui.press({ key: 'key:agent' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › agent for Contact A')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('○ off')
+    expect((await ui.find({ key: 'ap:rung:draft' }))?.text).toMatch(/^▸ ✎ draft/)
+    expect(await ui.find({ type: 'Text', text: '✓ you send each draft yourself: no allow.toml needed' })).toBeDefined()
+    expect(await barKeys(ui)).toEqual(['start', 'open', 'edit', 'back', 'menu'])
+    await ui.press({ key: 'key:start' })
+    expect(await ui.find({ key: 'ap:card' })).toBeUndefined()
+    expect((await ui.find({ key: 'header' }))?.text).toContain('✎1')
+    expect(seen.toasts.at(-1)).toBe('tg: ✎ draft on for Contact A. 0 or /tg stop stops every chat.')
+    await ui.press({ key: 'key:agent' })
+    expect((await ui.find({ key: 'ap:level:draft' }))?.text).toContain('● on')
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ stop draft')
+    await ui.press({ key: 'key:start' })
+    expect((await ui.find({ key: 'header' }))?.text).not.toContain('✎1')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('○ off')
+    await ui.unmount()
+  })
+
+  test('one rung per chat: a 1 ⏎ follows; a 3 ⏎ switches to draft and the follow stops; p then says what runs and follows nothing', async ($, on) => {
+    on('prompt.context', (_$, e) => ({ blocks: e.blocks }))
+    on('ui.invalidate', () => ({ value: undefined }))
+    const { ui, seen } = await openPane($, on)
+    await openChat(ui, 1004)
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'ap:level:follow' })
+    expect(await ui.find({ type: 'Text', text: /^main, every turn/ })).toBeDefined()
+    await ui.press({ key: 'key:start' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('⌁1')
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'ap:level:draft' })
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ switch to draft')
+    await ui.press({ key: 'key:start' })
+    expect(seen.toasts.at(-1)).toBe('tg: ✎ draft on for Contact A (follow off). 0 or /tg stop stops every chat.')
+    const header = (await ui.find({ key: 'header' }))?.text ?? ''
+    expect(header).toContain('✎1')
+    expect(header).not.toContain('⌁1')
+    await ui.press({ key: 'key:follow' })
+    expect(await ui.find({ type: 'Text', text: /^p: Contact A runs ✎ draft · a: its card switches to follow/ })).toBeDefined()
+    expect((await ui.find({ key: 'header' }))?.text).not.toContain('⌁1')
+    await ui.unmount()
+  })
+
+  test('o: limits and quiet hours as Selects, topics on digits, the brief as fields; e rings the brief; h goes back to the ladder', async ($, on) => {
+    const { ui, seen } = await openPane($, on)
+    await openChat(ui, 1004)
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'key:open' })
+    expect((await ui.find({ key: 'header' }))?.text).toContain('tg › agent for Contact A · options')
+    expect((await ui.find({ key: 'ap:rate' }))?.props.value).toBe('50')
+    await ui.select({ key: 'ap:rate', value: '10' })
+    await ui.select({ key: 'ap:gap', value: '30' })
+    await ui.select({ key: 'ap:conf', value: '0.90' })
+    await ui.select({ key: 'ap:quiet', value: '22:00-08:00' })
+    expect((await ui.find({ key: 'ap:topic:dates' }))?.props.hotkey).toBe('2')
+    await ui.press({ key: 'ap:topic:dates' })
+    await ui.input({ key: 'ap:tone', text: 'short, friendly' })
+    expect(seen.store.get('autopilot.dialogs')).toMatchObject({ '1004': { perHour: 10, gapS: 30, threshold: 0.9, quiet: { from: 22 * 60, to: 8 * 60 }, topics: ['money', 'promises', 'opinions', 'personal'], brief: { tone: 'short, friendly' } } })
+    // A person's chat has delegate, so its options end in the danger zone.
+    expect(await ui.find({ key: 'dg:danger' })).toBeDefined()
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'ap:card' })).toBeDefined()
+    await ui.press({ key: 'ap:level:auto' })
+    expect(await ui.find({ type: 'Text', text: '10/h · one per burst · gap 30 s · conf ≥ 0.90 · quiet 22:00–08:00   o: change' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a group has no danger zone, as it has no delegate', async ($, on) => {
+    const { ui } = await openPane($, on)
+    await openChat(ui, 1002)
+    await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'key:open' })
+    expect(await ui.find({ key: 'ap:options' })).toBeDefined()
+    expect(await ui.find({ key: 'dg:danger' })).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
 describe('one meaning per key, and only where it works (§4.6)', () => {
   const owners = hotkeyTable()
 
@@ -360,8 +495,22 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
         { name: `sheet menu ${seat}`, props, steps: ['dialog:1004', 'msg:92', 'key:menu'] },
       ]
     }),
-    { name: 'card', props: DOCK, steps: ['dialog:1004', 'key:agent'] },
-    { name: 'card menu', props: DOCK, steps: ['dialog:1004', 'key:agent', 'key:menu'] },
+    // The agent card (T3): the ladder for every kind that has one, its options, delegate's warning and grant, and their menus.
+    ...[DOCK, INLINE].flatMap(props => {
+      const seat = props === DOCK ? 'dock' : 'inline'
+      return [
+        ...[1001, 1002, 1004, 1005].map(id => ({ name: `card ${id} ${seat}`, props, steps: [`dialog:${id}`, 'key:agent'] })),
+        { name: `card menu ${seat}`, props, steps: ['dialog:1004', 'key:agent', 'key:menu'] },
+        { name: `card options ${seat}`, props, steps: ['dialog:1004', 'key:agent', 'key:open'] },
+        { name: `card options menu ${seat}`, props, steps: ['dialog:1004', 'key:agent', 'key:open', 'key:menu'] },
+        { name: `card options, a bot ${seat}`, props, steps: ['dialog:1001', 'key:agent', 'key:open'] },
+        { name: `card warning ${seat}`, props, steps: ['dialog:1004', 'key:agent', 'ap:level:delegate'] },
+        { name: `card warning menu ${seat}`, props, steps: ['dialog:1004', 'key:agent', 'ap:level:delegate', 'key:menu'] },
+        { name: `card grant ${seat}`, props, steps: ['dialog:1004', 'key:agent', 'ap:level:delegate', 'key:start:warning'] },
+        { name: `card grant menu ${seat}`, props, steps: ['dialog:1004', 'key:agent', 'ap:level:delegate', 'key:start:warning', 'key:menu'] },
+        { name: `card from Chats ${seat}`, props, steps: ['key:down', 'key:agent'] },
+      ]
+    }),
     { name: 'activity', props: INLINE, steps: ['key:activity'] },
     // Something runs (T4): the dock's strip says 0 and the bar does not; inline the bar does.
     ...[DOCK, INLINE].flatMap(props => {
@@ -413,6 +562,30 @@ describe('one meaning per key, and only where it works (§4.6)', () => {
       expect(every.filter((key, index) => every.indexOf(key) !== index)).toEqual([])
       expect([...every].sort()).toEqual([...STRAY_KEYS].sort())
       expect((await barKeys(ui)).length).toBeLessThanOrEqual(7)
+      await ui.unmount()
+    })
+  }
+
+  // A draft's row (§8 T3): the cursor on it, and its field open, in both seats; its keys are ⏎ e d a.
+  for (const props of [DOCK, INLINE]) {
+    test(`a draft's row and its field, ${props.placement}: each of a–z and 0–9 has exactly one Button; the bar is the draft's`, async ($, on) => {
+      const write = autopilotWriter(on)
+      const { ui } = await openPane($, on, props)
+      await fillBand($, write)
+      await openChat(ui, 1004)
+      await ui.press({ key: 'key:down' })
+      expect((await ui.find({ key: 'draft:ap:1' }))?.props.autoFocus).toBe(true)
+      // fillBand's undo window is open: u joins, as everywhere while it is (§4.6).
+      expect(await barKeys(ui)).toEqual(['senddraft', 'edit', 'dismiss', 'agent', ...(props === INLINE ? ['back'] : []), 'undo', 'menu'])
+      for (const step of ['row', 'field'] as const) {
+        if (step === 'field') await ui.press({ key: 'key:edit' })
+        const drawn = await hotkeys(ui)
+        for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
+        const every = await allHotkeys(ui)
+        expect(every.filter((key, index) => every.indexOf(key) !== index)).toEqual([])
+        expect([...every].sort()).toEqual([...STRAY_KEYS].sort())
+      }
+      expect(await ui.find({ key: 'draft:ap:1:text' })).toBeDefined()
       await ui.unmount()
     })
   }
@@ -700,7 +873,19 @@ function autopilotWriter(on: On) {
 async function fillBand($: Engine, write: ReturnType<typeof autopilotWriter>): Promise<void> {
   const contact: PeerRef = { id: 1004, arg: '1004', label: 'Contact A', kind: 'user' }
   const group: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
-  const draft = (seq: number, peer: PeerRef, text: string): ApDraft => ({ seq, peer, incoming: 'Can we call tomorrow at 10?', text, confidence: 0.62, reasons: ['dates'], state: { kind: 'ready' } })
+  // As the autopilot lands them: after the newest message of their chat, the guard's verdict in.
+  const draft = (seq: number, peer: PeerRef, text: string): ApDraft => ({
+    seq,
+    peer,
+    incoming: 'Can we call tomorrow at 10?',
+    text,
+    confidence: 0.62,
+    reasons: ['dates'],
+    state: { kind: 'ready' },
+    check: { kind: 'planned', isAllowed: true, reason: 'confirmed with --yes' },
+    at: seq,
+    after: 10_000_000,
+  })
   const now = Date.parse('2026-10-10T12:00:00Z')
   await write($, value => ({
     ...value,
@@ -807,7 +992,7 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
 
   for (const seat of SEATS) {
     const inline = seat.props.placement === 'inline'
-    test(`${seat.name}, the cursor on the newest of 40 messages: x, n (send, empty), s, t, a draft; nothing above the cursor moves`, async ($, on) => {
+    test(`${seat.name}, the cursor on the newest of 40 messages: x, n (send, empty), s, t, a draft landing; nothing above the cursor moves`, async ($, on) => {
       const { ui, clock } = await openStable($, on, seat.props)
       await openChat(ui, 1004)
       const base = await place(ui)
@@ -853,21 +1038,66 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       await ui.press({ key: 'key:back' })
       expect(await ui.find({ key: 'summary' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
-      // A drafted reply lands: it waits behind its notice; e opens it as a layer, h closes it and it waits on.
+      // A drafted reply lands (§8 T3): a row of the thread after its newest message, below the cursor, so
+      // nothing above it moves; no notice, no layer. The band has it while the thread's window does not hold it.
       await landDraft($, ui)
-      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      expect(await ui.find({ key: 'notice' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
+      // j onto it: the window scrolls at its edge to hold the draft whole; e opens its field in its place, the
+      // field's ⏎ keeps the text, and the cursor and the rows above stay where j put them.
+      await ui.press({ key: 'key:down' })
+      const onDraft = await place(ui)
+      expect((await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true)?.key).toBe('draft:reply')
+      expect(await ui.find({ type: 'Text', text: 'Sure, 10 works.' })).toBeDefined()
       await ui.press({ key: 'key:edit' })
-      expect((await ui.find({ key: 'draft' }))?.text).toContain('reply to #700040 in Contact A')
-      await expectStatic(ui, inline)
+      expect(await ui.find({ key: 'draft:reply:text' })).toBeDefined()
+      await ui.input({ key: 'draft:reply:text', text: 'Sure, 10 works for me.' })
+      expect(await ui.find({ key: 'draft:reply:text' })).toBeUndefined()
+      expect(await place(ui)).toEqual(onDraft)
+      // d drops it: the cursor goes back to the newest message, the window keeps its first row.
+      await ui.press({ key: 'key:dismiss' })
+      expect((await ui.findAll({ type: 'Button' })).find(one => one.props.autoFocus === true)?.key).toBe('msg:700040')
+      expect((await place(ui)).message).toBe(onDraft.message)
+      await ui.unmount()
+    })
+
+    test(`${seat.name}, the cursor on the newest of 40 messages: the card and each of its steps open and close over the same stops (T3)`, async ($, on) => {
+      const { ui } = await openStable($, on, seat.props)
+      await openChat(ui, 1004)
+      const base = await place(ui)
+      const list = await rows(ui, 'dialog:')
+      await ui.press({ key: 'key:agent' })
+      // The card is a layer: the dock's list above it keeps its rows, and a digit changes no stop above the bar's ⏎.
+      expect(await rows(ui, 'dialog:')).toEqual(inline ? [] : list)
+      const enter = await stopsBefore(ui, 'key:start')
+      for (const rung of ['follow', 'listen', 'draft', 'auto']) {
+        await ui.press({ key: `ap:level:${rung}` })
+        expect(await stopsBefore(ui, 'key:start')).toBe(enter)
+      }
+      await ui.press({ key: 'key:open' })
+      expect(await ui.find({ key: 'ap:rate' })).toBeDefined()
+      expect(await ui.find({ key: 'key:start' })).toBeUndefined()
+      // The ring starts on `⏎ done`, a Button: on a Select no letter is a hotkey, so h would not work there.
+      expect((await ui.find({ key: 'key:start:options' }))?.props.autoFocus).toBe(true)
+      expect((await ui.findAll({ type: 'Select' })).filter(one => one.props.autoFocus === true)).toEqual([])
       await ui.press({ key: 'key:back' })
-      expect(await ui.find({ key: 'draft' })).toBeUndefined()
-      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      expect(await stopsBefore(ui, 'key:start')).toBe(enter)
+      // delegate's steps key their ⏎ by step, so the ring waits for each step's own drawing.
+      await ui.press({ key: 'ap:level:delegate' })
+      expect(await ui.find({ key: 'key:start:warning' })).toBeDefined()
+      expect(await ui.find({ key: 'key:start' })).toBeUndefined()
+      await ui.press({ key: 'key:start:warning' })
+      expect(await ui.find({ key: 'key:start:grant' })).toBeDefined()
+      await ui.press({ key: 'key:back' })
+      expect(await stopsBefore(ui, 'key:start')).toBe(enter)
+      expect(await rows(ui, 'dialog:')).toEqual(inline ? [] : list)
+      await ui.press({ key: 'key:back' })
+      expect(await ui.find({ key: 'ap:card' })).toBeUndefined()
       expect(await place(ui)).toEqual(base)
       await ui.unmount()
     })
 
-    test(`${seat.name}, the cursor mid-way down 60 chats: s, a notice, a draft landing, e and h; nothing above the cursor moves`, async ($, on) => {
+    test(`${seat.name}, the cursor mid-way down 60 chats: s, a notice, a draft landing; nothing above the cursor moves`, async ($, on) => {
       const { ui } = await openStable($, on, seat.props)
       await openChat(ui, 1004)
       await ui.press({ key: 'key:follow' })
@@ -875,10 +1105,10 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
         await ui.press({ key: 'key:back' })
         for (let i = 0; i < 5; i++) await ui.press({ key: 'key:down' })
       })
-      // The draft landed while the cursor was in Chats: compare from there on.
+      // The draft landed while the cursor was in Chats: a row of its chat, no notice; compare from there on.
       const base = await place(ui)
       expect(base.key).toMatch(/^dialog:/)
-      expect((await ui.find({ key: 'notice' }))?.text).toBe('✎ draft for Contact A waits · e: open')
+      expect(await ui.find({ key: 'notice' })).toBeUndefined()
       await ui.press({ key: 'key:search' })
       await expectStatic(ui, true)
       await ui.input({ key: 'search', text: '' })
@@ -887,9 +1117,8 @@ describe('rows that come and go keep the windows still (§4.3 rule 1, T4b)', () 
       await $.command.run(runTg('stop'))
       expect((await ui.find({ key: 'notice' }))?.text).toBe('■ stopped: Contact A')
       expect(await place(ui)).toEqual(base)
-      await ui.press({ key: 'key:edit' })
-      expect(await ui.find({ key: 'draft' })).toBeDefined()
-      await ui.press({ key: 'key:back' })
+      // e means nothing in Chats now: it says where it works and keeps the keys in the pane.
+      await ui.press({ key: 'stray:e' })
       expect(await place(ui)).toEqual(base)
       await ui.unmount()
     })
@@ -966,6 +1195,20 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
     await ui.unmount()
   })
 
+  test("a draft whose row the open thread's window holds leaves the band; the other chat's stays (§8 T3)", async ($, on) => {
+    engineSites(on)
+    const write = autopilotWriter(on)
+    const { ui } = await openPane($, on)
+    await fillBand($, write)
+    await openChat(ui, 1004)
+    expect(await ui.find({ key: 'draft:ap:1' })).toBeDefined()
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_SITE })
+    expect((await band.find({ key: 'band:row1' }))?.text).toContain('Dev Team')
+    expect(await band.find({ type: 'Text', text: /1\/3 {2}j: next/ })).toBeDefined()
+    await band.unmount()
+    await ui.unmount()
+  })
+
   test('an open pane the engine has not placed draws nothing: the band keeps For you\'s drafts', async ($, on) => {
     engineSites(on)
     const write = autopilotWriter(on)
@@ -992,38 +1235,6 @@ describe('outside the pane: the band, the footer, the transcript, /tg (§4.1, §
     await ui.press({ key: 'key:follow' })
     expect(await siteText($, FOOTER)).toBe('focus & tg 3 · ⌁1 · 2 for you')
     expect(seen.status.filter(text => text !== undefined)).toEqual([])
-    await ui.unmount()
-  })
-
-  test("only this plugin's packets become one row; ctrl+o shows the whole packet", async ($, on) => {
-    engineSites(on)
-    const prompts: string[] = []
-    on('prompt.submit', (_$, e) => {
-      prompts.push(e.text)
-      return { text: e.text }
-    })
-    const { ui, clock } = await openPane($, on)
-    await openChat(ui, 1001)
-    await ui.press({ key: 'msg:677791' })
-    await ui.press({ key: 'sheet:intent:fix' })
-    await clock.settle()
-    const packet = prompts[0] ?? ''
-    expect(packet).toMatch(/^<tg-packet /)
-    const row = (props: RenderPropsOf['UserMessage']) => $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'UserMessage', props })
-    const ours: RenderPropsOf['UserMessage'] = { text: packet, origin: { kind: 'plugin', name: PLUGIN }, isExpanded: false }
-    const one = await row(ours)
-    expect((await one.find({ type: 'Text' }))?.text).toBe('▣ tg packet → main · Fix · @example_bot #677791 (+1 parent, 3 masked)   ctrl+o shows it')
-    await one.unmount()
-    for (const props of [
-      { ...ours, isExpanded: true },
-      { ...ours, origin: { kind: 'plugin', name: 'another-plugin' } },
-      { ...ours, origin: { kind: 'plugin', name: PLUGIN, asUser: true } },
-      { ...ours, origin: { kind: 'composer' } },
-    ] satisfies RenderPropsOf['UserMessage'][]) {
-      const shown = await row(props)
-      expect((await shown.find({ type: 'Text' }))?.text).toBe(packet)
-      await shown.unmount()
-    }
     await ui.unmount()
   })
 

@@ -4,7 +4,7 @@
 // `k` or an item leaving, the ring (which keeps its place among the Buttons,
 // §1) is on the new item's ⏎; `j` and `k` are hidden Buttons after it.
 // A draft takes its second row whole, at the band's full width, so a draft
-// that fits sends with one ⏎ (decision 9). Keys reach the band once it holds
+// that fits sends with one ⏎ (decision 9); a longer one opens its row in the pane. Keys reach the band once it holds
 // them (ctrl+x tab or a click); typed at the prompt they are text.
 // Also the transcript's cards for `/tg help` and `/tg status` (§4.4).
 import type { RenderElement } from 'claude-code'
@@ -157,21 +157,20 @@ function Item(
 /**
  * A draft: the message it answers and why it waits on row 1, with its keys;
  * the draft alone on row 2, the band's full width. ⏎ sends it when its whole
- * text shows there; a longer one unfolds first (T0d) and the next ⏎ sends,
- * until T3 makes drafts rows of their chat. `e` swaps row 2 for the field.
+ * text shows there and the guard's verdict allows it; a longer one, or one
+ * the guard has not allowed yet, opens its chat on its row, the one place a
+ * draft is read whole and sent (§8 T3, decision 9). `e` swaps row 2 for the
+ * field; the band keeps its two rows.
  */
 function DraftItem(els: Els, props: BandProps, item: Extract<BandItem, { kind: 'draft' }>): RenderElement {
   const { Box, Text, Button } = els
   const Input = 'Input' in els ? els.Input : undefined
   const { draft } = item
-  const state = draft.state
   const isWide = props.width >= WIDE_BAND
-  const fits = draftFits(draft.text, props.width)
-  const isUnfolded = state.kind === 'unfolded'
-  const canSend = fits || isUnfolded
-  const why = [...draft.reasons, ...(draft.confidence === null ? [] : [`conf ${draft.confidence.toFixed(2)}`])].join(' · ')
+  const canSend = draft.canSend && draftFits(draft.text, props.width)
   const position = positionText(props.index, props.count)
-  const isEditing = state.kind === 'editing' && Input !== undefined
+  const isEditing = draft.isEditing && Input !== undefined
+  const verdict = draft.verdict.tone === 'ok' ? null : draft.verdict
   // While the field is up it is the only ring stop: its keys type into it.
   const keys = isEditing
     ? []
@@ -198,11 +197,14 @@ function DraftItem(els: Els, props: BandProps, item: Extract<BandItem, { kind: '
         <Box flexGrow={1} flexShrink={1}>
           <Text wrap="truncate-end">
             <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} `}</Text>
-            {`${draft.peer.label}: "${oneLine(draft.incoming, 200)}"${why === '' ? '' : ` · ${why}`}`}
+            {`${draft.peer.label}: "${oneLine(draft.incoming, 200)}"${draft.why === '' ? '' : ` · ${draft.why}`}`}
           </Text>
         </Box>
-        {state.kind === 'sending' ? <Text dimColor>{`${GLYPH.working}sending`}</Text> : null}
-        {state.kind === 'failed' ? <Text color={TOKEN.danger} wrap="truncate-end">{`✗ ${state.reason}`}</Text> : null}
+        {verdict === null ? null : (
+          <Text color={verdict.tone === 'danger' ? TOKEN.danger : undefined} dimColor={verdict.tone === 'dim'} wrap="truncate-end">
+            {verdict.text}
+          </Text>
+        )}
         {...keys}
         {position === null ? null : <Text dimColor>{position}</Text>}
       </Box>
@@ -210,7 +212,7 @@ function DraftItem(els: Els, props: BandProps, item: Extract<BandItem, { kind: '
         <Input key="ap:draft:text" label="draft" value={draft.text} submitLabel="save" autoFocus onSubmit={value => props.on.save(value)} />
       ) : (
         <Box key="band:row2">
-          {isUnfolded && !fits ? <Text wrap="wrap">{`${DRAFT_LEAD}${draft.text}`}</Text> : <Text wrap="truncate-end">{`${DRAFT_LEAD}${oneLine(draft.text, Infinity)}`}</Text>}
+          <Text wrap="truncate-end">{`${DRAFT_LEAD}${oneLine(draft.text, Infinity)}`}</Text>
         </Box>
       )}
       {isEditing ? null : HiddenNav(els, props, isWide ? [] : ['o'])}

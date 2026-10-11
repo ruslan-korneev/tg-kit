@@ -20,10 +20,6 @@ export function workerTools(grant: DgGrant): string[] {
   return grant.web === 'off' ? local : [...local, 'WebFetch', 'WebSearch']
 }
 
-export function nextWeb(web: DgWeb): DgWeb {
-  return DG_WEB[(DG_WEB.indexOf(web) + 1) % DG_WEB.length] ?? 'off'
-}
-
 // --- typed fields of the card ---
 
 /** `~/code/app, /srv/api`: paths, comma- or space-separated; `~` kept for the hooks to expand. */

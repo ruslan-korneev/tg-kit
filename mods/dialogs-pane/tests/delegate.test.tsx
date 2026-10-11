@@ -10,13 +10,13 @@
 import type { ModelCompleteInput, ModelCompleteResult, On, ProcessRunResult, RenderPropsOf, ToolCallResult } from 'claude-code'
 import { describe, expect, mock, test, type Engine, type MockClock, type Plugin } from 'claude-code/testing'
 
-import type { TgMessage } from '../types'
+import type { TgDialog, TgMessage } from '../types'
 import { DIALOGS, chatKey, findChat, folderRun } from './fixtures'
 import { bandKeyProblems } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
 const NOW = Date.parse('2026-10-10T12:00:00Z')
-const GROUP = 1002
+const PERSON = 1007
 const HOME = '/home/me'
 const REPO = `${HOME}/code/app`
 const WT = `${HOME}/.config/tg-kit/worktrees/app-task-1`
@@ -45,15 +45,25 @@ const json = (value: unknown) => run(0, JSON.stringify(value))
 const USAGE = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
 const answer = (value: unknown): ModelCompleteResult => ({ isAnswered: true, text: JSON.stringify(value), usage: USAGE })
 
-const alice = { id: 2001, kind: 'user', username: null, name: 'Contact A' } as const
+const contact = { id: PERSON, kind: 'user', username: null, name: 'Contact B' } as const
+const fixture = <T,>(one: T | undefined): T => {
+  if (one === undefined) throw new Error('a fixture is missing')
+  return one
+}
+/** The delegate chat is a person's (decision 8): the placeholder bot, Contact B, Saved Messages. */
+const CHATS: TgDialog[] = [
+  fixture(DIALOGS[0]),
+  { id: PERSON, kind: 'user', title: 'Contact B', username: null, unread: 1, mentions: 0, pinned: false, muted: false, last_id: 498, last_date: '2026-10-10T11:58:00Z', last_text: 'can you add a health check?' },
+  fixture(DIALOGS[2]),
+]
 const me = { id: 1003, kind: 'self', username: null, name: 'Me' } as const
 
 function message(id: number, text: string, over: Partial<TgMessage> = {}): TgMessage {
   return {
     id,
-    chat_id: GROUP,
+    chat_id: PERSON,
     date: '2026-10-10T12:00:00Z',
-    sender: over.out === true ? me : alice,
+    sender: over.out === true ? me : contact,
     out: false,
     text,
     reply_to: null,
@@ -75,7 +85,7 @@ function message(id: number, text: string, over: Partial<TgMessage> = {}): TgMes
 type Child = { argv: readonly string[]; line: (value: unknown) => void; isKilled: boolean }
 type Ran = { argv: readonly string[]; stdin?: string }
 /** What the engine's dialog answers: a label, or a dismissal. */
-type Dialog = 'Yes, allow it' | 'No' | 'dismiss'
+type Dialog = 'Yes, allow it' | 'Yes, add it' | 'No' | 'dismiss'
 
 type World = {
   runs: Ran[]
@@ -140,6 +150,7 @@ function world(
   let nextSent = 900
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: options.session ?? 'session-a' }))
+  on('session.cwd', () => ({ value: '/tmp' }))
   on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? HOME : undefined }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
   on('store.set', (_$, e) => {
@@ -160,10 +171,16 @@ function world(
     const [tool, cmd] = e.argv
     if (tool === 'git') return { value: e.argv.includes('rev-parse') ? run(0, `${REPO}\n`) : run(0, '') }
     if (tool === 'mkdir') return { value: run(0, '') }
-    if (cmd === 'dialogs') return { value: json(DIALOGS) }
-    if (cmd === 'folders') return { value: folderRun(e.argv, json(DIALOGS)) }
+    if (cmd === 'dialogs') return { value: json(CHATS) }
+    if (cmd === 'folders') return { value: folderRun(e.argv, json(CHATS)) }
     if (cmd === 'read') return { value: json(seen.history) }
-    if (cmd === 'allow') return { value: json((options.allow ?? [GROUP]).map(id => ({ id }))) }
+    if (cmd === 'allow' && e.argv[2] === 'add') {
+      options.allow?.push(Number(e.argv[3]))
+      return { value: json([{ id: Number(e.argv[3]) }]) }
+    }
+    if (cmd === 'allow') return { value: json((options.allow ?? [PERSON]).map(id => ({ id }))) }
+    // The guard's dry run, as a draft lands (§8 T3): the owner's own write passes --yes (decision 9).
+    if (cmd === 'send' && e.argv.includes('--dry-run')) return { value: json({ action: 'send', target: { id: Number(e.argv[2]) }, steps: [], guard: { allowed: true, reason: e.argv.includes('--yes') ? 'confirmed with --yes' : 'allowlisted' } }) }
     if (cmd === 'send') {
       const sent = message(nextSent++, ran.stdin ?? '', { out: true })
       seen.history.push(sent)
@@ -324,7 +341,7 @@ const WITH_GUARD = { plugins: [fakeGuard] }
 
 const tgCommand = (args: string) => ({ command: 'tg', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } }) as const
 
-/** /tg wide, Dev Team's card, 4 twice (the warning, then the level), the repo, ⏎ start. */
+/** /tg wide, Contact B's card, 5 (the warning), ⏎ (the grant, the session's repo filled in), ⏎ start. */
 async function handOver($: Engine, clock: MockClock, seen: World, props = PANE_PROPS) {
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   await $.command.run(tgCommand('wide'))
@@ -333,10 +350,10 @@ async function handOver($: Engine, clock: MockClock, seen: World, props = PANE_P
   await ui.press({ key: 'key:down' })
   await ui.press({ key: 'key:agent' })
   await clock.settle()
+  // a 5 ⏎ ⏎ (§5): the warning, then the grant with the session's repo filled in, then start.
   await ui.press({ key: 'ap:level:delegate' })
-  await ui.press({ key: 'ap:level:delegate' })
-  await ui.input({ key: 'dg:repos', text: REPO })
-  await ui.press({ key: 'key:start' })
+  await ui.press({ key: 'key:start:warning' })
+  await ui.press({ key: 'key:start:grant' })
   await clock.settle()
   const child = seen.children.at(-1)
   child?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
@@ -357,45 +374,81 @@ const worker = async ($: Engine, command: string): Promise<ToolCallResult> =>
   // agentId rides along as the Worker's loop carries it.
   $.tool.call({ tool: 'Bash', command, agentId: WORKER } as never)
 
-const sends = (seen: World) => seen.runs.filter(one => one.argv[1] === 'send').map(one => one.stdin)
+const sends = (seen: World) => seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.stdin)
+
+/** /tg wide, the cursor on Contact B, a: its card on the ladder. */
+async function openCard($: Engine, clock: MockClock) {
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await $.command.run(tgCommand('wide'))
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
+  await ui.press({ key: 'key:down' })
+  await ui.press({ key: 'key:agent' })
+  await clock.settle()
+  return ui
+}
 
 describe('the card', () => {
-  test('delegate is offered only for a dialog in allow.toml', WITH_GUARD, async ($, on) => {
+  test('5 is listed in a person chat; outside allow.toml it is dim with why; ⏎ on the grant asks, and the owner\'s Yes adds the chat and starts delegate', WITH_GUARD, async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    world(on, { allow: [] })
-    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('wide'))
+    const seen = world(on, { allow: [] })
+    seen.dialog = 'Yes, add it'
+    const ui = await openCard($, clock)
+    expect((await ui.find({ key: 'ap:level:delegate' }))?.text).toContain('↯ delegate')
+    expect((await ui.find({ key: 'ap:level:delegate' }))?.props.hotkey).toBe('5')
+    expect((await ui.find({ key: 'ap:level:delegate' }))?.text).toContain('needs allow.toml · ')
+    await ui.press({ key: 'ap:level:delegate' })
+    await ui.press({ key: 'key:start:warning' })
+    expect(await ui.find({ type: 'Text', text: '✗ Contact B is not in allow.toml, and delegate sends alone' })).toBeDefined()
+    expect((await ui.find({ key: 'key:start:grant' }))?.text).toBe('⏎ add to allow.toml…')
+    await ui.press({ key: 'key:start:grant' })
     await clock.settle()
-    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'key:down' })
-    await ui.press({ key: 'key:agent' })
-    await clock.settle()
-    expect(await ui.find({ key: 'ap:level:auto' })).toBeDefined()
-    expect(await ui.find({ key: 'ap:level:delegate' })).toBeUndefined()
+    expect(seen.questions).toEqual(['delegate sends in Contact B without you, so Contact B must be in allow.toml. Run  tg allow add 1007 --yes  ?'])
+    expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add').map(one => one.argv)).toEqual([['tg', 'allow', 'add', '1007', '--yes']])
+    expect(seen.children).toHaveLength(1)
     await ui.unmount()
   })
 
-  test('the first 4 shows the warning once; the next hands it over; the grant rows and the guard row show', WITH_GUARD, async ($, on) => {
+  test('the grant\'s question answered No runs nothing and starts nothing', WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on, { allow: [] })
+    seen.dialog = 'No'
+    const ui = await openCard($, clock)
+    await ui.press({ key: 'ap:level:delegate' })
+    await ui.press({ key: 'key:start:warning' })
+    await ui.press({ key: 'key:start:grant' })
+    await clock.settle()
+    expect(seen.questions).toHaveLength(1)
+    expect(seen.runs.filter(one => one.argv[1] === 'allow' && one.argv[2] === 'add')).toEqual([])
+    expect(seen.children).toHaveLength(0)
+    await ui.unmount()
+  })
+
+  test('the first 5 shows the warning once; ⏎ goes on to the grant, filled from the session’s repo; Selects change it; h and 5 again skip the warning', WITH_GUARD, async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('wide'))
-    await clock.settle()
-    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'key:down' })
-    await ui.press({ key: 'key:agent' })
-    await clock.settle()
+    const ui = await openCard($, clock)
     await ui.press({ key: 'ap:level:delegate' })
-    expect(await ui.find({ type: 'Text', text: /whoever writes in Dev Team steers an agent that has tools/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Whoever writes in Contact B steers an agent that has tools/ })).toBeDefined()
     expect(await ui.find({ key: 'dg:web' })).toBeUndefined()
-    await ui.press({ key: 'ap:level:delegate' })
-    expect((await ui.find({ key: 'ap:level:delegate' }))?.text).toBe('[⚡ delegate]')
+    expect((await ui.find({ key: 'key:start:warning' }))?.text).toBe('⏎ I understand, set it up')
+    await ui.press({ key: 'key:start:warning' })
+    await clock.settle()
     expect(await ui.find({ type: 'Text', text: '✓ dialogs-pane-guard answering' })).toBeDefined()
-    expect((await ui.find({ key: 'dg:web' }))?.text).toBe('read-only')
-    await ui.press({ key: 'dg:web' })
-    expect((await ui.find({ key: 'dg:web' }))?.text).toBe('full')
-    expect((await ui.find({ key: 'dg:commands' }))?.text).toBe("the repos' checks")
-    expect(seen.store.get('delegate.dialogs')).toMatchObject({ [String(GROUP)]: { isWarned: true, grant: { web: 'full' } } })
+    expect((await ui.find({ key: 'dg:repos' }))?.props.value).toBe(REPO)
+    expect(await ui.find({ type: 'Text', text: "(this session's repo)" })).toBeDefined()
+    expect((await ui.find({ key: 'dg:web' }))?.props.value).toBe('read')
+    expect((await ui.find({ key: 'dg:duration' }))?.props.value).toBe('done')
+    await ui.select({ key: 'dg:web', value: 'full' })
+    await ui.select({ key: 'dg:duration', value: '2h' })
+    expect(seen.store.get('delegate.dialogs')).toMatchObject({ [String(PERSON)]: { isWarned: true, grant: { web: 'full', repos: [REPO], duration: { kind: 'deadline', minutes: 120 } } } })
+    expect((await ui.find({ key: 'key:start:grant' }))?.text).toBe('⏎ start delegate')
+    await ui.press({ key: 'key:back' })
+    expect(await ui.find({ key: 'ap:level:delegate' })).toBeDefined()
+    await ui.press({ key: 'ap:level:delegate' })
+    expect(await ui.find({ key: 'dg:repos' })).toBeDefined()
+    // The session's repo is looked up once.
+    expect(seen.runs.filter(one => one.argv.join(' ') === 'git -C /tmp rev-parse --show-toplevel')).toHaveLength(1)
     await ui.unmount()
   })
 })
@@ -404,17 +457,12 @@ describe('the handshake with the guard plugin', () => {
   test('without the guard loaded, delegate does not start, and the card says why', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-    await $.command.run(tgCommand('wide'))
-    await clock.settle()
-    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: PANE_PROPS })
-    await ui.press({ key: 'key:down' })
-    await ui.press({ key: 'key:agent' })
-    await clock.settle()
+    const ui = await openCard($, clock)
+    expect((await ui.find({ key: 'ap:level:delegate' }))?.text).toContain('needs the guard · ')
     await ui.press({ key: 'ap:level:delegate' })
-    await ui.press({ key: 'ap:level:delegate' })
-    expect(await ui.find({ type: 'Text', text: /✗ delegate needs the dialogs-pane-guard plugin loaded and answering/ })).toBeDefined()
-    await ui.press({ key: 'key:start' })
+    await ui.press({ key: 'key:start:warning' })
+    expect(await ui.find({ type: 'Text', text: /^✗ the dialogs-pane-guard plugin is not loaded or not answering/ })).toBeDefined()
+    await ui.press({ key: 'key:start:grant' })
     await clock.settle()
     expect(await ui.find({ type: 'Text', text: /Not started: delegate needs the dialogs-pane-guard plugin/ })).toBeDefined()
     expect(seen.children).toHaveLength(0)
@@ -440,7 +488,7 @@ describe('the handshake with the guard plugin', () => {
     await clock.advance(60_000)
     await clock.settle()
     expect(seen.stopped).toEqual([WORKER])
-    expect(seen.toasts).toContain('tg: ⚡ every Worker stopped: the dialogs-pane-guard plugin stopped answering.')
+    expect(seen.toasts).toContain('tg: ↯ every Worker stopped: the dialogs-pane-guard plugin stopped answering.')
     expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
   })
 })
@@ -453,6 +501,8 @@ describe('a task', () => {
     expect(seen.asked[0]?.system).toContain('This dialog is DELEGATED')
     expect(sends(seen)).toEqual(['on it'])
     expect(seen.runs.filter(one => one.argv[0] === 'git').map(one => one.argv.join(' '))).toEqual([
+      // The grant's repos field, filled from the session's directory (§5.5).
+      'git -C /tmp rev-parse --show-toplevel',
       `git -C ${REPO} rev-parse --show-toplevel`,
       `git -C ${REPO} worktree add -b tg/add-a-health-endpoint-1 ${WT} HEAD`,
     ])
@@ -462,9 +512,9 @@ describe('a task', () => {
     expect(String(seen.spawned[0]?.prompt)).toContain('<tg-packet')
     // The task's card sits on top of its chat's thread (T4), not on top of the pane.
     expect(await ui.find({ key: 'dg:task:1' })).toBeUndefined()
-    await ui.press({ key: await chatKey(ui, 1002) })
+    await ui.press({ key: await chatKey(ui, PERSON) })
     expect(await ui.find({ type: 'Text', text: '✓ worktree app-task-1 · branch tg/add-a-health-endpoint-1' })).toBeDefined()
-    // What runs is the footer's (⚡1), never the status line's: it holds alarms only (§4.1).
+    // What runs is the footer's (↯1), never the status line's: it holds alarms only (§4.1).
     expect(seen.status.at(-1)).toBeUndefined()
     await ui.unmount()
   })
@@ -475,26 +525,26 @@ describe('a task', () => {
     const { ui } = await startTask($, clock, seen)
     await report($, 'work', [{ taskId: 1, steps: [{ text: 'read the code', count: 3, state: 'done' }], current: 'ran uv run pytest' }])
     await report($, 'holds', [{ id: 1, taskId: 1, stops: ['publish'], what: 'git push origin tg/x', since: NOW }])
-    await report($, 'events', [{ seq: 1, at: NOW + 1, taskId: 1, peer: { id: GROUP, arg: '1002', label: 'Dev Team', kind: 'supergroup' }, summary: 'add a /health endpoint', stops: ['publish'], what: 'git push origin tg/y', answer: 'skipped', why: 'dangerouslySkipHardStops' }])
+    await report($, 'events', [{ seq: 1, at: NOW + 1, taskId: 1, peer: { id: PERSON, arg: '1007', label: 'Contact B', kind: 'user' }, summary: 'add a /health endpoint', stops: ['publish'], what: 'git push origin tg/y', answer: 'skipped', why: 'dangerouslySkipHardStops' }])
     await clock.settle()
-    await ui.press({ key: await chatKey(ui, 1002) })
+    await ui.press({ key: await chatKey(ui, PERSON) })
     expect(await ui.find({ type: 'Text', text: '✓ read the code (3)' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '… ran uv run pytest' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '⏸ HARD STOP publish: git push origin tg/x? (answer in the dialog)' })).toBeDefined()
-    expect(seen.status.at(-1)).toBe('tg ⏸ HARD STOP publish: git push origin tg/x · ⚡ Dev Team · answer in the dialog')
+    expect(seen.status.at(-1)).toBe('tg ⏸ HARD STOP publish: git push origin tg/x · ↯ Contact B · answer in the dialog')
     // One native notification as it starts waiting, for an owner in another window; not again on the next write.
-    expect(seen.notified).toEqual(['HARD STOP publish: git push origin tg/x (Dev Team). Answer in Claude Code.'])
+    expect(seen.notified).toEqual(['HARD STOP publish: git push origin tg/x (Contact B). Answer in Claude Code.'])
     await report($, 'work', [{ taskId: 1, steps: [], current: 'still waiting' }])
     await clock.settle()
     expect(seen.notified).toHaveLength(1)
     // The band mirrors it first, two rows: what waits, then whose and where to answer.
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect((await band.find({ type: 'Text', text: /⏸ HARD STOP/ }))?.text).toBe('⏸ HARD STOP publish: git push origin tg/x')
-    expect(await band.find({ type: 'Text', text: '⚡ Dev Team · answer in the dialog' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '↯ Contact B · answer in the dialog' })).toBeDefined()
     expect(await bandKeyProblems(band)).toEqual([])
     await band.unmount()
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⚡ Dev Team · skipped stop: publish git push origin tg\/y$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ↯ Contact B · skipped stop: publish git push origin tg\/y$/ })).toBeDefined()
     await ui.unmount()
   })
 })
@@ -505,24 +555,26 @@ describe('dangerouslySkipHardStops', () => {
     const seen = world(on)
     const { ui } = await startTask($, clock, seen)
     expect((await $.command.run(tgCommand('autopilot --dangerously-skip-hard-stops=publish'))).text).toContain('⚠ hard stops skipped until this session ends: publish')
-    expect((await findChat(ui, 1002))?.text).toContain('⚠ no stops: publish')
+    expect((await findChat(ui, PERSON))?.text).toContain('⚠ no stops: publish')
     expect(seen.status.at(-1)).toContain('⚠ no stops: publish')
     expect((await $.command.run(tgCommand('autopilot --dangerously-skip-hard-stops=none'))).text).toBe('tg autopilot: hard stops are on again for this session.')
-    expect((await findChat(ui, 1002))?.text).not.toContain('⚠')
+    expect((await findChat(ui, PERSON))?.text).not.toContain('⚠')
     await ui.unmount()
   })
 
-  test('per dialog: confirmed only by typing the dialog name; 24 h by default', WITH_GUARD, async ($, on) => {
+  test('per chat, only from the card\'s options: confirmed only by typing the chat\'s name; 24 h by default', WITH_GUARD, async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     const { ui } = await handOver($, clock, seen)
+    // The danger zone is under o: the card, then its options.
     await ui.press({ key: 'key:agent' })
+    await ui.press({ key: 'key:open' })
     await ui.input({ key: 'dg:skip', text: 'all' })
-    await ui.input({ key: 'dg:confirm', text: 'dev team' })
-    expect(await ui.find({ type: 'Text', text: /Not confirmed: type the dialog's name exactly, "Dev Team"/ })).toBeDefined()
-    expect(seen.store.get('delegate.dialogs')).toMatchObject({ [String(GROUP)]: { skip: null } })
-    await ui.input({ key: 'dg:confirm', text: 'Dev Team' })
-    expect(seen.store.get('delegate.dialogs')).toMatchObject({ [String(GROUP)]: { skip: { stops: ['money', 'publish', 'share', 'delete', 'commit-on-behalf'], until: NOW + 24 * 3_600_000 } } })
+    await ui.input({ key: 'dg:confirm', text: 'contact b' })
+    expect(await ui.find({ type: 'Text', text: /Not confirmed: type the chat's name exactly, "Contact B"/ })).toBeDefined()
+    expect(seen.store.get('delegate.dialogs')).toMatchObject({ [String(PERSON)]: { skip: null } })
+    await ui.input({ key: 'dg:confirm', text: 'Contact B' })
+    expect(seen.store.get('delegate.dialogs')).toMatchObject({ [String(PERSON)]: { skip: { stops: ['money', 'publish', 'share', 'delete', 'commit-on-behalf'], until: NOW + 24 * 3_600_000 } } })
     expect(await ui.find({ type: 'Text', text: /off: money, publish, share, delete, commit-on-behalf \(until/ })).toBeDefined()
     await ui.unmount()
   })
@@ -533,7 +585,7 @@ describe('dangerouslySkipHardStops', () => {
     const { ui } = await startTask($, clock, seen)
     await $.classic.UserPromptSubmit({ prompt: 'hi', permission_mode: 'bypassPermissions' })
     await clock.settle()
-    expect((await findChat(ui, 1002))?.text).not.toContain('⚠')
+    expect((await findChat(ui, PERSON))?.text).not.toContain('⚠')
     await ui.unmount()
   })
 
@@ -543,7 +595,7 @@ describe('dangerouslySkipHardStops', () => {
     const { ui } = await startTask($, clock, seen)
     await $.classic.UserPromptSubmit({ prompt: 'hi', permission_mode: 'bypassPermissions' })
     await clock.settle()
-    expect((await findChat(ui, 1002))?.text).toContain('⚠ no stops · no permissions')
+    expect((await findChat(ui, PERSON))?.text).toContain('⚠ no stops · no permissions')
     expect(seen.status.at(-1)).toContain('⚠ no stops · no permissions')
     await ui.unmount()
   })
@@ -558,7 +610,7 @@ describe('the Speaker in a delegate dialog', () => {
     child?.line({ event: 'message', ...message(500, 'can you finish it this week?') })
     await clock.advance(20_000)
     await clock.settle()
-    expect(seen.questions).toEqual(['HARD STOP commit-on-behalf (reply in Dev Team): "sure, done by Friday". Allow it?'])
+    expect(seen.questions).toEqual(['HARD STOP commit-on-behalf (reply in Contact B): "sure, done by Friday". Allow it?'])
     expect(sends(seen)).toEqual([])
     const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
     expect(await band.find({ type: 'Text', text: /HARD STOP commit-on-behalf: not sent \(you\)/ })).toBeDefined()
@@ -577,7 +629,7 @@ describe('the Speaker in a delegate dialog', () => {
     expect(sends(seen)).toEqual(['write to someone@example.com'])
     await ui.press({ key: 'key:agent' })
     await ui.press({ key: 'key:activity' })
-    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ⚡ Dev Team · skipped stop: share personal data in/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ {2}\d\d:\d\d ↯ Contact B · skipped stop: share personal data in/ })).toBeDefined()
     await ui.unmount()
   })
 
@@ -603,7 +655,7 @@ describe('the Speaker in a delegate dialog', () => {
     expect(seen.sent).toEqual([{ to: WORKER, text: expect.stringContaining("The Speaker's reading: port 8080") }])
     expect(sends(seen)).toEqual(['on it', 'which port should it listen on?', 'thanks'])
     // Delegate's replies are an agent's writes: allow.toml decides, never --yes (decision 9).
-    expect(seen.runs.filter(one => one.argv[1] === 'send').map(one => one.argv.includes('--yes'))).toEqual([false, false, false])
+    expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.argv.includes('--yes'))).toEqual([false, false, false])
   })
 })
 
@@ -612,10 +664,26 @@ describe('stopping', () => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
     await startTask($, clock, seen)
-    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg: stopped Dev Team (delegate and its Worker).\nSettings are kept; /tg, then a, restarts one.')
+    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg: stopped Contact B (delegate and its Worker).\nSettings are kept; /tg, then a, restarts one.')
     expect(seen.stopped).toEqual([WORKER])
     expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
     expect(seen.ran).toEqual([])
+  })
+
+  test("⏎ on a running chat's card stops it and its Worker; the card stays, off", WITH_GUARD, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const seen = world(on)
+    const { ui } = await startTask($, clock, seen)
+    await ui.press({ key: 'key:agent' })
+    expect((await ui.find({ key: 'ap:level:delegate' }))?.text).toContain('● on')
+    expect((await ui.find({ key: 'key:start' }))?.text).toBe('⏎ stop delegate')
+    await ui.press({ key: 'key:start' })
+    await clock.settle()
+    expect(seen.stopped).toEqual([WORKER])
+    expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
+    expect((await ui.find({ key: 'header' }))?.text).toContain('○ off')
+    expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
+    await ui.unmount()
   })
 
   // 30 fake minutes with the pane open: the folder passes (T9) run every 60 s of them as well, which
@@ -631,9 +699,9 @@ describe('stopping', () => {
     await ui.press({ key: 'key:agent' })
     await clock.settle()
     await ui.press({ key: 'ap:level:delegate' })
-    await ui.press({ key: 'ap:level:delegate' })
-    await ui.input({ key: 'dg:duration', text: '30m' })
-    await ui.press({ key: 'key:start' })
+    await ui.press({ key: 'key:start:warning' })
+    await ui.select({ key: 'dg:duration', value: '30m' })
+    await ui.press({ key: 'key:start:grant' })
     await clock.settle()
     seen.children.at(-1)?.line({ event: 'ready', date: '2026-10-10T12:00:00Z', peers: [] })
     seen.children.at(-1)?.line({ event: 'message', ...message(500, 'please add a /health endpoint') })
@@ -688,12 +756,12 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     await ui.press({ key: await chatKey(ui, 1001) })
     await ui.press({ key: 'key:follow' })
     await clock.settle()
-    expect((await ui.find({ key: 'running' }))?.text).toBe('⚡ Dev Team · ⌁ @example_bot → main0: stop all')
+    expect((await ui.find({ key: 'running' }))?.text).toBe('↯ Contact B · ⌁ @example_bot → main0: stop all')
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     expect(seen.stopped).toEqual([WORKER])
-    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: Dev Team, @example_bot')
-    expect(seen.toasts.at(-1)).toBe('tg: stopped Dev Team (delegate and its Worker), @example_bot (follow). Settings are kept; /tg, then a (p for a follow), restarts one.')
+    expect((await ui.find({ key: 'running' }))?.text).toBe('■ stopped: Contact B, @example_bot')
+    expect(seen.toasts.at(-1)).toBe('tg: stopped Contact B (delegate and its Worker), @example_bot (follow). Settings are kept; /tg, then a (p for a follow), restarts one.')
     // Empty: no follow (prompt.context has no pinned block), no dialog, no live task.
     expect((await $.prompt.context({ blocks: [] })).blocks.filter(block => block.name === 'tgPinned')).toEqual([])
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
@@ -718,10 +786,10 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     await clock.settle()
     const at = (what: string) => seen.ended.indexOf(what)
     expect(at('TaskStop')).toBeGreaterThanOrEqual(0)
-    expect(at(`delete autopilot.lease.${GROUP}`)).toBeGreaterThan(at('TaskStop'))
+    expect(at(`delete autopilot.lease.${PERSON}`)).toBeGreaterThan(at('TaskStop'))
     // The dialog's own watch ends after its lease, the follow's after both.
-    expect(at(`watch ${GROUP}`)).toBeGreaterThan(at(`delete autopilot.lease.${GROUP}`))
-    expect(at('watch @example_bot')).toBeGreaterThan(at(`watch ${GROUP}`))
+    expect(at(`watch ${PERSON}`)).toBeGreaterThan(at(`delete autopilot.lease.${PERSON}`))
+    expect(at('watch @example_bot')).toBeGreaterThan(at(`watch ${PERSON}`))
     await ui.unmount()
   })
 
@@ -735,7 +803,7 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     await ui.press({ key: 'key:follow' })
     await clock.settle()
     const answer = (await $.command.run(tgCommand('stop'))).text
-    expect(answer).toMatch(/^tg: stopped Dev Team \(delegate and its Worker\), @example_bot \(follow\)\.\n⚠ not stopped cleanly: Dev Team \(autopilot\): .+\.\n/)
+    expect(answer).toMatch(/^tg: stopped Contact B \(delegate and its Worker\), @example_bot \(follow\)\.\n⚠ not stopped cleanly: Contact B \(autopilot\): .+\.\n/)
     expect(seen.stopped).toEqual([WORKER])
     expect((await worker($, 'uv run pytest')).deny).toContain('This task is over')
     expect((await $.command.run(tgCommand('autopilot'))).text).toBe('tg autopilot: off. Open a chat in the pane and press a.')
@@ -755,7 +823,7 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     // A thread longer than its window, so a window that shrank would scroll.
     seen.history = Array.from({ length: 40 }, (_, index) => message(400 + index, `line ${index}`))
     const { ui, child } = await handOver($, clock, seen, { ...PANE_PROPS, scroll: { offset: 0, bodyRows } })
-    await ui.press({ key: await chatKey(ui, 1002) })
+    await ui.press({ key: await chatKey(ui, PERSON) })
     await clock.settle()
     // Off the newest row, which a new message moves the cursor past.
     for (let i = 0; i < 3; i++) await ui.press({ key: 'key:up' })
@@ -782,18 +850,18 @@ describe('what runs: the strip, the kill switch, Activity, the card on top of it
     const seen = world(on)
     const { ui } = await startTask($, clock, seen)
     await ui.press({ key: 'key:activity' })
-    expect((await ui.find({ key: 'act:1002' }))?.text).toMatch(/^▸ ⚡ {2}Dev Team {7}delegate · listening · task 0 min · … starting$/)
+    expect((await ui.find({ key: 'act:1007' }))?.text).toMatch(/^▸ ↯ {2}Contact B {6}delegate · listening · task 0 min · … starting$/)
     // The ack "on it" went out a moment ago: its undo window is open.
     expect(await barKeys(ui)).toEqual(['open', 'back', 'undo', 'menu'])
-    await ui.press({ key: 'act:1002' })
+    await ui.press({ key: 'act:1007' })
     expect(await ui.find({ key: 'dg:task:1' })).toBeDefined()
     await ui.press({ key: 'key:stop' })
     await clock.settle()
     await ui.press({ key: 'key:activity' })
-    expect((await ui.find({ key: 'act:1002' }))?.text).toContain('task 0 min · stopped')
+    expect((await ui.find({ key: 'act:1007' }))?.text).toContain('task 0 min · stopped')
     expect(await barKeys(ui)).toEqual(['open', 'dismiss', 'back', 'undo', 'menu'])
     await ui.press({ key: 'key:dismiss' })
-    expect((await ui.find({ key: 'act:1002' }))?.text).toContain('■  Dev Team       stopped')
+    expect((await ui.find({ key: 'act:1007' }))?.text).toContain('■  Contact B      stopped')
     await ui.press({ key: 'key:back' })
     expect(await ui.find({ key: 'dg:task:1' })).toBeUndefined()
     await ui.unmount()
@@ -804,7 +872,7 @@ describe('the cross-session lease', () => {
   test('a dialog running in another session does not start here; a stale lease is free', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on)
-    seen.store.set(`autopilot.lease.${GROUP}`, { session: 'session-b-1234', beat: NOW - 10_000 })
+    seen.store.set(`autopilot.lease.${PERSON}`, { session: 'session-b-1234', beat: NOW - 10_000 })
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await $.command.run(tgCommand('wide'))
     await clock.settle()
@@ -815,17 +883,17 @@ describe('the cross-session lease', () => {
     await ui.press({ key: 'ap:level:draft' })
     await ui.press({ key: 'key:start' })
     await clock.settle()
-    expect(await ui.find({ type: 'Text', text: /Not started: Dev Team is running in another session \(session-/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Not started: Contact B is running in another session \(session-/ })).toBeDefined()
     expect(seen.children).toHaveLength(0)
-    seen.store.set(`autopilot.lease.${GROUP}`, { session: 'session-b-1234', beat: NOW - 120_000 })
+    seen.store.set(`autopilot.lease.${PERSON}`, { session: 'session-b-1234', beat: NOW - 120_000 })
     await ui.press({ key: 'key:start' })
     await clock.settle()
     expect(seen.children).toHaveLength(1)
-    expect(seen.store.get(`autopilot.lease.${GROUP}`)).toEqual({ session: 'session-a', beat: NOW })
+    expect(seen.store.get(`autopilot.lease.${PERSON}`)).toEqual({ session: 'session-a', beat: NOW })
     await clock.advance(30_000)
-    expect(seen.store.get(`autopilot.lease.${GROUP}`)).toEqual({ session: 'session-a', beat: NOW + 30_000 })
-    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg: stopped Dev Team (draft).\nSettings are kept; /tg, then a, restarts one.')
-    expect(seen.store.has(`autopilot.lease.${GROUP}`)).toBe(false)
+    expect(seen.store.get(`autopilot.lease.${PERSON}`)).toEqual({ session: 'session-a', beat: NOW + 30_000 })
+    expect((await $.command.run(tgCommand('autopilot off'))).text).toBe('tg: stopped Contact B (draft).\nSettings are kept; /tg, then a, restarts one.')
+    expect(seen.store.has(`autopilot.lease.${PERSON}`)).toBe(false)
     await ui.unmount()
   })
 })

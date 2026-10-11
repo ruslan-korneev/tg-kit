@@ -111,8 +111,6 @@ export type ForYouItem = {
   /** `draft`, `sent`, `mentions you`, `asks you`, `fyi`. */
   label: string
   text: string
-  /** The whole text, wrapped: a draft shown whole before ⏎ sends it (decision 9). */
-  isWhole: boolean
   /** `e` on a draft: the row is its field, in the row's place. */
   isEditing: boolean
   right: string
@@ -122,13 +120,18 @@ export type ForYouItem = {
 const NAME = 14
 const LABEL = 13
 
+/** Cells a For you row gives its text: a draft whose whole text fits them is read whole (decision 9); a longer one opens its row. */
+export function forYouTextRoom(width: number, right: string): number {
+  return Math.max(10, width - 2 - 2 - NAME - LABEL - right.length - 1)
+}
+
 function ForYouRow(els: Els, item: ForYouItem, props: { width: number; isCursor: boolean; isStatic: boolean; onPress: () => void; onSave: (text: string) => void }): RenderElement {
   const { Box, Button, Text } = els
   const Input = 'Input' in els ? els.Input : undefined
   if (item.isEditing && Input !== undefined && !props.isStatic) {
     return <Input key={`${item.key}:edit`} label={`draft for ${item.name}`} value={item.text} submitLabel="keep" onSubmit={value => props.onSave(value)} />
   }
-  const room = Math.max(10, props.width - 2 - 2 - NAME - LABEL - item.right.length - 1)
+  const room = forYouTextRoom(props.width, item.right)
   const head = [
     <Text color={TOKEN.accent}>{props.isCursor ? `${GLYPH.cursor} ` : '  '}</Text>,
     <Text color={item.glyphColor}>{item.glyph} </Text>,
@@ -137,11 +140,7 @@ function ForYouRow(els: Els, item: ForYouItem, props: { width: number; isCursor:
       {fit(item.label, LABEL)}
     </Text>,
   ]
-  const text = item.isWhole ? (
-    <Text dimColor={item.isGone} wrap="wrap">{`"${item.text}"`}</Text>
-  ) : (
-    <Text dimColor={item.isGone}>{fit(`"${oneLine(item.text, room - 2)}"`, room)}</Text>
-  )
+  const text = <Text dimColor={item.isGone}>{fit(`"${oneLine(item.text, room - 2)}"`, room)}</Text>
   const body = [...head, text, <Text dimColor> {item.right}</Text>]
   if (props.isStatic) return <Box key={item.key} flexDirection="row">{...body}</Box>
   return (

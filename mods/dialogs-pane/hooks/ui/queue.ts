@@ -1,11 +1,12 @@
 // What the pane says outside itself (docs/design/dialogs-pane-ux.md §4.1, §4.5,
 // §8 T5): the footer label, the hint tail, the status line's alarms, the band's
-// queue of what needs the owner, and the transcript's one row per packet. Pure:
-// register.tsx reads the state and makes every `$` call.
-import type { ApDraft, ApNote, ApUndoWindow, BandEvent, DgStatus, LedgerEntry, PeerRef, RouteIntent } from '../../types'
+// queue of what needs the owner. A packet's transcript row stays as the engine
+// draws it (decision 10). Pure: register.tsx reads the state and makes every
+// `$` call.
+import type { ApNote, ApUndoWindow, BandEvent, DgStatus, PeerRef } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
-import { intentLabel } from '../routing/route'
+import type { DraftView } from './drafts'
 import { GLYPH, cells, oneLine, type SummaryParts } from './model'
 
 // --- the footer label (SessionMode) ---
@@ -66,7 +67,7 @@ export type BandTask = { id: number; peer: PeerRef; status: DgStatus; reason: st
 
 export type BandItem =
   | ({ kind: 'hold' } & BandHold)
-  | { kind: 'draft'; key: string; draft: ApDraft }
+  | { kind: 'draft'; key: string; draft: DraftView }
   | { kind: 'undo'; key: string; undo: ApUndoWindow }
   | { kind: 'reply'; key: string; event: BandEvent }
   | { kind: 'summary'; key: string; note: ApNote }
@@ -78,13 +79,16 @@ export type OnScreen = {
   chat: number | null
   /** For you is drawn: its agent rows are the drafts and the undo window. */
   isForYou: boolean
+  /** The drafts whose rows the pane draws (their chat's thread, For you): read and sent there (§8 T3). */
+  drafts: readonly string[]
 }
 
-export const NOTHING_ON_SCREEN: OnScreen = { chat: null, isForYou: false }
+export const NOTHING_ON_SCREEN: OnScreen = { chat: null, isForYou: false, drafts: [] }
 
 export type QueueInput = {
   holds: readonly BandHold[]
-  drafts: readonly ApDraft[]
+  /** Every draft waiting, autopilot's and routing's (./drafts). */
+  drafts: readonly DraftView[]
   /** The undo window while it is open. */
   undo: ApUndoWindow | null
   reply: BandEvent | null
@@ -98,9 +102,9 @@ export type QueueInput = {
 
 /**
  * The band's items, most urgent first. A hard stop always shows: it mirrors
- * the engine's dialog. The rest are left out while the pane draws them: the
- * drafts and the undo window are For you's agent rows, a reply and a task's
- * news belong to their chat's thread (the task card sits on top of it).
+ * the engine's dialog. The rest are left out while the pane draws them: a
+ * draft's row in its thread or For you, the undo window in For you, a reply
+ * and a task's news in their chat's thread (the task card sits on top of it).
  * Only a task that ended makes news, and only done or failed: the owner
  * stopped the others.
  */
@@ -110,7 +114,7 @@ export function bandQueue(input: QueueInput): BandItem[] {
   const reply = input.reply
   const items: BandItem[] = [
     ...input.holds.map((hold): BandItem => ({ kind: 'hold', ...hold })),
-    ...(onScreen.isForYou ? [] : input.drafts.map((draft): BandItem => ({ kind: 'draft', key: `draft:${draft.seq}`, draft }))),
+    ...input.drafts.filter(draft => !onScreen.drafts.includes(draft.key)).map((draft): BandItem => ({ kind: 'draft', key: draft.key, draft })),
     ...(onScreen.isForYou || input.undo === null ? [] : [{ kind: 'undo', key: `undo:${input.undo.seq}`, undo: input.undo } as const]),
     ...(reply === null || !input.watched.includes(reply.dialogId) || inThread(reply.dialogId) ? [] : [{ kind: 'reply', key: `reply:${reply.dialogId}`, event: reply } as const]),
     ...[...input.notes].reverse().map((note): BandItem => ({ kind: 'summary', key: `note:${note.seq}`, note })),
@@ -177,49 +181,4 @@ export const DRAFT_LEAD = '  → '
  */
 export function draftFits(text: string, width: number): boolean {
   return cells(`${DRAFT_LEAD}${oneLine(text, Infinity)}`) - 1 <= width
-}
-
-// --- the transcript: one row per packet ---
-
-/** The packet's opening tag, first in the row: bare, or under the engine's framing of a plugin's prompt (seen live on 2.1.296). */
-const PACKET_HEAD = /^(?:The dialogs-pane plugin sent a message:\s*)?<tg-packet v="\d+" intent="([a-z_]+)" source="dialogs-pane"/
-const MESSAGE_ID = /<message id="(\d+)"/g
-const PLACEHOLDER = /\[(?:id|name|phone|@user)-\d+\]/g
-const PEER = /<peer kind="[^"]*"(?: username="([^"]*)")?(?: id="[^"]*")?(?: title="([^"]*)")?/
-
-const INTENT_IDS: readonly RouteIntent[] = ['fix', 'reproduce', 'explain', 'test', 'raw', 'do_it', 'draft_reply']
-
-function unescapeXml(text: string): string {
-  return text.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-}
-
-/**
- * The transcript's row for a packet this plugin sent to main (§5.1): `▣ tg
- * packet → main · Fix · @example_bot #677791 (+1 parent, 3 masked)   ctrl+o
- * shows it`. Read off the packet: its intent and the messages it carries (the
- * ones outside `<context>`); the chat's name, the parents and the masks come
- * from the ledger's entry for it when the session still has one, since a
- * redacted packet names a person `[name-1]`. Null: not a packet of this plugin.
- */
-export function packetRow(text: string, ledger: readonly LedgerEntry[]): string | null {
-  const head = PACKET_HEAD.exec(text)
-  const intent = INTENT_IDS.find(one => one === head?.[1])
-  if (head === null || intent === undefined) return null
-  const end = text.indexOf('</tg-packet>')
-  const body = text.slice(0, end === -1 ? undefined : end)
-  const contextAt = body.indexOf('<context>')
-  const own = contextAt === -1 ? body : body.slice(0, contextAt)
-  const ids = [...own.matchAll(MESSAGE_ID)].map(match => Number(match[1]))
-  const parentsInText = contextAt === -1 ? 0 : [...body.slice(contextAt).matchAll(MESSAGE_ID)].length
-  const same = (entry: LedgerEntry) =>
-    entry.to.kind === 'main' && entry.intent === intent && entry.messageIds.length === ids.length && entry.messageIds.every(id => ids.includes(id))
-  const entry = ledger.findLast(same)
-  const peerMatch = PEER.exec(own)
-  const label = entry?.peer.label ?? unescapeXml(peerMatch?.[1] ?? peerMatch?.[2] ?? 'a chat')
-  const parents = entry?.parents ?? parentsInText
-  const masked = entry?.masked ?? new Set(body.match(PLACEHOLDER) ?? []).size
-  const first = ids[0]
-  const what = ids.length === 1 && first !== undefined ? `#${first}` : `${ids.length} messages`
-  const extras = [...(parents === 0 ? [] : [`+${parents} parent${parents === 1 ? '' : 's'}`]), ...(masked === 0 ? [] : [`${masked} masked`])]
-  return `▣ tg packet → main · ${intentLabel(intent)} · ${label} ${what}${extras.length === 0 ? '' : ` (${extras.join(', ')})`}   ctrl+o shows it`
 }

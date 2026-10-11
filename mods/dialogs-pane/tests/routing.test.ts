@@ -753,7 +753,7 @@ describe('hidden band', () => {
   })
 })
 
-describe('drafted reply', () => {
+describe('drafted reply: a row of its chat (§8 T3)', () => {
   // Draft reply is a people intent (§4.6): every chat here reads as Contact A's thread.
   const personTg = (argv: readonly string[]) => (argv[1] === 'read' ? json(PERSON_MESSAGES) : tgAnswer(argv))
 
@@ -765,6 +765,11 @@ describe('drafted reply', () => {
     return json({ sent: [{ id: 677900 }] })
   }
 
+  /** The draft's row, its head the Button ⏎ acts on; its verdict the line under its text. */
+  const ROW = 'draft:reply'
+  const rowText = async (ui: Ui) => (await ui.find({ key: `card:${ROW}` }))?.text ?? ''
+
+  /** Draft reply on Contact A's #92; main answers; the draft lands as a row after #92, and j puts the cursor on it. */
   async function drafted($: Engine, on: On, plan: { allowed: boolean; reason: string }, dialogs = ALL_DIALOGS, answer = 'On it, fixing now.') {
     const clock = mock.clock(on, { now: NOW })
     const seen = world(on, { tg: ran => (ran.argv[1] === 'dialogs' ? json(dialogs) : draftRun(plan)(ran)) })
@@ -772,111 +777,149 @@ describe('drafted reply', () => {
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
-    // The draft waits behind its notice (T4b); e opens it.
-    expect((await ui.find({ key: 'notice' }))?.text).toMatch(/^✎ draft for (Contact A|@BotFather) waits · e: open$/)
-    await ui.press({ key: 'key:edit' })
+    // No notice and no layer: the row joins the thread after #92, below the cursor.
+    expect(await ui.find({ key: 'notice' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => key.startsWith('msg:') || key.startsWith('draft:'))).toEqual(['msg:91', 'msg:92', ROW])
+    await ui.press({ key: 'key:down' })
+    expect((await ui.find({ key: ROW }))?.props.autoFocus).toBe(true)
     return { ui, seen }
   }
 
-  test('the draft layer: no two Buttons share a hotkey, and each is the table’s', async ($, on) => {
+  test('the cursor on the row: ⏎ send draft, e, d; one Button per hotkey, each the table’s, the field open too', async ($, on) => {
     const { ui } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
-    expect(await ui.find({ key: 'draft' })).toBeDefined()
     const owners = hotkeyTable()
-    for (const step of ['open', 'planned'] as const) {
-      if (step === 'planned') await ui.press({ key: 'draft:check' })
+    for (const step of ['row', 'field'] as const) {
+      if (step === 'field') await ui.press({ key: 'key:edit' })
       // The catch-all's Buttons (`stray:`) bind what nothing else does; they say where a key works.
       const drawn = (await ui.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.hotkey === 'string' && button.key?.startsWith('stray:') !== true ? [button.props.hotkey] : []))
       expect(drawn.filter((key, index) => drawn.indexOf(key) !== index)).toEqual([])
       for (const key of drawn) expect(/^[0-9]$/.test(key) || owners.has(key)).toBe(true)
     }
+    expect(await ui.find({ key: `${ROW}:text` })).toBeDefined()
     await ui.unmount()
   })
 
-  test('the agent answer is drafted; check shows the plan; send runs the same tg send', async ($, on) => {
+  test('the guard checks it as it lands; ⏎ on its row sends the same tg send, and the row leaves the thread', async ($, on) => {
     const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('reply to #92 in Contact A')
-    await ui.press({ key: 'draft:check' })
     const dry = seen.runs.find(one => one.argv.includes('--dry-run'))
     expect(dry?.argv).toEqual(['tg', 'send', '1004', '-', '--reply-to', '92', '--plain', '--json', '--yes', '--dry-run'])
     expect(dry?.stdin).toBe('On it, fixing now.')
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('plan ok: allowlisted')
-    await ui.press({ key: 'draft:send' })
+    expect(await rowText(ui)).toContain('✎ draft to Contact A · from main')
+    expect(await rowText(ui)).toContain('✓ the guard allows it')
+    expect((await ui.find({ key: 'key:senddraft' }))?.text).toBe('⏎ send draft')
+    await ui.press({ key: ROW })
     const real = seen.runs.filter(one => one.argv[1] === 'send').at(-1)
     expect(real?.argv).toEqual(dry?.argv.slice(0, -1))
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('✓ sent #677900')
+    expect(await ui.find({ key: ROW })).toBeUndefined()
     await ui.unmount()
   })
 
-  test("outside allow.toml: the owner's check and send carry --yes, the plan is allowed, and the whole text shows before send", async ($, on) => {
+  test("outside allow.toml: the owner's check and send carry --yes, the guard allows it, and the whole text shows, wrapped, before ⏎", async ($, on) => {
     const long = 'On it: the handler crashed on an empty callback payload, the fix is merged and deployed, so please press Settings once more and tell me what you see.'
     const { ui, seen } = await drafted($, on, { allowed: false, reason: 'target is not in the allowlist' }, ALL_DIALOGS, long)
-    await ui.press({ key: 'draft:check' })
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('plan ok: confirmed with --yes')
+    expect(await rowText(ui)).toContain('✓ the guard allows it')
     // Longer than the pane is wide: drawn whole and wrapped, not as a one-line field or a truncated line.
-    expect((await ui.find({ key: 'draft' }))?.children?.[1]).toMatchObject({ type: 'Text', props: { wrap: 'wrap' }, children: [long] })
-    expect(await ui.find({ key: 'draft:text' })).toBeUndefined()
-    await ui.press({ key: 'draft:send' })
+    expect(await ui.find({ type: 'Text', text: long })).toMatchObject({ props: { wrap: 'wrap' } })
+    expect(await ui.find({ key: `${ROW}:text` })).toBeUndefined()
+    await ui.press({ key: 'key:senddraft' })
     expect(seen.runs.filter(one => one.argv[1] === 'send').map(one => one.argv.slice(-2))).toEqual([
       ['--yes', '--dry-run'],
       ['--json', '--yes'],
     ])
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('✓ sent #677900')
     await ui.unmount()
   })
 
   // The sheet offers Draft reply in no bot chat, so this BotFather is a user-kind chat with its
   // username: the refusal by name, checked before tg runs, must hold however a draft came to be.
-  test('BotFather: check and send run nothing, whatever the guard would say', async ($, on) => {
+  test('BotFather: the check and ⏎ run nothing, whatever the guard would say', async ($, on) => {
     const dialogs = ALL_DIALOGS.map(one => (one.id === 1004 ? { ...one, username: 'BotFather', title: 'BotFather' } : one))
     const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' }, dialogs)
-    await ui.press({ key: 'draft:check' })
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('BotFather is read-only')
-    expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
+    expect(await rowText(ui)).toContain('BotFather is read-only')
+    await ui.press({ key: ROW })
     expect(seen.runs.filter(one => one.argv[1] === 'send')).toEqual([])
     await ui.unmount()
   })
 
-  test('readonly = true: the guard refuses even with --yes; no send button, nothing sent', async ($, on) => {
+  test('readonly = true: the guard refuses even with --yes; ⏎ sends nothing', async ($, on) => {
     const { ui, seen } = await drafted($, on, { allowed: false, reason: 'readonly = true in config.toml: every write is refused' })
-    await ui.press({ key: 'draft:check' })
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('the guard refuses: readonly = true in config.toml: every write is refused; nothing is sent.')
-    expect((await ui.find({ key: 'draft' }))?.text).not.toContain('tg allow add')
-    expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
+    expect(await rowText(ui)).toContain('✗ the guard refuses: readonly = true in config.toml: every write is refused')
+    expect(await rowText(ui)).not.toContain('tg allow add')
+    await ui.press({ key: ROW })
     expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run'))).toEqual([])
     await ui.unmount()
   })
 
-  test('edit on a planned draft reopens the field and drops the plan: send needs a new check', async ($, on) => {
-    const { ui } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
-    await ui.press({ key: 'draft:check' })
-    await ui.press({ key: 'draft:edit' })
-    expect(await ui.find({ key: 'draft:text' })).toBeDefined()
-    expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
-    expect(await ui.find({ key: 'draft:check' })).toBeDefined()
+  test('e edits it in place: the field takes the text’s place, its ⏎ keeps the new text and the guard checks it again; d drops it', async ($, on) => {
+    const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
+    await ui.press({ key: 'key:edit' })
+    expect((await ui.find({ key: `${ROW}:text` }))?.props.value).toBe('On it, fixing now.')
+    await ui.input({ key: `${ROW}:text`, text: 'On it, fixing it now.' })
+    expect(await ui.find({ key: `${ROW}:text` })).toBeUndefined()
+    expect(seen.runs.filter(one => one.argv.includes('--dry-run')).map(one => one.stdin)).toEqual(['On it, fixing now.', 'On it, fixing it now.'])
+    expect(await rowText(ui)).toContain('On it, fixing it now.')
+    await ui.press({ key: 'key:dismiss' })
+    expect(await ui.find({ key: ROW })).toBeUndefined()
+    expect((await ui.find({ key: 'msg:92' }))?.props.autoFocus).toBe(true)
+    expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run'))).toEqual([])
     await ui.unmount()
   })
 
-  /** A first draft for @example_bot, and a second Draft reply packet (from `second`) that main is working on. */
+  test('with the pane hidden it is a band item (T5\'s N1): two rows, and ⏎ sends one that fits as the owner\'s own', async ($, on) => {
+    const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
+    await $.command.run({ ...WIDE, args: 'hide' })
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 100, scroll: { offset: 0, bodyRows: 6 }, view: {} } })
+    expect((await band.find({ key: 'band:row1' }))?.text).toContain('✎ Contact A: "reply to #92" · from main')
+    expect((await band.find({ key: 'band:row2' }))?.text).toBe('  → On it, fixing now.')
+    expect((await band.find({ key: 'ap:draft:send' }))?.text).toBe('⏎ send')
+    await band.press({ key: 'ap:draft:send' })
+    expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.argv)).toEqual([['tg', 'send', '1004', '-', '--reply-to', '92', '--plain', '--json', '--yes']])
+    await band.unmount()
+    await ui.unmount()
+  })
+
+  test('For you lists it beside autopilot\'s drafts: e edits it in its row, ⏎ sends one whose whole text the row shows', async ($, on) => {
+    const { ui, seen } = await drafted($, on, { allowed: true, reason: 'allowlisted' })
+    await ui.press({ key: 'key:back' })
+    await ui.press({ key: 'key:foryou' })
+    const row = (await ui.findAll({ type: 'Button' })).find(one => one.key?.startsWith('fy:') === true)
+    expect(row?.text).toContain('draft reply')
+    expect(row?.text).toContain('from main')
+    await ui.press({ key: 'key:edit' })
+    const field = (await ui.findAll({ type: 'Input' })).find(one => one.key?.endsWith(':edit') === true)
+    expect(field?.props.value).toBe('On it, fixing now.')
+    await ui.input({ key: field?.key ?? '', text: 'On it.' })
+    await ui.press({ key: 'key:senddraft' })
+    expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.stdin)).toEqual(['On it.'])
+    await ui.unmount()
+  })
+
+  /**
+   * A first draft for Contact A, checked as it landed; a second Draft reply
+   * packet (from `second`) that main is working on; the cursor back on the
+   * first draft's row. `tgAsync` sees every run from the second packet on.
+   */
   async function twoDrafts($: Engine, on: On, tgAsync: (ran: Ran) => Promise<ProcessRunResult>, second: number) {
     const clock = mock.clock(on, { now: NOW })
-    const seen = world(on, { tgAsync })
+    let isArmed = false
+    const seen = world(on, { tgAsync: async ran => (isArmed ? tgAsync(ran) : ran.argv[1] === 'send' && ran.argv.includes('--dry-run') ? json({ action: 'send', target: {}, steps: [], guard: { allowed: true, reason: 'confirmed with --yes' } }) : tgAsync(ran)) })
     const ui = await openChatAt($, clock, 1004, 92)
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-1' })
     await $.turn.complete({ answer: 'First draft.', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
-    // The cursor lands on the newest message, #92 again: the second packet is about it.
     if (second !== 1004) await ui.press({ key: await chatKey(ui, second) })
     await sendTo(ui, 'route:main', 'draft_reply')
     await $.turn.start({ text: '', turnId: 't-2' })
-    // The first draft waits behind its notice (T4b); e opens it.
-    await ui.press({ key: 'key:edit' })
+    if (second !== 1004) await ui.press({ key: await chatKey(ui, 1004) })
+    await ui.press({ key: 'key:down' })
+    expect((await ui.find({ key: ROW }))?.props.autoFocus).toBe(true)
+    isArmed = true
     return { ui, seen }
   }
 
   const finishSecond = ($: Engine) =>
     $.turn.complete({ answer: 'Second draft.', durationMs: 1, isAborted: false, turnId: 't-2', reason: 'answer' })
 
-  test('a draft that lands while check runs gets no plan of its own, and BotFather is never sent to', async ($, on) => {
+  test('a draft that lands while a check runs gets no plan of its own, and BotFather is never sent to', async ($, on) => {
     // As above: BotFather by username in a chat whose newest message is a person's.
     const dialogs = ALL_DIALOGS.map(one => (one.id === 1002 ? { ...one, kind: 'user' as const, username: 'BotFather', title: 'BotFather' } : one))
     let isFinished = false
@@ -889,14 +932,18 @@ describe('drafted reply', () => {
       }
       return ran.argv.includes('--dry-run') ? json({ action: 'send', target: {}, steps: [], guard: { allowed: true, reason: 'confirmed with --yes' } }) : json({ sent: [{ id: 677900 }] })
     }, 1002)
-    await ui.press({ key: 'draft:check' })
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('in @BotFather')
-    expect(await ui.find({ key: 'draft:send' })).toBeUndefined()
+    // An edit of the first draft checks it again; the second packet's answer lands meanwhile.
+    await ui.press({ key: 'key:edit' })
+    await ui.input({ key: `${ROW}:text`, text: 'First draft, again.' })
+    await ui.press({ key: await chatKey(ui, 1002) })
+    expect(await rowText(ui)).toContain('✎ draft to @BotFather')
+    expect(await rowText(ui)).toContain('BotFather is read-only')
+    await ui.press({ key: ROW })
     expect(seen.runs.filter(one => one.argv[1] === 'send' && one.argv[2] === '@BotFather')).toEqual([])
     await ui.unmount()
   })
 
-  test('a draft that lands while send runs is not marked sent', async ($, on) => {
+  test('a draft that lands while a send runs is not marked sent: it waits as a row', async ($, on) => {
     let isFinished = false
     const { ui, seen } = await twoDrafts($, on, async ran => {
       if (ran.argv[1] !== 'send') return personTg(ran.argv)
@@ -907,12 +954,10 @@ describe('drafted reply', () => {
       }
       return json({ sent: [{ id: 677900 }] })
     }, 1004)
-    // twoDrafts sent the second packet after the first draft came; check the first one now.
-    await ui.press({ key: 'draft:check' })
-    await ui.press({ key: 'draft:send' })
+    await ui.press({ key: ROW })
     expect(seen.runs.filter(one => one.argv[1] === 'send' && !one.argv.includes('--dry-run')).map(one => one.stdin)).toEqual(['First draft.'])
-    expect((await ui.find({ key: 'draft' }))?.text).toContain('Second draft.')
-    expect((await ui.find({ key: 'draft' }))?.text).not.toContain('sent #677900')
+    expect(await rowText(ui)).toContain('Second draft.')
+    expect(await rowText(ui)).toContain('✓ the guard allows it')
     await ui.unmount()
   })
 })

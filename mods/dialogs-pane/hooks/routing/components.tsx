@@ -1,17 +1,16 @@
 // The routing components of design §4 and dialogs-pane-ux.md §5.1: the send
-// sheet (⏎ on a message), its targets, inspect, the broadcast legs and the
-// drafted reply (the packet ledger is in Activity, ../ui/activity). Plain
+// sheet (⏎ on a message), its targets, inspect and the broadcast legs (the
+// packet ledger is in Activity, ../ui/activity; a drafted reply is a row of its
+// chat, ../ui/components DraftCard). Plain
 // functions over the surface's element table, as ../ui/components.tsx draws; handlers come in as
 // closures. Their letters are ../ui/keys'; digits pick what is numbered here.
 import type { RenderElement } from 'claude-code'
 
-import type { BroadcastRow, RadarEntry, Recipient, ReplyDraft, RouteIntent } from '../../types'
+import type { BroadcastRow, RadarEntry, Recipient, RouteIntent } from '../../types'
 import type { Els } from '../ui/components'
-import { GLYPH, TOKEN, oneLine } from '../ui/model'
+import { TOKEN } from '../ui/model'
 import { agentChip, intentLabel, recipientLabel } from './route'
 import { intentText, type InspectView } from './sheet'
-
-export type DraftHandlers = { onCheck: () => void; onSend: () => void; onDrop: () => void; onEdit: (text: string) => void }
 
 function IntentChip({ Button, Text }: Els, props: { intent: RouteIntent; onPress: () => void; id: string }): RenderElement {
   return (
@@ -19,77 +18,6 @@ function IntentChip({ Button, Text }: Els, props: { intent: RouteIntent; onPress
       <Text dimColor>intent: </Text>
       <Text color={TOKEN.accent} bold>{`[${intentLabel(props.intent)}]`}</Text>
     </Button>
-  )
-}
-
-/**
- * The drafted reply: check (dry run, the WritePlan and the guard), then send, or drop.
- * Planned, the text is drawn whole and wrapped above "send reply": the owner sends it
- * with --yes as their own (decision 9), so they read all of it first; `edit` reopens it.
- */
-export function DraftRow(
-  els: Els,
-  props: { draft: ReplyDraft; width: number } & DraftHandlers,
-): RenderElement {
-  const { Box, Text, Button } = els
-  const Input = 'Input' in els ? els.Input : undefined
-  const { draft } = props
-  const head = `✎ reply to #${draft.replyTo} in ${draft.peer.label} (from ${draft.from})`
-  const step = draft.step
-  const status = (() => {
-    switch (step.kind) {
-      case 'draft':
-        return { text: 'check runs tg send --dry-run: the plan and the guard first', color: undefined }
-      case 'checking':
-        return { text: `${GLYPH.working} checking`, color: undefined }
-      case 'planned':
-        return step.isAllowed
-          ? { text: `plan ok: ${step.reason}; send runs it`, color: TOKEN.ok }
-          : { text: `${GLYPH.error} the guard refuses: ${step.reason}; nothing is sent.`, color: TOKEN.danger }
-      case 'sending':
-        return { text: `${GLYPH.working} sending`, color: undefined }
-      case 'sent':
-        return { text: `${GLYPH.done} sent ${step.ids.map(id => `#${id}`).join(' ')}`, color: TOKEN.ok }
-      case 'failed':
-        return { text: `${GLYPH.error} ${step.reason}`, color: TOKEN.danger }
-    }
-  })()
-  const isEditable = step.kind === 'draft' || step.kind === 'failed'
-  return (
-    <Box key="draft" flexDirection="column">
-      <Text color={TOKEN.accent} wrap="truncate-end">
-        {head}
-      </Text>
-      {step.kind === 'planned' ? (
-        <Text wrap="wrap">{draft.text}</Text>
-      ) : Input !== undefined && isEditable ? (
-        <Input key="draft:text" label="✎" value={draft.text} submitLabel="keep" onSubmit={value => props.onEdit(value)} />
-      ) : (
-        <Text wrap="truncate-end">{`"${oneLine(draft.text, Math.max(10, props.width - 4))}"`}</Text>
-      )}
-      <Text color={status.color} dimColor={status.color === undefined} wrap="wrap">
-        {status.text}
-      </Text>
-      <Box flexDirection="row" gap={2}>
-        {step.kind === 'planned' && step.isAllowed ? (
-          <Button key="draft:send" variant="primary" onPress={props.onSend}>
-            send reply
-          </Button>
-        ) : step.kind === 'sent' ? null : (
-          <Button key="draft:check" variant="primary" onPress={props.onCheck}>
-            check
-          </Button>
-        )}
-        {step.kind === 'planned' ? (
-          <Button key="draft:edit" plain dimColor onPress={() => props.onEdit(draft.text)}>
-            edit
-          </Button>
-        ) : null}
-        <Button key="draft:drop" plain dimColor onPress={props.onDrop}>
-          {step.kind === 'sent' ? 'close' : 'drop'}
-        </Button>
-      </Box>
-    </Box>
   )
 }
 

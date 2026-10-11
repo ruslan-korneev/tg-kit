@@ -4,6 +4,8 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 
 import type { Load, TgDialog, TgMessage } from '../../types'
+import { LEVEL_GLYPH } from '../autopilot/config'
+import { DRAFT_INDENT, type DraftView, type VerdictTone } from './drafts'
 import {
   GLYPH,
   TOKEN,
@@ -220,5 +222,54 @@ export function Divider({ Text }: Els, props: { label: string; width: number }):
     <Text color={TOKEN.accent} dimColor wrap="truncate-end">
       {`─${label}`.padEnd(Math.max(1, props.width), '─')}
     </Text>
+  )
+}
+
+const VERDICT_COLOR: Record<VerdictTone, string | undefined> = { ok: TOKEN.ok, danger: TOKEN.danger, dim: undefined }
+
+/**
+ * A draft as a row of its chat's thread (§5.4, §8 T3): its head is the ring
+ * stop ⏎ acts on, then its whole text, wrapped (or the field `e` opens, in its
+ * place), then why it waits and the guard's verdict. The thread's window holds
+ * it whole or not at all (./drafts `draftHeight`), so a draft ⏎ can reach is a
+ * draft read whole (decision 9).
+ */
+export function DraftCard(
+  els: Els,
+  props: { draft: DraftView; isCursor: boolean; isStatic?: boolean; width: number; onPress: () => void; onSave: (text: string) => void },
+): RenderElement {
+  const { Box, Button, Text } = els
+  const Input = 'Input' in els ? els.Input : undefined
+  const { draft } = props
+  const head = [
+    <Text color={TOKEN.accent}>{`${props.isCursor ? GLYPH.cursor : ' '}  `}</Text>,
+    <Text color={TOKEN.warn}>{`${LEVEL_GLYPH.draft} draft to ${draft.peer.label}`}</Text>,
+    // One line: a Button's row does not cut its text, so the head is cut to the pane's width here.
+    <Text dimColor>{` · ${oneLine(draft.why, Math.max(4, props.width - DRAFT_INDENT - 14 - draft.peer.label.length - 3))}`}</Text>,
+  ]
+  const indent = ' '.repeat(DRAFT_INDENT)
+  return (
+    <Box key={`card:${draft.key}`} flexDirection="column">
+      {props.isStatic === true ? (
+        <Box key={`row:${draft.key}`} flexDirection="row">
+          {...head}
+        </Box>
+      ) : (
+        <Button key={draft.key} plain autoFocus={props.isCursor ? true : undefined} onPress={props.onPress}>
+          {...head}
+        </Button>
+      )}
+      {draft.isEditing && Input !== undefined && props.isStatic !== true ? (
+        <Input key={`${draft.key}:text`} label={`${indent}✎`} value={draft.text} submitLabel="keep" autoFocus onSubmit={value => props.onSave(value)} />
+      ) : (
+        <Box key={`text:${draft.key}`} flexDirection="row">
+          <Text>{indent}</Text>
+          <Text wrap="wrap">{draft.text}</Text>
+        </Box>
+      )}
+      <Text key={`verdict:${draft.key}`} color={VERDICT_COLOR[draft.verdict.tone]} dimColor={draft.verdict.tone === 'dim'} wrap="truncate-end">
+        {`${indent}${draft.verdict.text}`}
+      </Text>
+    </Box>
   )
 }

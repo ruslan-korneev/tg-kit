@@ -1,105 +1,135 @@
-// The delegate's components (docs/design/dialogs-pane.md §6 mockups): the
-// grant and hard-stop rows of the autopilot card, the task card on top of its
-// chat's thread, its one-line form inline, and the band row of a hard stop
-// waiting for your answer. Plain functions over the surface's element table.
+// The delegate's components (docs/design/dialogs-pane-ux.md §5.5): the card's
+// warning and grant steps and the danger zone under `o`, the task card on top
+// of its chat's thread, its one-line form inline, and the band row of a hard
+// stop waiting for your answer. Plain functions over the surface's element table.
 import type { RenderElement } from 'claude-code'
 
-import type { DgDialog, DgPending, DgTask } from '../../types'
+import type { DgDialog, DgGrant, DgPending, DgTask } from '../../types'
+import { Label, Row, writesRows, type SelectChoice } from '../autopilot/components'
+import type { AllowView } from '../autopilot/ladder'
 import type { Els } from '../ui/components'
-import { TOKEN, oneLine } from '../ui/model'
-import { COMMANDS_LABEL, WEB_LABEL, durationText } from './grant'
+import { GLYPH, TOKEN, oneLine } from '../ui/model'
+import { COMMANDS_LABEL, DG_WEB, WEB_LABEL, durationText } from './grant'
 import { untilText } from './skip'
 import { cardLines, elapsedText, holdsOf, taskLine, type CardLine, type TaskView } from './task'
 
-export type DelegateHandlers = {
-  onWeb: () => void
-  onCommands: () => void
-  onRepos: (text: string) => void
-  onDuration: (text: string) => void
-  onSkip: (text: string) => void
-  onConfirm: (text: string) => void
-  onCancel: () => void
-}
-
-/** The one-time warning the card shows before delegate is picked for a dialog. */
-export function warningText(label: string): string {
-  return `⚡ delegate: whoever writes in ${label} steers an agent that has tools (your repos, the web). The grant limits what it can reach and the hard stops guard what cannot be undone, but use delegate only for contacts you trust, never a public group. Press 4 again to hand it over.`
-}
-
-function Label({ Box, Text }: Els, text: string): RenderElement {
+/** The warning step (§5.5): once per chat, before the grant; the divider or the header names it. ⏎ is the bar's `I understand, set it up`. */
+export function DelegateWarning({ Box, Text }: Els, props: { label: string }): RenderElement {
   return (
-    <Box width={10} flexShrink={0}>
-      <Text dimColor>{text}</Text>
+    <Box key="dg:warning" flexDirection="column">
+      <Text wrap="wrap">
+        {`Whoever writes in ${props.label} steers an agent that has tools: your repos (a fresh worktree per task) and the web. The grant limits what it reaches; hard stops ask you before anything that cannot be undone. Person chats only: in a group, every member could steer it.`}
+      </Text>
     </Box>
   )
 }
 
-function Field(els: Els, props: { id: string; label: string; value: string; placeholder: string; onSubmit: (text: string) => void }): RenderElement {
-  const { Text } = els
-  const Input = 'Input' in els ? els.Input : undefined
-  if (Input === undefined) return <Text>{`${props.label} ${props.value === '' ? props.placeholder : props.value}`}</Text>
-  return <Input key={props.id} label={props.label} placeholder={props.placeholder} value={props.value} submitLabel="save" onSubmit={value => props.onSubmit(value)} />
+const DURATION_CHOICES: readonly string[] = ['done', '30m', '1h', '2h', '4h', '8h']
+
+/** `until` as the Select offers it: the stored duration always among the choices. */
+export function durationChoices(grant: DgGrant): SelectChoice[] {
+  const current = grant.duration.kind === 'done' ? 'done' : durationText(grant.duration)
+  const all = DURATION_CHOICES.includes(current) ? DURATION_CHOICES : [...DURATION_CHOICES, current]
+  return all.map(value => ({ value, label: value === 'done' ? 'the task is done' : value }))
+}
+
+export function durationValue(grant: DgGrant): string {
+  return grant.duration.kind === 'done' ? 'done' : durationText(grant.duration)
+}
+
+export type GrantHandlers = {
+  onRepos: (text: string) => void
+  onWeb: (value: string) => void
+  onCommands: (value: string) => void
+  onDuration: (value: string) => void
 }
 
 /**
- * The card's delegate rows: web, commands, repos, duration, and the hard
- * stops; a skip waits for the dialog's name to be typed. w and c mean watch
- * and nothing in the pane (../ui/keys), so web and commands are pressed by
- * the ring until T3 turns them into Selects.
+ * The grant step (§5.5), filled from where the owner is: the repos field
+ * (the session's repo when it has one; `e` rings it), web, commands and until
+ * as Selects; then the hard stops, the guard and allow.toml. The fields are
+ * always drawn, so the ring stops above the bar's ⏎ never change while it is up.
  */
-export function DelegateRows(
+export function DelegateGrant(
   els: Els,
-  props: { dg: DgDialog; label: string; noStops: string | null; pending: DgPending | null; now: number; guard: string | null } & DelegateHandlers,
+  props: { dg: DgDialog; label: string; arg: string; sessionRepo: string | null; skipped: string | null; noStops: string | null; isGuardUp: boolean; guardText: string; allow: AllowView; notice: string | null } & GrantHandlers,
 ): RenderElement {
-  const { Box, Text, Button } = els
-  const { grant, skip } = props.dg
-  const skipText = skip === null || (skip.until !== null && skip.until <= props.now) ? null : `off: ${skip.stops.join(', ')} (${untilText(skip.until)})`
+  const { Box, Text } = els
+  const Select = 'Select' in els ? els.Select : undefined
+  const Input = 'Input' in els ? els.Input : undefined
+  const { grant } = props.dg
+  const repos = grant.repos.join(', ')
+  const isSessionRepo = props.sessionRepo !== null && grant.repos.length === 1 && grant.repos[0] === props.sessionRepo
+  const select = (key: string, label: string, choices: SelectChoice[], value: string, onSelect: (value: string) => void) =>
+    Select === undefined ? (
+      <Text>{`${label} ${choices.find(one => one.value === value)?.label ?? value}`}</Text>
+    ) : (
+      <Select key={key} label={label} options={choices} value={value} onSelect={next => onSelect(next)} />
+    )
   return (
-    <Box key="dg:rows" flexDirection="column">
+    <Box key="dg:grant" flexDirection="column">
       <Box flexDirection="row">
-        {Label(els, 'guard:')}
-        {props.guard === null ? <Text color={TOKEN.ok}>✓ dialogs-pane-guard answering</Text> : <Text color={TOKEN.danger} wrap="wrap">{`✗ ${props.guard}`}</Text>}
-      </Box>
-      <Box flexDirection="row">
-        {Label(els, 'web:')}
-        <Button key="dg:web" plain onPress={props.onWeb}>
-          {`${WEB_LABEL[grant.web]}`}
-        </Button>
-        <Text dimColor>{'  (off → read-only → full)'}</Text>
-      </Box>
-      <Box flexDirection="row">
-        {Label(els, 'commands:')}
-        <Button key="dg:commands" plain onPress={props.onCommands}>
-          {COMMANDS_LABEL[grant.commands]}
-        </Button>
-      </Box>
-      <Box flexDirection="row">
-        {Label(els, 'repos:')}
-        {Field(els, { id: 'dg:repos', label: 'paths', value: grant.repos.join(', '), placeholder: '~/code/app (a fresh worktree of each)', onSubmit: props.onRepos })}
-      </Box>
-      <Box flexDirection="row">
-        {Label(els, 'duration:')}
-        {Field(els, { id: 'dg:duration', label: 'until', value: durationText(grant.duration), placeholder: 'done, or 2h / 90m', onSubmit: props.onDuration })}
-      </Box>
-      <Box flexDirection="row">
-        {Label(els, 'stops:')}
-        <Box flexDirection="column">
-          {skipText === null ? <Text color={TOKEN.ok}>on: money · publish · share · delete · commit-on-behalf</Text> : <Text color={TOKEN.danger} wrap="wrap">{skipText}</Text>}
-          {props.noStops === null ? null : <Text color={TOKEN.danger} wrap="wrap">{props.noStops}</Text>}
-          {props.pending === null ? (
-            Field(els, { id: 'dg:skip', label: 'skip', value: '', placeholder: 'dangerouslySkipHardStops: all | publish,delete [24h|never]', onSubmit: props.onSkip })
-          ) : (
-            <Box flexDirection="column">
-              <Text color={TOKEN.danger} wrap="wrap">{`Skip ${props.pending.skip.stops.join(', ')} for this dialog, ${untilText(props.pending.skip.until)}? Type "${props.label}" to confirm.`}</Text>
-              <Box flexDirection="row" gap={2}>
-                {Field(els, { id: 'dg:confirm', label: 'dialog name', value: '', placeholder: props.label, onSubmit: props.onConfirm })}
-                <Button key="dg:cancel" plain dimColor onPress={props.onCancel}>
-                  cancel
-                </Button>
-              </Box>
-            </Box>
-          )}
+        {Label(els, 'grant')}
+        <Box flexDirection="column" flexShrink={1}>
+          <Box flexDirection="row" columnGap={2}>
+            {Input === undefined ? (
+              <Text>{`repos ${repos}`}</Text>
+            ) : (
+              <Input key="dg:repos" label="repos" placeholder="~/code/app (a fresh worktree of each)" value={repos} submitLabel="save" onSubmit={value => props.onRepos(value)} />
+            )}
+            {isSessionRepo ? <Text dimColor>(this session's repo)</Text> : null}
+          </Box>
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {select('dg:web', 'web', DG_WEB.map(web => ({ value: web, label: WEB_LABEL[web] })), grant.web, props.onWeb)}
+            {select('dg:commands', 'commands', (['checks', 'any'] as const).map(one => ({ value: one, label: COMMANDS_LABEL[one] })), grant.commands, props.onCommands)}
+            {select('dg:duration', 'until', durationChoices(grant), durationValue(grant), props.onDuration)}
+          </Box>
         </Box>
+      </Box>
+      {props.skipped === null
+        ? Row(els, 'stops', 'ask you: money · publish · share · delete · commit-on-behalf')
+        : Row(els, 'stops', props.skipped, TOKEN.danger)}
+      {props.noStops === null ? null : Row(els, '', props.noStops, TOKEN.danger)}
+      {props.isGuardUp ? Row(els, 'guard', `${GLYPH.done} dialogs-pane-guard answering`, TOKEN.ok) : Row(els, 'guard', `✗ ${props.guardText}`, TOKEN.danger)}
+      {...writesRows(els, { label: props.label, arg: props.arg, rung: 'delegate', allow: props.allow })}
+      {props.notice === null ? null : (
+        <Text key="dg:notice" color={TOKEN.warn} wrap="wrap">
+          {props.notice}
+        </Text>
+      )}
+    </Box>
+  )
+}
+
+/**
+ * The danger zone under `o` (§5.5), person chats only: dangerouslySkipHardStops
+ * for this chat, which waits for the chat's name typed exactly.
+ */
+export function DangerZone(els: Els, props: { dg: DgDialog; label: string; pending: DgPending | null; now: number; onSkip: (text: string) => void; onConfirm: (text: string) => void; onCancel: () => void }): RenderElement {
+  const { Box, Text, Button } = els
+  const Input = 'Input' in els ? els.Input : undefined
+  const { skip } = props.dg
+  const skipText = skip === null || (skip.until !== null && skip.until <= props.now) ? null : `off: ${skip.stops.join(', ')} (${untilText(skip.until)})`
+  const field = (key: string, label: string, placeholder: string, onSubmit: (text: string) => void) =>
+    Input === undefined ? <Text>{`${label} ${placeholder}`}</Text> : <Input key={key} label={label} placeholder={placeholder} value="" submitLabel="save" onSubmit={value => onSubmit(value)} />
+  return (
+    <Box key="dg:danger" flexDirection="row">
+      {Label(els, 'danger')}
+      <Box flexDirection="column" flexShrink={1}>
+        {skipText === null ? <Text dimColor>every hard stop asks you</Text> : <Text color={TOKEN.danger} wrap="wrap">{skipText}</Text>}
+        {props.pending === null ? (
+          field('dg:skip', 'skip', 'dangerouslySkipHardStops: all | publish,delete [24h|never]', props.onSkip)
+        ) : (
+          <Box flexDirection="column">
+            <Text color={TOKEN.danger} wrap="wrap">{`Skip ${props.pending.skip.stops.join(', ')} for this chat, ${untilText(props.pending.skip.until)}? Type "${props.label}" to confirm.`}</Text>
+            <Box flexDirection="row" gap={2}>
+              {field('dg:confirm', 'chat name', props.label, props.onConfirm)}
+              <Button key="dg:cancel" plain dimColor onPress={props.onCancel}>
+                cancel
+              </Button>
+            </Box>
+          </Box>
+        )}
       </Box>
     </Box>
   )
@@ -131,7 +161,7 @@ export function TaskCard(els: Els, props: { task: DgTask; view: TaskView; now: n
   return (
     <Box key={`dg:task:${task.id}`} flexDirection="column">
       <Box flexDirection="row" justifyContent="space-between">
-        <Text color={isHeld ? TOKEN.warn : TOKEN.accent} bold wrap="truncate-end">{`⚡ ${task.peer.label} · ${oneLine(task.summary, Math.max(10, props.width - task.peer.label.length - 30))}`}</Text>
+        <Text color={isHeld ? TOKEN.warn : TOKEN.accent} bold wrap="truncate-end">{`↯ ${task.peer.label} · ${oneLine(task.summary, Math.max(10, props.width - task.peer.label.length - 30))}`}</Text>
         <Box flexDirection="row" gap={2} flexShrink={0}>
           {props.noStops === null ? null : <Text color={TOKEN.danger}>{props.noStops}</Text>}
           <Text dimColor>{elapsedText(task.startedAt, props.now)}</Text>

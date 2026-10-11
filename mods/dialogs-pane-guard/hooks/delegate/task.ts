@@ -202,9 +202,9 @@ export function taskWhere(task: DgTask, view: TaskView): string {
   return task.status
 }
 
-/** One line for a task on top of its chat inline, and `/tg autopilot`: `⚡ Contact B · add payment provider · … edit src/pay.ts`. */
+/** One line for a task on top of its chat inline, and `/tg autopilot`: `↯ Contact B · add payment provider · … edit src/pay.ts`. */
 export function taskLine(task: DgTask, view: TaskView): string {
-  return `⚡ ${task.peer.label} · ${short(task.summary, 40)} · ${taskWhere(task, view)}`
+  return `↯ ${task.peer.label} · ${short(task.summary, 40)} · ${taskWhere(task, view)}`
 }
 
 /** Tasks that still hold a Worker: the kill switch and the hooks care about these. */

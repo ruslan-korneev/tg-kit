@@ -134,20 +134,23 @@ describe('live pins', () => {
 describe('drafted replies', () => {
   const done = entry({ intent: 'draft_reply', messageIds: [677790, 677791], to: { kind: 'agent', isNew: true, agentId: 'a1', label: 'drafter' } })
 
-  test('a Draft reply answer drafts a reply to the newest message; other intents do not', () => {
-    expect(draftOf(done, '  Thanks, looking into it.  ')).toEqual({
+  test('a Draft reply answer drafts a reply to the newest message, a row after it; other intents do not', () => {
+    expect(draftOf(done, '  Thanks, looking into it.  ', 42)).toEqual({
       peer: PEER,
       replyTo: 677791,
       text: 'Thanks, looking into it.',
       from: 'drafter',
       step: { kind: 'draft' },
+      at: 42,
+      after: 677791,
+      isEditing: false,
     })
-    expect(draftOf({ ...done, intent: 'fix' }, 'done')).toBeNull()
-    expect(draftOf(done, '   ')).toBeNull()
+    expect(draftOf({ ...done, intent: 'fix' }, 'done', 42)).toBeNull()
+    expect(draftOf(done, '   ', 42)).toBeNull()
   })
 
   test('the dry run and the send are the same tg send but for --dry-run', () => {
-    const reply = { peer: { ...PEER, arg: '@contact_a' }, replyTo: 5, text: '-x', from: 'main', step: { kind: 'draft' } } as const
+    const reply = { peer: { ...PEER, arg: '@contact_a' }, replyTo: 5, text: '-x', from: 'main', step: { kind: 'draft' }, at: 0, after: 5, isEditing: false } as const
     const dry = draftArgv(reply, true)
     expect(dry).toEqual(['tg', 'send', '@contact_a', '-', '--reply-to', '5', '--plain', '--json', '--dry-run'])
     expect(draftArgv(reply, false)).toEqual(dry.slice(0, -1))
