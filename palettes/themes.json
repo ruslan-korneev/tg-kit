@@ -76,13 +76,22 @@
         "surface": "surface1"
       },
       "senders": [
-        "#F38BA8",
-        "#FAB387",
-        "#CBA6F7",
+        "#EBA0AC",
+        "#FA9C87",
+        "#B4BEFE",
         "#A6E3A1",
         "#89DCEB",
         "#89B4FA",
         "#F5C2E7"
+      ],
+      "senderNames": [
+        "maroon",
+        "peach -12°",
+        "lavender",
+        "green",
+        "sky",
+        "blue",
+        "pink"
       ],
       "topics": {
         "6FB9F0": "#89B4FA",
@@ -102,7 +111,8 @@
           "channel": "#7ADCEB"
         },
         "senders": {
-          "5": "#7AAFFA"
+          "5": "#7AAFFA",
+          "1": "#E59C87"
         },
         "topics": {
           "6FB9F0": "#7AAFFA",
@@ -152,13 +162,22 @@
         "surface": "surface2"
       },
       "senders": [
-        "#D20F39",
-        "#FE640B",
-        "#8839EF",
+        "#E64553",
+        "#FE330B",
+        "#7287FD",
         "#40A02B",
         "#04A5E5",
         "#1E66F5",
         "#EA76CB"
+      ],
+      "senderNames": [
+        "maroon",
+        "peach -12°",
+        "lavender",
+        "green",
+        "sky",
+        "blue",
+        "pink"
       ],
       "topics": {
         "6FB9F0": "#1E66F5",
@@ -211,13 +230,22 @@
         "surface": "fg_gutter"
       },
       "senders": [
-        "#F7768E",
-        "#FF9E64",
+        "#DB4B4B",
+        "#FF7F64",
         "#9D7CD8",
         "#9ECE6A",
         "#7DCFFF",
         "#7AA2F7",
         "#FF007C"
+      ],
+      "senderNames": [
+        "red1",
+        "orange -12°",
+        "purple",
+        "green",
+        "cyan",
+        "blue",
+        "magenta2"
       ],
       "topics": {
         "6FB9F0": "#7AA2F7",
@@ -270,13 +298,22 @@
         "surface": "overlay"
       },
       "senders": [
-        "#EB6F92",
-        "#EA9A97",
-        "#C4A7E7",
+        "#EB6FAB",
+        "#EA97A5",
+        "#B7A7E7",
         "#9CCFD8",
         "#9CCFD8",
         "#3E8FB0",
-        "#EA9A97"
+        "#EAAB97"
+      ],
+      "senderNames": [
+        "love -12°",
+        "rose -12°",
+        "iris -12°",
+        "foam",
+        "foam",
+        "pine",
+        "rose +12°"
       ],
       "topics": {
         "6FB9F0": "#3E8FB0",
@@ -285,6 +322,16 @@
         "8EEE98": "#9CCFD8",
         "FF93B2": "#EA9A97",
         "FB6F5F": "#EB6F92"
+      },
+      "variant256": {
+        "roles": {},
+        "senders": {
+          "0": "#E56FAB",
+          "1": "#E597A5",
+          "6": "#EAB397",
+          "2": "#B7A7E5"
+        },
+        "topics": {}
       }
     },
     "gruvbox-dark": {
@@ -329,13 +376,22 @@
         "surface": "dark2"
       },
       "senders": [
-        "#FB4934",
-        "#FE8019",
-        "#D3869B",
+        "#FB3447",
+        "#D65D0E",
+        "#D386AA",
         "#B8BB26",
         "#8EC07C",
         "#83A598",
         "#B16286"
+      ],
+      "senderNames": [
+        "bright_red -12°",
+        "neutral_orange",
+        "bright_purple -12°",
+        "bright_green",
+        "bright_aqua",
+        "bright_blue",
+        "neutral_purple"
       ],
       "topics": {
         "6FB9F0": "#83A598",
@@ -349,7 +405,10 @@
         "roles": {
           "subtext": "#B3997F"
         },
-        "senders": {},
+        "senders": {
+          "0": "#FB344D",
+          "2": "#D37FAA"
+        },
         "topics": {}
       }
     },
@@ -395,13 +454,22 @@
         "surface": "nord3"
       },
       "senders": [
-        "#BF616A",
-        "#D08770",
+        "#BF617D",
+        "#D07470",
         "#B48EAD",
         "#A3BE8C",
-        "#88C0D0",
+        "#8FBCBB",
         "#81A1C1",
         "#B48EAD"
+      ],
+      "senderNames": [
+        "nord11 -12°",
+        "nord12 -12°",
+        "nord15",
+        "nord14",
+        "nord7",
+        "nord9",
+        "nord15"
       ],
       "topics": {
         "6FB9F0": "#81A1C1",
@@ -415,7 +483,11 @@
         "roles": {
           "group": "#7FBCBB"
         },
-        "senders": {},
+        "senders": {
+          "0": "#BF6180",
+          "1": "#E67470",
+          "4": "#7FBCBB"
+        },
         "topics": {}
       }
     },
@@ -461,13 +533,22 @@
         "surface": "current_line"
       },
       "senders": [
-        "#FF5555",
-        "#FFB86C",
-        "#BD93F9",
+        "#FF5577",
+        "#FF9B6C",
+        "#A993F9",
         "#50FA7B",
         "#8BE9FD",
         "#6272A4",
         "#FF79C6"
+      ],
+      "senderNames": [
+        "red -12°",
+        "orange -12°",
+        "purple -12°",
+        "green",
+        "cyan",
+        "comment",
+        "pink"
       ],
       "topics": {
         "6FB9F0": "#8BE9FD",
@@ -476,6 +557,13 @@
         "8EEE98": "#50FA7B",
         "FF93B2": "#FF79C6",
         "FB6F5F": "#FF5555"
+      },
+      "variant256": {
+        "roles": {},
+        "senders": {
+          "0": "#FF4C77"
+        },
+        "topics": {}
       }
     },
     "kanagawa": {
@@ -521,12 +609,21 @@
       },
       "senders": [
         "#E46876",
-        "#FFA066",
-        "#957FB8",
+        "#FF9E3B",
+        "#B8B4D0",
         "#98BB6C",
         "#7AA89F",
         "#7E9CD8",
         "#D27E99"
+      ],
+      "senderNames": [
+        "waveRed",
+        "roninYellow",
+        "oniViolet2",
+        "springGreen",
+        "waveAqua2",
+        "crystalBlue",
+        "sakuraPink"
       ],
       "topics": {
         "6FB9F0": "#7E9CD8",

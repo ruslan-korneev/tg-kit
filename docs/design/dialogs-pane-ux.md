@@ -2158,7 +2158,29 @@ is also the CLI's name):
 
 - `roles`: §10.2's 14 roles. The CLI uses 13 of them; `surface` is the pane's borders.
 - `senders`: the 7 colours of a sender's name, in Telegram's peer colour order (`abs(id) % 7`
-  picks one).
+  picks one). `senderNames` gives the upstream name each took, or `name ±N°` for a hue-shifted
+  one.
+- **No sender colour equals `unread`, `mention` or `accent`** in its theme, in hex or in its 256
+  cell. Otherwise a sender's name reads as an unread count, a mention or `me` (rule from tg-kit-25,
+  2026-10-11, after tg-cli-colors found the red sender equal to `unread` in seven themes and the
+  violet one equal to `accent` in six). A clash takes the theme's neighbour first:
+  - Catppuccin: maroon for red, lavender for violet;
+  - `tokyo-night`: red1;
+  - `gruvbox-dark`: neutral_orange;
+  - `nord`: nord7 for cyan;
+  - `kanagawa`: roninYellow and oniViolet2.
+
+  Where no neighbour exists, the upstream colour is hue-shifted, −12° first (red toward crimson,
+  orange toward red, violet toward blue), keeping its lightness and saturation and at least 3:1
+  on the background. The derived senders are:
+  - Catppuccin's orange (peach −12°);
+  - `tokyo-night`'s orange;
+  - `rose-pine-moon`'s red, orange, violet and pink;
+  - `gruvbox-dark`'s red and violet;
+  - `nord`'s red and orange;
+  - `dracula`'s red, orange and violet.
+
+  The 256 cells are kept apart by `variant256.senders`.
 - `topics`: one per Telegram `icon_color`, keyed by its hex.
 - `variant256`: only the entries `<name>256` changes. The file has the key only when the theme
   needs a 256 variant.
@@ -2173,7 +2195,10 @@ The test checks:
 - `appearance` is `dark` or `light`;
 - every `variant256` key exists in the base;
 - after applying `variant256` (or with none), no two roles of different hex share a 256 cell by
-  §10.2's formula, except the pairs a theme shares on purpose (below).
+  §10.2's formula, except the pairs a theme shares on purpose (below);
+- no sender equals `unread`, `mention` or `accent` in hex, and after `variant256` no sender
+  shares a 256 cell with them or with a sender of different hex;
+- no topic shares a 256 cell with `unread` unless its hex is `unread`'s (the single-red themes).
 
 **Themes and sources.** Each uses the upstream's own published hex, read from the file named in
 `source.url` on 2026-10-11:
@@ -2222,8 +2247,7 @@ glyph's shape still tells the kind:
 - every theme: `held` and `saved` (by design, as in `mocha`);
 - `rose-pine-moon` has no green, so `ok` is foam (upstream's colour for added lines) and `group`
   shares it. It has six hues for ten coloured roles, so `bot` shares `accent` (iris) and
-  `channel` shares `subtext` (subtle). Its senders repeat foam (green, cyan) and rose (orange,
-  pink);
+  `channel` shares `subtext` (subtle). Its green and cyan senders are both foam;
 - `dracula` has no blue and one grey: `person` is cyan, `group` shares `ok` (green), `channel`
   shares `accent` (purple), and `dim` and `subtext` are both Comment. Its blue sender is Comment;
 - `nord` has no pink and one dark grey: `dim` and `surface` are both nord3, and its violet and
@@ -2279,11 +2303,23 @@ subtext, dim, surface` moves to the nearest hex (fewest channel steps) on a free
 
 | Theme | Collides | `<name>256` moves |
 | --- | --- | --- |
-| `catppuccin-mocha` | peach and yellow (223), blue and sky (153), red and maroon (217); senders cyan and blue (153) | T11's five, unchanged (unread `#F37AA8`, mention `#FAAF7A`, held and saved `#F9E6AF`, person `#7AAFFA`, channel `#7ADCEB`); the blue sender and topic `#7AAFFA`, the yellow topic `#F9E6AF` |
+| `catppuccin-mocha` | peach and yellow (223), blue and sky (153), red and maroon (217); senders cyan and blue (153) | T11's five, unchanged (unread `#F37AA8`, mention `#FAAF7A`, held and saved `#F9E6AF`, person `#7AAFFA`, channel `#7ADCEB`); the blue topic `#7AAFFA`, the yellow topic `#F9E6AF` |
 | `gruvbox-dark` | `person` and `subtext` (145) | subtext `#A89984` → `#B3997F` |
 | `nord` | `accent` and `group` (152) | group `#8FBCBB` → `#7FBCBB` |
 | `kanagawa` | `dim` and `surface` (102) | surface `#54546D` → `#4C546D` |
-| `catppuccin-latte`, `tokyo-night`, `rose-pine-moon`, `dracula` | none | no 256 variant |
+| `catppuccin-latte`, `tokyo-night`, `rose-pine-moon`, `dracula` | none among roles | no role moves |
+
+Senders are checked the same way, against `unread`, `mention`, `accent` and each other, and their
+moves go in `variant256.senders`:
+
+- `catppuccin-mocha`: blue `#7AAFFA` (T11's), orange `#E59C87`;
+- `rose-pine-moon`: red, orange, violet, pink;
+- `gruvbox-dark`: red, violet;
+- `nord`: red, orange, cyan;
+- `dracula`: red.
+
+So `rose-pine-moon` and `dracula` have a `variant256` for their senders alone. Only
+`catppuccin-latte`, `tokyo-night` and `kanagawa` have none.
 
 T11 saw `mocha256`'s cells live in tmux. The other three variants are computed by the same
 formula and have not been seen live yet; T17's live run looks at them.
