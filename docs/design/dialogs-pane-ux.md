@@ -2835,9 +2835,10 @@ Compact · the pane closed, 100 columns · statuspane beside it · nothing in th
   latest chats.
 - **Keys** once the band holds them: ⏎ on a row opens the pane Wide on it; `j` `k` move the ring;
   `f` and shift+f the folder; `q` hides the card (Hidden); `[` and `]` the page. The ringed row is
-  the card's `autoFocus`, and with no row the field is: the person's focus chord lands on our card,
-  before statuspane's `⚙` (seen live). While the field holds the keys, letters and `[` `]` are
-  typed into it. The top border's right end names the focus chord, read from the person's
+  the card's `autoFocus`, and with no row the line saying so is (⏎ on it opens the pane): the
+  person's focus chord lands on our card, before statuspane's `⚙` (seen live). Never the field:
+  while it holds the keys, letters and `[` `]` are typed into it (seen live: `f` in an empty
+  folder typed `ffFf` into the search, before the line took the ring). The top border's right end names the focus chord, read from the person's
   keybindings.json at load (`^x^x`; `^x tab`, the engine's, without one). The engine does not
   tell a plugin whether the band holds the keys, so it always shows.
 - **`[` and `]`** cannot be Button hotkeys (a digit or a letter only), and a Button's `action`

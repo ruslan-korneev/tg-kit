@@ -2049,8 +2049,9 @@ describe('the compact card above the prompt (§10.7, compact v3)', () => {
     expect(await band.find({ type: 'Text', text: ' tg ─agentic─chats' })).toBeDefined()
     expect(await drawnIds(band)).toEqual([])
     expect((await band.find({ key: 'compact:empty' }))?.text).toBe('no agent on here · a: in the pane')
-    // With no row, the field is the ring stop.
-    expect((await band.find({ key: 'compact:search' }))?.props.autoFocus).toBe(true)
+    // With no row, the line saying so is the ring stop, not the field: `f` and `[` would be typed into the search.
+    expect((await band.find({ key: 'compact:empty' }))?.props.autoFocus).toBe(true)
+    expect((await band.find({ key: 'compact:search' }))?.props.autoFocus).toBeUndefined()
     await agentOn(write, $)
     expect(await rowKeys(band)).toEqual(['compact:1002'])
     await $.command.run(page('tg-prev'))
