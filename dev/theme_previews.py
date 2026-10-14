@@ -94,15 +94,19 @@ def svg(lines: list[list[Span]], background: str, foreground: str) -> str:
     for row, line in enumerate(lines):
         y = PAD + row * LINE_H + LINE_H * 0.72
         for s in line:
-            if not s.text.strip():
+            text = s.text.strip()
+            if not text:
                 continue
-            x = PAD + s.col * CELL_W
+            # textLength covers only the glyphs: the block's padding spaces counted in would
+            # stretch a short message over the rest of the row
+            lead = cells(s.text) - cells(s.text.lstrip())
+            x = PAD + (s.col + lead) * CELL_W
             weight = ' font-weight="bold"' if s.bold else ""
-            length = cells(s.text) * CELL_W
+            length = cells(text) * CELL_W
             parts.append(
                 f'<text x="{x:.1f}" y="{y:.1f}" fill="{s.fg or foreground}"{weight} '
                 f'textLength="{length:.1f}" lengthAdjust="spacingAndGlyphs">'
-                f"{escape(s.text)}</text>"
+                f"{escape(text)}</text>"
             )
     parts += ["</g>", "</svg>", ""]
     return "\n".join(parts)
