@@ -2012,9 +2012,9 @@ describe('the compact card above the prompt (§10.7, compact v3)', () => {
     expect((await band.find({ key: 'compact:1001' }))?.props.autoFocus).toBe(true)
     expect((await band.find({ key: 'compact:card' }))?.props.width).toBe(46)
     expect((await band.find({ key: 'compact' }))?.props).toMatchObject({ paddingRight: 1 })
-    // ⏎ j k f q, no digit (§11), each a band key of the table.
+    // ⏎ j k q, no digit (§11), each a band key of the table; f and shift+f are keybindings (§10.7).
     expect(await bandKeyProblems(band)).toEqual([])
-    expect(await hotkeysOf(band)).toEqual(['q', 'j', 'k', 'f'])
+    expect(await hotkeysOf(band)).toEqual(['q', 'j', 'k'])
     expect(seen.status.filter(text => text !== undefined)).toEqual([])
     await band.unmount()
   })
@@ -2041,6 +2041,8 @@ describe('the compact card above the prompt (§10.7, compact v3)', () => {
     expect(seen.registered.filter(one => one.name?.startsWith('tg-'))).toMatchObject([
       { name: 'tg-prev', immediate: true },
       { name: 'tg-next', immediate: true },
+      { name: 'tg-folder-next', immediate: true },
+      { name: 'tg-folder-prev', immediate: true },
     ])
     expect((await $.command.describe({ command: 'tg-next', description: '', isHidden: false, immediate: true, provider: { plugin: PLUGIN, tier: 'user' } })).isHidden).toBe(true)
     expect((await $.command.run(page('tg-next'))).text).toBeUndefined()
@@ -2108,6 +2110,36 @@ describe('the compact card above the prompt (§10.7, compact v3)', () => {
       await band.press({ key: 'compact:folder' })
     }
     expect(titles).toEqual(['📁 Personalf ›', '📁 All chatsf ›', '📁 Workf ›', '📁 Personalf ›'])
+    await band.unmount()
+  })
+
+  test('f and shift+f (/tg-folder-next, /tg-folder-prev) walk the strip both ways, round at the ends; hidden, mid-turn, nothing with the card away', { timeoutMs: 15_000 }, async ($, on) => {
+    on('command.describe', (_$, e) => ({ description: e.description, isHidden: e.isHidden }))
+    const all = KINDS.map(d => d.id)
+    const { seen } = await compact($, on, happy, {}, [
+      { id: 5, title: 'Personal', kind: 'folder', chats: [1004] },
+      { id: 0, title: 'All chats', kind: 'all', chats: all },
+      { id: 7, title: 'Work', kind: 'folder', chats: [1002] },
+    ])
+    expect(seen.registered).toContainEqual(expect.objectContaining({ name: 'tg-folder-prev', immediate: true }))
+    expect((await $.command.describe({ command: 'tg-folder-prev', description: '', isHidden: false, immediate: true, provider: { plugin: PLUGIN, tier: 'user' } })).isHidden).toBe(true)
+    const band = await mount($)
+    const back = () => $.command.run({ command: 'tg-folder-prev', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+    const titles: (string | undefined)[] = []
+    for (const _ of [1, 2, 3]) {
+      expect((await back()).text).toBeUndefined()
+      titles.push((await band.find({ key: 'compact:folder-row' }))?.text)
+    }
+    expect(titles).toEqual(['📁 Workf ›', '📁 All chatsf ›', '📁 Personalf ›'])
+    await $.command.run({ command: 'tg-folder-next', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 All chatsf ›')
+    // The Button stays for a click, with no hotkey: `f` as a hotkey would also take shift+f.
+    expect((await band.find({ key: 'compact:folder' }))?.props.hotkey).toBeUndefined()
+    await back()
+    await $.command.run(runTg('hide'))
+    await back()
+    await $.command.run(runTg('compact'))
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 Personalf ›')
     await band.unmount()
   })
 

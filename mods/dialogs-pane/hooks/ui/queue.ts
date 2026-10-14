@@ -235,11 +235,13 @@ export function compactStart(count: number, at: number): number {
   return Math.max(0, Math.min(at - 1, count - COMPACT_ROWS))
 }
 
-/** `f` in the card: the folder after `current` in the strip's order, round to the first; null with no list held. */
-export function nextFolder(list: readonly { id: number }[] | null, current: number): number | null {
+/** `f` and shift+f in the card: the folder `by` steps from `current` in the strip's order, round at both ends; null with no list held. */
+export function stepFolder(list: readonly { id: number }[] | null, current: number, by: 1 | -1): number | null {
   if (list === null || list.length === 0) return null
   const at = list.findIndex(one => one.id === current)
-  return (list[(at + 1) % list.length] ?? list[0])?.id ?? null
+  // Off the list (a folder since removed), forward lands on the first and back on the last.
+  const from = at === -1 ? (by === 1 ? -1 : 0) : at
+  return (list[(from + by + list.length) % list.length] ?? list[0])?.id ?? null
 }
 
 /** The engine's chord for `abovePrompt:focus` as the person bound it, short (`^x^x`, `^x tab`), from keybindings.json's text. */

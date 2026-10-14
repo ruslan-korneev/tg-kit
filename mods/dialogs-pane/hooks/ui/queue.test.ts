@@ -11,7 +11,7 @@ import {
   compactStatus,
   compactStatusText,
   focusChord,
-  nextFolder,
+  stepFolder,
   draftFits,
   footerLabel,
   hintTail,
@@ -76,12 +76,15 @@ describe('the compact card (§10.7)', () => {
     expect(compactStart(2, 1)).toBe(0)
   })
 
-  test('f: the next folder in the strip, round to the first; none without a list', () => {
+  test('f and shift+f: the next and the previous folder in the strip, round at both ends; none without a list', () => {
     const list = [{ id: 3 }, { id: 0 }, { id: 7 }]
-    expect(nextFolder(list, 3)).toBe(0)
-    expect(nextFolder(list, 7)).toBe(3)
-    expect(nextFolder(list, 99)).toBe(3)
-    expect(nextFolder(null, 0)).toBeNull()
+    expect(stepFolder(list, 3, 1)).toBe(0)
+    expect(stepFolder(list, 7, 1)).toBe(3)
+    expect(stepFolder(list, 99, 1)).toBe(3)
+    expect(stepFolder(list, 0, -1)).toBe(3)
+    expect(stepFolder(list, 3, -1)).toBe(7)
+    expect(stepFolder(list, 99, -1)).toBe(7)
+    expect(stepFolder(null, 0, -1)).toBeNull()
   })
 
   test("the focus chord: the person's binding of abovePrompt:focus, short; the engine's ctrl+x tab without one", () => {

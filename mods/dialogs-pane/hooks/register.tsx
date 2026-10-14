@@ -162,7 +162,7 @@ import {
   compactStart,
   compactStatus,
   focusChord,
-  nextFolder,
+  stepFolder,
   footerLabel,
   draftFits,
   hintTail,
@@ -266,6 +266,9 @@ export const register: Register = (on, options) => {
     for (const [name, page] of COMPACT_PAGES) {
       await $.command.register({ name, description: `tg: the compact card's ${page === 'chats' ? 'chats' : 'agentic chats'}`, immediate: true })
     }
+    for (const [name, by] of FOLDER_STEPS) {
+      await $.command.register({ name, description: `tg: the compact card's ${by === 1 ? 'next' : 'previous'} folder`, immediate: true })
+    }
     focusKeys = focusChord(await readKeybindings($))
     // $.store is shared by every session, so it only seeds a fresh one: after a
     // hot reload $.state still holds this session's mode, and the stored one
@@ -323,6 +326,13 @@ export const register: Register = (on, options) => {
       return {}
     })
     // Keys, not commands to type: left out of the typeahead and /help.
+    on('command.describe', { command: name }, ($, e, next) => next({ ...e, isHidden: true }))
+  }
+  for (const [name, by] of FOLDER_STEPS) {
+    on('command.run', { command: name }, async $ => {
+      if ((await read($, mode)) === 'compact') await compactStepFolder($, by)
+      return {}
+    })
     on('command.describe', { command: name }, ($, e, next) => next({ ...e, isHidden: true }))
   }
 
@@ -6701,6 +6711,14 @@ const COMPACT_PAGES = [
   ['tg-prev', 'chats'],
   ['tg-next', 'agentic'],
 ] as const
+/**
+ * The commands `f` and shift+f are bound to, and the step each takes. A Button's hotkey
+ * takes shift+f as f (seen live: shift+f pressed `f`'s Button), so both are keybindings.
+ */
+const FOLDER_STEPS = [
+  ['tg-folder-next', 1],
+  ['tg-folder-prev', -1],
+] as const
 /** The person's chord for the band's keys, short (`^x^x`): read from keybindings.json at each load. */
 let focusKeys = focusChord(null)
 /** The mod option `focusHint` (§10.7.1): off, the card's top border names no chord. */
@@ -6794,17 +6812,17 @@ async function drawCompact($: $, els: Els, width: number, isUnderItem: boolean):
       open: () => openFromCard($),
       hide: () => setMode($, 'hidden'),
       move: by => update($, compactNav, value => ({ ...value, at: clamp(at + by, facts.rows.length) })),
-      folder: () => compactNextFolder($),
+      folder: () => compactStepFolder($, 1),
       search: text => update($, compactNav, value => ({ ...value, query: text, at: 0 })),
       submit: () => compactSubmit($),
     },
   })
 }
 
-/** `f` in the card: the next folder of the strip. Before the first pass there is no list, so `f` asks for one. */
-async function compactNextFolder($: $): Promise<void> {
+/** `f` in the card: the next folder of the strip, shift+f the one before. Before the first pass there is no list, so either asks for one. */
+async function compactStepFolder($: $, by: 1 | -1): Promise<void> {
   const list = (await read($, folders)).list
-  const next = nextFolder(list, (await compactFolder($)).id)
+  const next = stepFolder(list, (await compactFolder($)).id, by)
   if (next !== null) await update($, compactNav, value => ({ ...value, folder: next, at: 0 }))
   if (passHeld === null) await requestPass($, 'open')
 }

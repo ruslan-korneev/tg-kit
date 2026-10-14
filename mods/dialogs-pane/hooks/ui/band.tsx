@@ -338,7 +338,7 @@ export function CompactCard(els: Els, colors: Colors, props: CompactProps): Rend
         </Button>
       ) : null}
       {isFull ? (
-        <Button key="compact:folder" plain hotkey="f" onPress={props.on.folder}>
+        <Button key="compact:folder" plain onPress={props.on.folder}>
           folder
         </Button>
       ) : null}

@@ -750,7 +750,7 @@ export function helpLines(): string[] {
     'The pane holds the keys while ● keys shows: ctrl+x tab hands them over, Esc gives them back.',
     ...lines,
     'band    ⏎ the item\'s action · e edit · d drop or dismiss · o open in the pane · u undo · j k next, previous',
-    'card    ⏎ open the pane on the chat · j k between its chats · f next folder · [ ] chats, agentic chats · q hide the card',
+    'card    ⏎ open the pane on the chat · j k between its chats · f F next, previous folder · [ ] chats, agentic chats · q hide the card',
     '/tg     /tg opens · /tg stop · /tg status · /tg help · /tg hide',
   ]
 }

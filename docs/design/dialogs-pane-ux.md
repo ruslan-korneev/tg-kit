@@ -2824,15 +2824,18 @@ Compact · the pane closed, 100 columns · statuspane beside it · nothing in th
   Esc hands the keys back to the prompt and keeps the search.
 - **Folder** (owner, 2026-10-14): `📁 <title>`. The card starts on the first folder in
   Telegram's own order, the order the owner sets in Telegram, not on the pane's folder and not on
-  All chats. `f` moves to the next one in that order, round to the first. All chats keeps its
+  All chats. `f` moves to the next one in that order, round to the first; shift+f (owner,
+  2026-10-14) to the one before, round to the last. A Button's hotkey `f` also takes shift+f
+  (seen live: shift+f moved forward), so both are keybindings to hidden commands, as `[` `]`
+  are, and the folder Button keeps no hotkey. All chats keeps its
   place: `tg folders` lists it where Telegram's `dialogFilterDefault` sits, and first when
   Telegram leaves it out, as tdlib reads that. The card's folder is its own (`compact.folder`);
   the pane's `nav` never moves it. The card needs the folder list, so entering Compact with no
   pass held runs one, as the pane's first open does; until it lands the row reads `📁 …` over the
   latest chats.
 - **Keys** once the band holds them: ⏎ on a row opens the pane Wide on it; `j` `k` move the ring;
-  `f` the folder; `q` hides the card (Hidden); `[` and `]` the page. The ringed row is the
-  card's `autoFocus`, and with no row the field is: the person's focus chord lands on our card,
+  `f` and shift+f the folder; `q` hides the card (Hidden); `[` and `]` the page. The ringed row is
+  the card's `autoFocus`, and with no row the field is: the person's focus chord lands on our card,
   before statuspane's `⚙` (seen live). While the field holds the keys, letters and `[` `]` are
   typed into it. The top border's right end names the focus chord, read from the person's
   keybindings.json at load (`^x^x`; `^x tab`, the engine's, without one). The engine does not
@@ -2842,7 +2845,9 @@ Compact · the pane closed, 100 columns · statuspane beside it · nothing in th
   band's context, to two hidden, immediate commands that print nothing:
 
   ```json
-  { "context": "AbovePrompt", "bindings": { "[": "command:tg-prev", "]": "command:tg-next" } }
+  { "context": "AbovePrompt", "bindings": {
+      "[": "command:tg-prev", "]": "command:tg-next",
+      "f": "command:tg-folder-next", "shift+f": "command:tg-folder-prev" } }
   ```
 
   Typed at the prompt, `[` stays text: the context is the band's alone.
