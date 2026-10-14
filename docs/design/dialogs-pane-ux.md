@@ -2796,57 +2796,105 @@ goes, and the sections take the lower part.
 
 ### 10.7 Compact: the card above the prompt
 
+v3 (owner, 2026-10-14): two pages, the search typed in the card, `f` cycles folders, and the
+cards of several mods share one row.
+
 ```text
-Compact · the pane closed, 100 columns · nothing in the band's queue
-                                                      ╭─ tg ───────────────────────────────────────╮
-                                                      │ ● 3 chats waiting   ⚡ ▰▰▱▱▱ 12/50         │
-                                                      │ ▸ 14:02 ○ Ivan Petrov     Can we call…   2 │
-                                                      │   13:57 ⌗ Project team    can you rev…  @1 │
-                                                      ╰─ ⏎ open · q: hide ─────────────────────────╯
+Compact · the pane closed, 100 columns · statuspane beside it · nothing in the band's queue
+                                                ╭─ tg ─chats─────────────────── ^x^x: focus ─╮
+        ╭────────────────────────────────────╮  │ 🔍: search…                                │
+        │ Opus 5.5        ○ idle  ⚙  ▾ hide  │  │ 📁 All chats                           f › │
+        │ ctx ▱▱▱▱▱▱▱▱▱▱▱▱ —                 │  │ ▸ 13:16 ⌗ Project team    v2.4 is out   @1 │
+        │ 5h —   7d —                        │  │   13:16 ⬡ Example Bot     Main menu      2 │
+        │ …/app · $0.00                      │  │   12:40 ◇ Dev Team        deploy is g…  @1 │
+        ╰────────────────────────────────────╯  ╰─ ⏎ open · [ ]: page · q: hide ─────────────╯
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯
-────────────────────────────────────────────────────────────────────────────────────────────────────
 ```
 
-- **Where**: AbovePrompt, right-aligned, `width = min(46, bodyColumns − 2)`, as statuspane draws
-  its card (`justifyContent="flex-end"`, a rounded border). Under 40 columns it is one
-  right-aligned line without a border, `tg · ● 3 waiting · ⚡ 12/50`, itself the ring stop (⏎
-  opens Wide, `q` hides). It always calls `next(e)` and draws what the plugins beneath drew above
-  itself, as statuspane does, so the two cards stack (P3). Top to bottom: the band's item (full
-  width), what `next(e)` drew (statuspane's card), our card. v1's band item replaced `next(e)`;
-  v2 always chains.
-- **Lines**: the title `tg` in the top border, in `accent`. Then a status line. Then the top two
-  chats in the row format: For you's first two, else the current folder's first two unread, else
-  none. The status line shows two things:
-  - `● 3 chats waiting`, `●` in `mention`: the For you number (§10.5), distinct chats among its
-    drafts, hard stops and people waiting (from the last pass, or the latest dialogs before the
-    first pass). A chat with both a draft and a mention counts once;
-  - with For you empty: `● 15 unread`, `●` in `unread`; with nothing unread and no agent on: `all
-    read`, dim;
-  - the gauge pair `⚡ ▰▰▱▱▱ 12/50`, while an agent is on; `⚡ autopilot on` when no chat on has a
-    limit (`∞/h`).
-- **When the band holds an item** (a draft, a hard stop, an undo; §5.3, §5.4), the item keeps its
-  full-width rows above the card, since a draft is read whole there (decision 9). The card drops
-  to its status line.
-- **Keys** after ctrl+x tab, as the band's: ⏎ opens the pane on the ringed chat (Wide); `j` and
-  `k` move between the two rows; `q` hides the card (Hidden). The bottom border reads
-  `⏎ open · q: hide`. The owner's `▾ hide` is drawn as `q: hide`, because the engine draws a
-  Button's hotkey before its label (§1) and `q` already means hide (§6). No digits, as §11 has it
-  for the band.
+- **Pages**: `tg ─chats` lists the folder's chats; `tg ─agentic─chats` lists those of them an agent
+  is on (any level, a follow included: the rows' `⚡`, §10.3). The title in the top border names
+  the page. `[` and `]` switch (see Keys).
+- **Rows**: the search field, the folder, then three chats in the row format (§10.3), a window
+  that keeps the ringed row second while chats go on both sides. Before the first pass they are
+  the latest chats (`tg dialogs`); from it on, the folder's (`viewRows`).
+- **Search**: an `Input` in the card. Typing filters the page live, by name or @username, any
+  case, over the chats the card holds (the pane's `s` asks tg for every chat). ⏎ in the field
+  opens the first match and empties the search: the engine empties the field on ⏎ itself (P-c).
+  Esc hands the keys back to the prompt and keeps the search.
+- **Folder** (owner, 2026-10-14): `📁 <title>`. The card starts on the first folder in
+  Telegram's own order, the order the owner sets in Telegram, not on the pane's folder and not on
+  All chats. `f` moves to the next one in that order, round to the first. All chats keeps its
+  place: `tg folders` lists it where Telegram's `dialogFilterDefault` sits, and first when
+  Telegram leaves it out, as tdlib reads that. The card's folder is its own (`compact.folder`);
+  the pane's `nav` never moves it. The card needs the folder list, so entering Compact with no
+  pass held runs one, as the pane's first open does; until it lands the row reads `📁 …` over the
+  latest chats.
+- **Keys** once the band holds them: ⏎ on a row opens the pane Wide on it; `j` `k` move the ring;
+  `f` the folder; `q` hides the card (Hidden); `[` and `]` the page. The ringed row is the
+  card's `autoFocus`, and with no row the field is: the person's focus chord lands on our card,
+  before statuspane's `⚙` (seen live). While the field holds the keys, letters and `[` `]` are
+  typed into it. The top border's right end names the focus chord, read from the person's
+  keybindings.json at load (`^x^x`; `^x tab`, the engine's, without one). The engine does not
+  tell a plugin whether the band holds the keys, so it always shows.
+- **`[` and `]`** cannot be Button hotkeys (a digit or a letter only), and a Button's `action`
+  is pressed by a chord or a modified key only (P-a). So they are the person's keybindings in the
+  band's context, to two hidden, immediate commands that print nothing:
+
+  ```json
+  { "context": "AbovePrompt", "bindings": { "[": "command:tg-prev", "]": "command:tg-next" } }
+  ```
+
+  Typed at the prompt, `[` stays text: the context is the band's alone.
+- **Under a band item** (a draft, a hard stop, an undo; §5.3, §5.4) the item keeps its
+  full-width rows on top (decision 9), and the card drops to its status line: `● 3 chats
+  waiting` (For you's number, §10.5), `● 15 unread`, or `all read`, with the gauge `⚡ ▰▰▱▱▱
+  12/50` while an agent is on. No ring stop and no `j` `k` `f`: they are the item's.
+- **Under 40 columns**: one right-aligned line without a border, `tg · ● 3 waiting · ⚡ 12/50`,
+  itself the ring stop (⏎ opens Wide, `q` hides).
 - **A known limit: the keys after ⏎ when statuspane is installed** (decision 10).
   - Without statuspane, ⏎ opens Wide and the keys go to the pane. T15 saw this live: `● keys`
     showed, and `k` moved ▸.
   - With statuspane installed, the keys stay with the band, and the owner presses ctrl+x tab
-    once more. Engine 2.1.296 refuses a pane's `focus` while an element of the band holds the
-    keys. statuspane's `▾ hide` Button stays in the band after our card leaves, so the band
-    still holds them.
-  - No plugin API moves the keys from the band to a pane: `$.ui.focus` is denied in a site that
-    does not hold them, and there is no blur. So there is no workaround in the mod, and none is
-    attempted.
-  - Appendix A re-checks it after every engine upgrade.
-- **Rows** are text in the band's ring: the row under the band's cursor is the one Button that
-  draws (`autoFocus`), and the other is text. The card adds no ring stops above the prompt beyond
-  the band's own.
+    once more. The engine refuses a pane's `focus` while an element of the band holds the keys,
+    and statuspane's `▾ hide` Button stays in the band after our card leaves.
+  - No plugin API moves the keys from the band to a pane, so none is attempted. Appendix A
+    re-checks it after every engine upgrade.
+
+#### 10.7.1 The compact card contract
+
+For every mod that draws a card above the prompt (the dialogs pane's, the owner's Obsidian todo
+mod), so the cards share one row:
+
+- **Size**: `width = min(46, bodyColumns − 2)`, a round border, `paddingX={1}`, inside a Box with
+  `paddingRight={1}` (as statuspane pads its own). Under 40 body columns, one borderless line.
+- **Title** in the top border: a sibling `<Box position="absolute" top={0} left={2}>` over the
+  bordered Box (P2); the keys the same way at `bottom={0}`, a hint at `top={0} right={2}`.
+- **Chain**: always `const below = await next(e).catch(() => null)`, then draw `below` with
+  your card. A band item of your own, if any, goes on top at full width.
+- **Row**: `below` and the card in one Box, `below` first, so the outermost plugin's card is
+  rightmost:
+
+  ```tsx
+  <Box flexDirection="row" flexWrap="wrap" columnGap={1}
+       justifyContent="flex-end" alignItems="flex-end">
+    {below}
+    {card}
+  </Box>
+  ```
+
+  `alignItems="flex-end"` stands every card on the prompt; with the default stretch a shorter
+  card's bottom border is drawn a row above its absolute bottom title. With no card to draw,
+  return `below` as it is (or `next(e)`), unwrapped.
+- **Keys**: hotkeys are one letter or digit; avoid digits (a bare digit in an empty prompt
+  presses a band Button). Give one Button `autoFocus` so the focus chord lands on your card.
+- **The focus hint**: the chord at the top border's right end (`^x^x: focus`), read from the
+  person's keybindings.json, is the person's to turn off: the dialogs pane's option `focusHint`
+  (a `/config` row, boolean, on by default). Off, that end of the border is plain.
+- Seen live (claude 2.1.299, tmux, statuspane 1.3.3): side by side at 180 and 100 columns, both
+  standing on the prompt; at 90 and 80 the card wraps under statuspane's, both ending in one
+  column; at 60 statuspane steps aside and the card is alone; at 44 the one-line form. Inline
+  and fullscreen alike.
 
 ### 10.8 Hidden
 
