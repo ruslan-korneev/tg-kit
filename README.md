@@ -60,6 +60,9 @@ The pane's colours are its `palette` option, a row of `/config`: `tokyo-night` b
 theme `tg themes` shows (see Themes), `NAME256` for tmux, `theme` to follow Claude Code's own
 theme, or `ansi` for a terminal with 16 colours.
 
+The compact card above the prompt names the chord that gives it the keys (`^x^x: focus`, read
+from your `keybindings.json`). Its `focusHint` option, another `/config` row, turns that off.
+
 ### First run
 
 Type `/tg` in a session. The pane opens on your first Telegram folder. In fullscreen, from 110

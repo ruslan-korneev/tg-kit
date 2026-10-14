@@ -317,10 +317,11 @@ export const KEYS = [
     key: 'f',
     hotkey: 'f',
     group: 'chat',
-    where: ['chat', 'diff'],
+    // In the band, the compact card's next folder (§10.7): the band holds no chat to diff.
+    where: ['chat', 'diff', 'band'],
     kinds: ['bot'],
-    label: c => (c.where === 'diff' ? 'close diff' : 'diff'),
-    needs: c => (c.where === 'diff' || c.facts.hasPair ? null : c.facts.marks > 0 ? 'needs two bot replies marked' : 'needs a reply with an earlier pair'),
+    label: c => (c.where === 'band' ? 'next folder' : c.where === 'diff' ? 'close diff' : 'diff'),
+    needs: c => (c.where === 'diff' || c.where === 'band' || c.facts.hasPair ? null : c.facts.marks > 0 ? 'needs two bot replies marked' : 'needs a reply with an earlier pair'),
   },
   { id: 'folder', key: '1-9', hotkey: null, group: 'chats', where: FOLDERS, kinds: 'any', label: () => 'folder', isDigits: true },
   { id: 'foryou', key: 'y', hotkey: 'y', group: 'chats', where: [...LISTS, 'folders', 'foryou'], kinds: 'any', label: () => 'for you' },
@@ -749,7 +750,7 @@ export function helpLines(): string[] {
     'The pane holds the keys while ● keys shows: ctrl+x tab hands them over, Esc gives them back.',
     ...lines,
     'band    ⏎ the item\'s action · e edit · d drop or dismiss · o open in the pane · u undo · j k next, previous',
-    'card    ⏎ open the pane on the chat · j k between its two chats · q hide the card (the pane closed)',
+    'card    ⏎ open the pane on the chat · j k between its chats · f F next, previous folder · [ ] chats, agentic chats · q hide the card',
     '/tg     /tg opens · /tg stop · /tg status · /tg help · /tg hide',
   ]
 }

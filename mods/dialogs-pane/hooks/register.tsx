@@ -84,7 +84,7 @@ import { TG_TIMEOUT_MS, failureOf, settle, tg, type TgRequest, type TgResult } f
 import { ChatRow, DraftCard, EmptyList, LoadState, MessageCard, edgeStart, windowAt, type Els } from './ui/components'
 import { draftKey, draftViews, fitsRow, keptCursor, rowHeight, threadRowKey, threadRows, windowCount, windowStart, type DraftRef, type DraftView, type ThreadRow } from './ui/drafts'
 import { CHIP_GAP, CHIP_LABEL_MAX, chipLabels, chipsColumn, chipsTail, fixedCells, messageLooks, senderColumn, topDay, type MessageLook } from './ui/thread'
-import { BandItemView, CommandCard, CompactCard, compactInner, type BandActions } from './ui/band'
+import { AboveRow, BandItemView, CommandCard, CompactCard, compactInner, type BandActions } from './ui/band'
 import {
   CARD_CHROME,
   CARD_INNER,
@@ -155,10 +155,14 @@ import {
   type AgentMark,
 } from './ui/model'
 import {
+  COMPACT_ROWS,
   NOTHING_ON_SCREEN,
   bandQueue,
-  compactRows,
+  compactMatches,
+  compactStart,
   compactStatus,
+  focusChord,
+  stepFolder,
   footerLabel,
   draftFits,
   hintTail,
@@ -241,6 +245,7 @@ let palette: Palette = DEFAULT_PALETTE
 export const register: Register = (on, options) => {
   palette = readPalette(options.palette)
   colors = PALETTES[palette]
+  isFocusHint = options.focusHint !== false
   configureAutopilot(options) // ── autopilot ──
   registerAutopilot(on) // ── autopilot ──
   configureDelegate(options) // ── delegate ──
@@ -256,6 +261,15 @@ export const register: Register = (on, options) => {
       // at once: opening the pane touches no turn state either.
       immediate: true,
     })
+    // The compact card's pages (§10.7): `[` and `]` reach them as the person's keybindings in the band's
+    // context ("command:tg-prev"), since a Button's hotkey takes a digit or a letter alone (P-a).
+    for (const [name, page] of COMPACT_PAGES) {
+      await $.command.register({ name, description: `tg: the compact card's ${page === 'chats' ? 'chats' : 'agentic chats'}`, immediate: true })
+    }
+    for (const [name, by] of FOLDER_STEPS) {
+      await $.command.register({ name, description: `tg: the compact card's ${by === 1 ? 'next' : 'previous'} folder`, immediate: true })
+    }
+    focusKeys = focusChord(await readKeybindings($))
     // $.store is shared by every session, so it only seeds a fresh one: after a
     // hot reload $.state still holds this session's mode, and the stored one
     // may be another session's last /tg.
@@ -276,6 +290,7 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     await startOnboarding($) // ── onboarding ──
     await startFolders($) // ── folders ──
+    await cardFolders($)
     await startRouting($) // ── routing ──
     await startTriage($)
     await startAutopilot($) // ── autopilot ──
@@ -304,6 +319,23 @@ export const register: Register = (on, options) => {
     return { text: MODE_ANSWER[asks] }
   })
 
+  // `[` and `]` in the band: the card's page; nothing to print, and nothing to do with the card away.
+  for (const [name, page] of COMPACT_PAGES) {
+    on('command.run', { command: name }, async $ => {
+      if ((await read($, mode)) === 'compact') await update($, compactNav, value => ({ ...value, page, at: 0 }))
+      return {}
+    })
+    // Keys, not commands to type: left out of the typeahead and /help.
+    on('command.describe', { command: name }, ($, e, next) => next({ ...e, isHidden: true }))
+  }
+  for (const [name, by] of FOLDER_STEPS) {
+    on('command.run', { command: name }, async $ => {
+      if ((await read($, mode)) === 'compact') await compactStepFolder($, by)
+      return {}
+    })
+    on('command.describe', { command: name }, ($, e, next) => next({ ...e, isHidden: true }))
+  }
+
   // The person closing the pane by hand (✕, ctrl+x x) closes it as `q` does: into Compact or Hidden, as last left (§10.1).
   on('ui.close', { id: PANE }, async ($, e, next) => {
     const done = await next(e)
@@ -314,6 +346,7 @@ export const register: Register = (on, options) => {
       await refreshStatus($)
       await syncWatches($)
       await armNext($) // ── folders ── every 5 min while hidden
+      await cardFolders($)
     }
     return done
   }).catch(($, e, next) => next(e))
@@ -446,6 +479,7 @@ async function setMode($: $, next: Mode): Promise<void> {
   }
   await refreshStatus($)
   await syncWatches($)
+  await cardFolders($)
 }
 
 /** The closed state the owner last left, kept in `$.store` across sessions: Compact until a Hidden is chosen (§10.1). */
@@ -6670,69 +6704,134 @@ async function gaugeNow($: $): Promise<{ segs: Seg[] | null; pair: string } | nu
   return tightest === null ? { segs: null, pair: 'on' } : { segs: gaugeSegs(tightest), pair: gaugePair(tightest) }
 }
 
-/** The compact card's ringed row: 0 or 1 (§10.7). */
-const compactAt = atom({ plugin: 'dialogs-pane', key: 'compactAt' } as const, 0)
-
+/** The compact card's page, folder, search and ringed row (§10.7). */
+const compactNav = atom({ plugin: 'dialogs-pane', key: 'compact' } as const, { page: 'chats', folder: null, query: '', at: 0 })
+/** The commands `[` and `]` are bound to, and the page each shows. */
+const COMPACT_PAGES = [
+  ['tg-prev', 'chats'],
+  ['tg-next', 'agentic'],
+] as const
 /**
- * What the compact card lists (§10.7): For you's people, from the last pass or,
- * before the first one, the latest chats; the chats a draft or a hard stop
- * waits in; and the current folder's chats for when For you is empty.
+ * The commands `f` and shift+f are bound to, and the step each takes. A Button's hotkey
+ * takes shift+f as f (seen live: shift+f pressed `f`'s Button), so both are keybindings.
  */
-async function compactFacts($: $): Promise<{ status: CompactStatus; rows: TgDialog[] }> {
-  const known = passHeld === null ? await knownDialogs($) : [...passHeld.rows.values()]
-  // FOR YOU's one count (forYouNow): the card's `N chats waiting` is the dock's `FOR YOU · N`.
-  const forYou = await forYouNow($)
-  const where = await read($, nav)
-  const folder = viewRows(passHeld, where.list) ?? known
-  return { status: compactStatus(forYou.chats, unreadChats(known)), rows: compactRows(forYou.people, folder) }
+const FOLDER_STEPS = [
+  ['tg-folder-next', 1],
+  ['tg-folder-prev', -1],
+] as const
+/** The person's chord for the band's keys, short (`^x^x`): read from keybindings.json at each load. */
+let focusKeys = focusChord(null)
+/** The mod option `focusHint` (§10.7.1): off, the card's top border names no chord. */
+let isFocusHint = true
+
+/** keybindings.json's text, where the engine reads it; null when there is none or it cannot be read. */
+async function readKeybindings($: $): Promise<string | null> {
+  try {
+    const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${(await $.env.get('HOME')) ?? '~'}/.claude`
+    return await $.fs.read(`${dir}/keybindings.json`)
+  } catch {
+    // The card names the engine's own chord instead.
+    return null
+  }
 }
 
 /**
- * Above the prompt (§10.7, P3): the band's item at full width, then what the
- * plugins beneath drew (statuspane's card), then the compact card while the
- * pane is closed to it. The card keeps its status line alone under an item.
+ * The card's folder (§10.7): the one `f` moved to, else Telegram's first in the
+ * owner's own order, All chats wherever Telegram puts it (tg keeps
+ * dialogFilterDefault's place). Not the pane's. `…` until a folder list is held.
  */
+async function compactFolder($: $): Promise<{ id: number; title: string }> {
+  const chosen = (await read($, compactNav)).folder
+  const list = (await read($, folders)).list ?? []
+  const folder = list.find(one => one.id === chosen) ?? list[0]
+  return folder === undefined ? { id: 0, title: '…' } : { id: folder.id, title: folder.title }
+}
+
+/** The card shows folders: in Compact, with no pass held yet, one runs (the pane's first open would run it too). */
+async function cardFolders($: $): Promise<void> {
+  if ((await read($, mode)) === 'compact' && passHeld === null) await requestPass($, 'open')
+}
+
+/**
+ * What the compact card lists (§10.7): the folder's chats, from the last pass
+ * or, before the first one, the latest chats; on the agentic page only the
+ * chats an agent is on; then what the search holds. The status line is the
+ * one-line form's and the card's under a band item.
+ */
+async function compactFacts($: $): Promise<{ status: CompactStatus; rows: TgDialog[]; folder: string }> {
+  const known = passHeld === null ? await knownDialogs($) : [...passHeld.rows.values()]
+  // FOR YOU's one count (forYouNow): the card's `N chats waiting` is the dock's `FOR YOU · N`.
+  const forYou = await forYouNow($)
+  const card = await read($, compactNav)
+  const folder = await compactFolder($)
+  const inFolder = viewRows(passHeld, { kind: 'folder', id: folder.id }) ?? known
+  const agentOf = await agentMarks($)
+  const paged = card.page === 'agentic' ? inFolder.filter(dialog => agentOf(String(dialog.id)) !== null) : inFolder
+  return { status: compactStatus(forYou.chats, unreadChats(known)), rows: compactMatches(paged, card.query), folder: folder.title }
+}
+
 async function drawAbove($: $, els: Els, width: number, below: RenderElement | null): Promise<RenderElement | null> {
   const item = await drawBand($, els, width)
   const card = (await read($, mode)) === 'compact' ? await drawCompact($, els, width, item !== null) : null
-  const parts = [item, below, card].filter(part => part !== null)
-  if (parts.length <= 1) return parts[0] ?? null
-  return (
-    <els.Box key="above" flexDirection="column">
-      {...parts}
-    </els.Box>
-  )
+  return AboveRow(els, { item, below, card })
 }
 
 async function drawCompact($: $, els: Els, width: number, isUnderItem: boolean): Promise<RenderElement> {
   const facts = await compactFacts($)
-  const at = clamp(await read($, compactAt), facts.rows.length)
+  const card = await read($, compactNav)
+  const at = clamp(card.at, facts.rows.length)
+  const start = compactStart(facts.rows.length, at)
   const now = await $.clock.now()
   const inner = compactInner(width)
   const agentOf = await agentMarks($)
-  const rows = facts.rows.map((dialog, index) =>
+  const rows = facts.rows.slice(start, start + COMPACT_ROWS).map((dialog, index) =>
     ChatRow(els, colors, {
       ...dialogRow(dialog, { now, agent: agentOf(String(dialog.id)) }),
       rowKey: `compact:${dialog.id}`,
       width: inner,
-      isCursor: index === at,
-      isStatic: index !== at,
+      isCursor: start + index === at,
+      isStatic: start + index !== at,
       isOpen: false,
       onPress: () => openFromCompact($, dialog),
     }),
   )
+  const empty = card.query !== '' ? `no chat matches "${card.query}"` : card.page === 'agentic' ? 'no agent on here · a: in the pane' : 'no chats here'
   return CompactCard(els, colors, {
     width,
+    page: card.page,
     status: facts.status,
     gauge: await gaugeNow($),
+    query: card.query,
+    folder: facts.folder,
     rows,
+    count: facts.rows.length,
+    empty,
+    focus: isFocusHint ? focusKeys : null,
     isUnderItem,
     on: {
       open: () => openFromCard($),
       hide: () => setMode($, 'hidden'),
-      move: by => update($, compactAt, value => clamp(value + by, facts.rows.length)),
+      move: by => update($, compactNav, value => ({ ...value, at: clamp(at + by, facts.rows.length) })),
+      folder: () => compactStepFolder($, 1),
+      search: text => update($, compactNav, value => ({ ...value, query: text, at: 0 })),
+      submit: () => compactSubmit($),
     },
   })
+}
+
+/** `f` in the card: the next folder of the strip, shift+f the one before. Before the first pass there is no list, so either asks for one. */
+async function compactStepFolder($: $, by: 1 | -1): Promise<void> {
+  const list = (await read($, folders)).list
+  const next = stepFolder(list, (await compactFolder($)).id, by)
+  if (next !== null) await update($, compactNav, value => ({ ...value, folder: next, at: 0 }))
+  if (passHeld === null) await requestPass($, 'open')
+}
+
+/** ⏎ in the card's search: the first chat that matches opens, and the search empties, as the engine empties the field. */
+async function compactSubmit($: $): Promise<void> {
+  const first = (await compactFacts($)).rows[0]
+  await update($, compactNav, value => ({ ...value, query: '', at: 0 }))
+  if (first !== undefined) await openFromCompact($, first)
 }
 
 /** ⏎ on a card's row: the pane opens Wide, on that chat, with the keys. */
