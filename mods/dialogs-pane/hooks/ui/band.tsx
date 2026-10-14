@@ -307,8 +307,8 @@ export const COMPACT_KEYS = ' ⏎ open · [ ]: page · q: hide '
  * statuspane's, its page in the top border (`tg ─chats`, `tg ─agentic─chats`),
  * the focus chord at the border's right end, the keys in the bottom one (P2's
  * absolute Boxes). Then the search field, the folder, and three chat rows.
- * Ring stops: the field, then the ringed row (`autoFocus`; the field takes it
- * where no row is). `q`, `j`, `k` and `f` are hidden Buttons; `[` and `]` are
+ * Ring stops: the field, then the ringed row (`autoFocus`; where no row is, the
+ * line saying so, which ⏎ opens the pane from). `q`, `j`, `k` and `f` are hidden Buttons; `[` and `]` are
  * the person's keybindings to /tg-prev and /tg-next. Under a band item the card
  * is its status line alone, with no ring stop; under 40 columns one
  * borderless line, itself the ring stop.
@@ -395,7 +395,6 @@ export function CompactCard(els: Els, colors: Colors, props: CompactProps): Rend
         placeholder="search…"
         value={props.query}
         submitLabel="open"
-        autoFocus={props.rows.length === 0 ? true : undefined}
         onInput={value => props.on.search(value)}
         onSubmit={() => props.on.submit()}
       />
@@ -412,11 +411,12 @@ export function CompactCard(els: Els, colors: Colors, props: CompactProps): Rend
         folderRow,
         ...(props.rows.length === 0
           ? [
-              <Box key="compact:empty">
+              // The ring stop where no row is, not the field: there `f` and `[` would be typed into the search.
+              <Button key="compact:empty" plain autoFocus onPress={props.on.open}>
                 <Text color={colors.dim} wrap="truncate-end">
                   {props.empty}
                 </Text>
-              </Box>,
+              </Button>,
             ]
           : props.rows),
       ]
