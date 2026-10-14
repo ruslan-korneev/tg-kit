@@ -6,9 +6,10 @@ import { describe, expect, mock, test, type Engine, type Mounted } from 'claude-
 
 import { defaultDialog } from '../hooks/autopilot/config'
 import { KEYS, STRAY_KEYS, helpLines, hotkeyTable } from '../hooks/ui/keys'
+import { COMPACT_KEYS } from '../hooks/ui/band'
 import { DEFAULT_PALETTE, PALETTES } from '../hooks/ui/palette'
 import type { ApDraft, Autopilot, PeerRef, TgDialog, TgMessage } from '../types'
-import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, PERSON_MESSAGES, borderOf, chatIds, chatKey, cornerOf, findChat, folderRun, legendOf, messagesFor, reachChat, tabsOf, titleOf } from './fixtures'
+import { DIALOGS, LEGEND_TEXT, STARTED, MESSAGES, PERSON_MESSAGES, borderOf, chatIds, chatKey, cornerOf, findChat, folderRun, legendOf, messagesFor, reachChat, tabsOf, titleOf, type FolderSpec } from './fixtures'
 import { FOOTER, HINT, bandKeyProblems, beneathCard, engineSites, siteText } from './surfaces'
 
 const PLUGIN = 'dialogs-pane'
@@ -43,7 +44,7 @@ type World = {
   toasts: string[]
   store: Map<string, unknown>
   /** What /tg registered: its description and argument hint list the subcommands. */
-  registered: { description: string; argumentHint?: string }[]
+  registered: { name: string; description: string; argumentHint?: string; immediate?: true }[]
   /** Whether the engine placed the pane: false is a terminal too narrow for it. */
   isPlaced: boolean
 }
@@ -65,7 +66,7 @@ const failure = (exitCode: number, stderr: string): ProcessRunResult => ({
 })
 
 /** The engine beneath the plugin: tg, panes, the ring, status line, toasts, store, clock. */
-function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store: Record<string, unknown> = {}): World {
+function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store: Record<string, unknown> = {}, specs: readonly FolderSpec[] = []): World {
   const seen: World = { opened: [], closed: [], status: [], toasts: [], store: new Map(Object.entries({ ...STARTED, ...store })), registered: [], isPlaced: true }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('store.get', (_$, e) => ({ value: seen.store.get(e.key) }))
@@ -78,7 +79,7 @@ function world(on: On, tg: (argv: readonly string[]) => ProcessRunResult, store:
   on('process.run', (_$, e) =>
     e.argv[0] === 'git'
       ? { value: failure(128, 'fatal: not a git repository') }
-      : { value: e.argv[1] === 'folders' ? folderRun(e.argv, tg(['tg', 'dialogs', '--limit', '50', '--json'])) : tg(e.argv) },
+      : { value: e.argv[1] === 'folders' ? folderRun(e.argv, tg(['tg', 'dialogs', '--limit', '50', '--json']), specs) : tg(e.argv) },
   )
   on('session.cwd', () => ({ value: '/tmp' }))
   // Starting an agent takes the chat's lease, named by the session (delegate's lease, at every rung).
@@ -1960,7 +1961,7 @@ describe('hidden mode', () => {
   })
 })
 
-describe('the compact card above the prompt (§10.7, T15)', () => {
+describe('the compact card above the prompt (§10.7, compact v3)', () => {
   const SITE: RenderPropsOf['AbovePrompt'] = { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 }, view: {} }
   const dev: PeerRef = { id: 1002, arg: '1002', label: 'Dev Team', kind: 'supergroup' }
   /** KINDS with mentions of the owner: each a chat For you lists without a ranking call. */
@@ -1971,49 +1972,168 @@ describe('the compact card above the prompt (§10.7, T15)', () => {
   const unreadGroups = KINDS.filter(d => d.kind !== 'user' && d.unread > 0 && !d.muted).length
   const allRead = (argv: readonly string[]) => (argv[1] === 'dialogs' ? json(KINDS.map(d => ({ ...d, unread: 0, mentions: 0 }))) : happy(argv))
 
-  async function compact($: Engine, on: On, tg: (argv: readonly string[]) => ProcessRunResult, store: Record<string, unknown> = {}) {
+  async function compact($: Engine, on: On, tg: (argv: readonly string[]) => ProcessRunResult, store: Record<string, unknown> = {}, specs: readonly FolderSpec[] = []) {
     const clock = mock.clock(on, { now: Date.parse('2026-10-10T12:00:00Z') })
     engineSites(on)
     const write = autopilotWriter(on)
-    const seen = world(on, tg, { mode: 'compact', ...store })
+    const seen = world(on, tg, { mode: 'compact', ...store }, specs)
     await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
     await clock.settle()
     return { clock, seen, write }
   }
   const mount = ($: Engine, columns = 100) => $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: { ...SITE, bodyColumns: columns } })
-  /** The status line's text: a Box of its own, or the ring stop's Button where no row is drawn. */
+  /** The status line's text: a Box of its own, or the ring stop's Button in the one-line form. */
   const status = async (band: Mounted<'terminal', 'AbovePrompt'>) => ((await band.find({ key: 'compact:status' })) ?? (await band.find({ key: 'compact:open' })))?.text
+  /** The ringed row: the one row drawn as a Button. */
   const rowKeys = async (band: Mounted<'terminal', 'AbovePrompt'>) =>
     (await band.findAll({ type: 'Button' })).flatMap(button => (typeof button.props.key === 'string' && /^compact:\d+$/.test(button.props.key) ? [button.props.key] : []))
+  /** Every chat row drawn, ringed or not, by id. */
+  const drawnIds = async (band: Mounted<'terminal', 'AbovePrompt'>) =>
+    [...(await band.findAll({ type: 'Button' })), ...(await band.findAll({ type: 'Box' }))]
+      .flatMap(one => (typeof one.props.key === 'string' && /^compact:\d+$/.test(one.props.key) ? [Number(one.props.key.slice('compact:'.length))] : []))
+      .sort((a, b) => KINDS.findIndex(d => d.id === a) - KINDS.findIndex(d => d.id === b))
+  const hotkeysOf = async (band: Mounted<'terminal', 'AbovePrompt'>) =>
+    (await band.findAll({ type: 'Button' })).flatMap(b => (typeof b.props.hotkey === 'string' ? [b.props.hotkey] : []))
+  const page = (name: 'tg-prev' | 'tg-next') => ({ command: name, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } }) as const
   const agentOn = (write: ReturnType<typeof autopilotWriter>, $: Engine) =>
     write($, value => ({ ...value, running: [String(dev.id)], dialogs: { [String(dev.id)]: { ...defaultDialog(dev), level: 'auto' } } }))
 
-  test('3 chats waiting: the status line, then the top two of For you; one ring stop, the first row; right-aligned, 46 wide', { timeoutMs: 15_000 }, async ($, on) => {
-    const { seen } = await compact($, on, mentioned([1001, 1002, 1004]))
+  test('the chats page: search, folder, three rows of the folder; the ringed row the first; 46 wide, right-aligned', { timeoutMs: 15_000 }, async ($, on) => {
+    const { seen } = await compact($, on, happy)
     const band = await mount($)
-    expect(await status(band)).toBe('● 3 chats waiting')
-    // For you's first two, newest first: @example_bot, then Dev Team.
+    expect(await band.find({ type: 'Text', text: ' tg ─chats' })).toBeDefined()
+    // No keybindings.json in the test's world: the engine's own chord.
+    expect(await band.find({ type: 'Text', text: ' ^x tab: focus ' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: COMPACT_KEYS })).toBeDefined()
+    expect((await band.find({ key: 'compact:search' }))?.type).toBe('Input')
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 All chatsf ›')
+    expect(await drawnIds(band)).toEqual([1001, 1002, 1003])
     expect(await rowKeys(band)).toEqual(['compact:1001'])
     expect((await band.find({ key: 'compact:1001' }))?.props.autoFocus).toBe(true)
-    // The second row is text in the band's ring: no Button of its own (§10.7 "Rows").
-    expect((await band.find({ key: 'compact:1002' }))?.type).toBe('Box')
-    expect((await band.find({ key: 'compact' }))?.props).toMatchObject({ justifyContent: 'flex-end', paddingRight: 1 })
     expect((await band.find({ key: 'compact:card' }))?.props.width).toBe(46)
-    expect(await band.find({ type: 'Text', text: ' tg ' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: ' ⏎ open · q: hide ' })).toBeDefined()
-    // ⏎ j k q, no digit (§11), each the table's band meaning.
+    expect((await band.find({ key: 'compact' }))?.props).toMatchObject({ paddingRight: 1 })
+    // ⏎ j k f q, no digit (§11), each a band key of the table.
     expect(await bandKeyProblems(band)).toEqual([])
-    expect((await band.findAll({ type: 'Button' })).flatMap(b => (typeof b.props.hotkey === 'string' ? [b.props.hotkey] : []))).toEqual(['q', 'j', 'k'])
-    // j moves the ring to the second row, k back.
-    await band.press({ key: 'compact:down' })
-    expect(await rowKeys(band)).toEqual(['compact:1002'])
-    await band.press({ key: 'compact:up' })
-    expect(await rowKeys(band)).toEqual(['compact:1001'])
+    expect(await hotkeysOf(band)).toEqual(['q', 'j', 'k', 'f'])
     expect(seen.status.filter(text => text !== undefined)).toEqual([])
     await band.unmount()
   })
 
-  test('FOR YOU is one number: the compact card, the band\'s hint, the dock\'s FOR YOU card and the header agree (§10.5)', { timeoutMs: 15_000 }, async ($, on) => {
+  test('j and k walk the page; the three rows follow the ring, keeping it second', async ($, on) => {
+    await compact($, on, happy)
+    const band = await mount($)
+    await band.press({ key: 'compact:down' })
+    expect(await rowKeys(band)).toEqual(['compact:1002'])
+    await band.press({ key: 'compact:down' })
+    await band.press({ key: 'compact:down' })
+    expect(await rowKeys(band)).toEqual(['compact:1004'])
+    expect(await drawnIds(band)).toEqual([1003, 1004, 1005])
+    await band.press({ key: 'compact:up' })
+    expect(await rowKeys(band)).toEqual(['compact:1003'])
+    await band.unmount()
+  })
+
+  test('[ and ] (/tg-prev, /tg-next): the agentic page lists the chats an agent is on; hidden commands that run mid-turn', async ($, on) => {
+    // The typeahead's own answer beneath: the command as it declares itself.
+    on('command.describe', (_$, e) => ({ description: e.description, isHidden: e.isHidden }))
+    const { seen, write } = await compact($, on, happy)
+    const band = await mount($)
+    expect(seen.registered.filter(one => one.name?.startsWith('tg-'))).toMatchObject([
+      { name: 'tg-prev', immediate: true },
+      { name: 'tg-next', immediate: true },
+    ])
+    expect((await $.command.describe({ command: 'tg-next', description: '', isHidden: false, immediate: true, provider: { plugin: PLUGIN, tier: 'user' } })).isHidden).toBe(true)
+    expect((await $.command.run(page('tg-next'))).text).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: ' tg ─agentic─chats' })).toBeDefined()
+    expect(await drawnIds(band)).toEqual([])
+    expect((await band.find({ key: 'compact:empty' }))?.text).toBe('no agent on here · a: in the pane')
+    // With no row, the field is the ring stop.
+    expect((await band.find({ key: 'compact:search' }))?.props.autoFocus).toBe(true)
+    await agentOn(write, $)
+    expect(await rowKeys(band)).toEqual(['compact:1002'])
+    await $.command.run(page('tg-prev'))
+    expect(await band.find({ type: 'Text', text: ' tg ─chats' })).toBeDefined()
+    expect(await drawnIds(band)).toEqual([1001, 1002, 1003])
+    // With the card away the keys change nothing.
+    await $.command.run(runTg('hide'))
+    await $.command.run(page('tg-next'))
+    await $.command.run(runTg('compact'))
+    expect(await band.find({ type: 'Text', text: ' tg ─chats' })).toBeDefined()
+    await band.unmount()
+  })
+
+  test('the search filters as it is typed; ⏎ in it opens the first match and empties it', async ($, on) => {
+    beneathCard(on)
+    const { seen } = await compact($, on, happy)
+    const band = await mount($)
+    await band.input({ key: 'compact:search', text: 'CONTACT', kind: 'change' })
+    expect(await drawnIds(band)).toEqual([1004])
+    await band.input({ key: 'compact:search', text: 'nobody', kind: 'change' })
+    expect((await band.find({ key: 'compact:empty' }))?.text).toBe('no chat matches "nobody"')
+    await band.input({ key: 'compact:search', text: 'contact', kind: 'change' })
+    await band.input({ key: 'compact:search', text: 'contact', kind: 'submit' })
+    expect(seen.store.get('mode')).toBe('open')
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'tg', props: DOCK })
+    expect(await titleOf(ui, 'card:chat')).toBe('○ Contact A')
+    await ui.unmount()
+    await $.command.run(runTg('compact'))
+    expect((await band.find({ key: 'compact:search' }))?.props.value).toBe('')
+    await band.unmount()
+  })
+
+  test("the card starts on Telegram's first folder, from the pass its first open runs; f walks the strip, All chats last here as tg lists it", { timeoutMs: 15_000 }, async ($, on) => {
+    await compact($, on, happy, {}, [{ id: 5, title: 'Personal', kind: 'folder', chats: [1004, 1003] }])
+    const band = await mount($)
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 Personalf ›')
+    expect(await drawnIds(band)).toEqual([1003, 1004])
+    await band.press({ key: 'compact:folder' })
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 All chatsf ›')
+    expect(await drawnIds(band)).toEqual([1001, 1002, 1003])
+    await band.press({ key: 'compact:folder' })
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 Personalf ›')
+    await band.unmount()
+  })
+
+  test("f keeps Telegram's order: All chats where the owner put it, between two folders", { timeoutMs: 15_000 }, async ($, on) => {
+    const all = KINDS.map(d => d.id)
+    await compact($, on, happy, {}, [
+      { id: 5, title: 'Personal', kind: 'folder', chats: [1004] },
+      { id: 0, title: 'All chats', kind: 'all', chats: all },
+      { id: 7, title: 'Work', kind: 'folder', chats: [1002] },
+    ])
+    const band = await mount($)
+    const titles: (string | undefined)[] = []
+    for (const _ of [1, 2, 3, 4]) {
+      titles.push((await band.find({ key: 'compact:folder-row' }))?.text)
+      await band.press({ key: 'compact:folder' })
+    }
+    expect(titles).toEqual(['📁 Personalf ›', '📁 All chatsf ›', '📁 Workf ›', '📁 Personalf ›'])
+    await band.unmount()
+  })
+
+  test('f on the agentic page: the same cycle, All chats in it, so every agent chat is one f away', { timeoutMs: 15_000 }, async ($, on) => {
+    const { write } = await compact($, on, happy, {}, [{ id: 5, title: 'Personal', kind: 'folder', chats: [1004, 1003] }])
+    await agentOn(write, $)
+    const band = await mount($)
+    await $.command.run(page('tg-next'))
+    // Personal holds no agent chat; Dev Team's is in All chats.
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 Personalf ›')
+    expect(await drawnIds(band)).toEqual([])
+    await band.press({ key: 'compact:folder' })
+    expect((await band.find({ key: 'compact:folder-row' }))?.text).toBe('📁 All chatsf ›')
+    expect(await rowKeys(band)).toEqual(['compact:1002'])
+    await band.unmount()
+  })
+
+  test('the option focusHint off: the top border names no chord', { options: { focusHint: false } }, async ($, on) => {
+    await compact($, on, happy)
+    const band = await mount($)
+    expect(await band.find({ type: 'Text', text: ' tg ─chats' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: ' ^x tab: focus ' })).toBeUndefined()
+    await band.unmount()
+  })
+
+  test('FOR YOU is one number: the card under an item, the band\'s hint, the dock\'s FOR YOU card and the header agree (§10.5)', { timeoutMs: 15_000 }, async ($, on) => {
     // Three people waiting (mentions), two drafts (Contact A's chat also waits as a person; Dev Team's too): four chats.
     const { seen, write } = await compact($, on, mentioned([1001, 1002, 1004]))
     await fillBand($, write)
@@ -2030,48 +2150,7 @@ describe('the compact card above the prompt (§10.7, T15)', () => {
     await band.unmount()
   })
 
-  test('1 chat waiting with an agent on: `● 1 chat waiting   ⚡ ▱▱▱▱▱ 0/50`, one row and no j k', async ($, on) => {
-    const { write } = await compact($, on, mentioned([1004]))
-    await agentOn(write, $)
-    const band = await mount($)
-    expect(await status(band)).toBe('● 1 chat waiting   ⚡ ▱▱▱▱▱ 0/50')
-    expect(await rowKeys(band)).toEqual(['compact:1004'])
-    expect((await band.findAll({ type: 'Button' })).flatMap(b => (typeof b.props.hotkey === 'string' ? [b.props.hotkey] : []))).toEqual(['q'])
-    await band.unmount()
-  })
-
-  test("0 waiting: the unread chats that are not muted, and the folder's first two of them", async ($, on) => {
-    const { seen } = await compact($, on, noneWaiting)
-    const band = await mount($)
-    expect(unreadGroups).toBeGreaterThan(0)
-    expect(await status(band)).toBe(`● ${unreadGroups} unread`)
-    expect((await rowKeys(band)).length).toBe(1)
-    expect(seen.status.filter(text => text !== undefined)).toEqual([])
-    await band.unmount()
-  })
-
-  test('nothing unread and no agent: `all read` is the ring stop, and ⏎ on it opens Wide', async ($, on) => {
-    const { seen } = await compact($, on, allRead)
-    const band = await mount($)
-    expect(await status(band)).toBe('all read')
-    expect(await rowKeys(band)).toEqual([])
-    expect((await band.find({ key: 'compact:open' }))?.props.autoFocus).toBe(true)
-    await band.press({ key: 'compact:open' })
-    expect(seen.store.get('mode')).toBe('open')
-    // Opened, then asked again for the keys once the card left the band (the engine refuses focus while the band holds them).
-    expect(seen.opened).toEqual(['tg', 'tg'])
-    await band.unmount()
-  })
-
-  test('0 waiting with an agent on: the gauge stays beside the unread', async ($, on) => {
-    const { write } = await compact($, on, noneWaiting)
-    await agentOn(write, $)
-    const band = await mount($)
-    expect(await status(band)).toBe(`● ${unreadGroups} unread   ⚡ ▱▱▱▱▱ 0/50`)
-    await band.unmount()
-  })
-
-  test('under 40 columns: one borderless line, the ring stop; ⏎ opens, q hides', async ($, on) => {
+  test('under 40 columns: one borderless line, the ring stop; ⏎ opens Wide, q hides', async ($, on) => {
     beneathCard(on)
     const { seen, write } = await compact($, on, mentioned([1002, 1004]))
     await agentOn(write, $)
@@ -2086,25 +2165,46 @@ describe('the compact card above the prompt (§10.7, T15)', () => {
     await band.unmount()
   })
 
-  test('a band item keeps its full-width rows above; what the plugins beneath drew sits between; the card drops to its status line', async ($, on) => {
+  test('the one line with none waiting: the unread chats that are not muted', async ($, on) => {
+    await compact($, on, noneWaiting)
+    const band = await mount($, 36)
+    expect(await status(band)).toBe(`tg · ● ${unreadGroups} unread`)
+    await band.unmount()
+  })
+
+  test('the one line with nothing unread and no agent: `all read`, and ⏎ on it opens Wide', async ($, on) => {
+    const { seen } = await compact($, on, allRead)
+    const band = await mount($, 36)
+    expect(await status(band)).toBe('tg · all read')
+    await band.press({ key: 'compact:open' })
+    expect(seen.store.get('mode')).toBe('open')
+    // Opened, then asked again for the keys once the card left the band (the engine refuses focus while the band holds them).
+    expect(seen.opened).toEqual(['tg', 'tg'])
+    await band.unmount()
+  })
+
+  test('a band item keeps its full-width rows on top; the plugins beneath and our card share one row under it, right-aligned, standing on the prompt', async ($, on) => {
     beneathCard(on)
     const { write } = await compact($, on, happy)
     await fillBand($, write)
     const band = await mount($)
-    const root = (await band.drawn()) as { children?: { props?: { key?: unknown }; children?: unknown[] }[] }
-    expect((root.children ?? []).map(child => child.props?.key ?? child.children?.[0])).toEqual(['band', 'another card', 'compact'])
+    const root = (await band.drawn()) as { children?: { props?: Record<string, unknown>; children?: { props?: { key?: unknown }; children?: unknown[] }[] }[] }
+    const [item, cards] = root.children ?? []
+    expect(item?.props?.key).toBe('band')
+    expect(cards?.props).toMatchObject({ key: 'above:cards', flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'flex-end', columnGap: 1 })
+    expect((cards?.children ?? []).map(child => child.props?.key ?? child.children?.[0])).toEqual(['another card', 'compact'])
     // The item's ⏎ is the first ring stop; the card adds none and no j k of its own (the item's j k walk the queue).
     expect((await bandShape(band)).isFirstRinged).toBe(true)
     expect((await bandShape(band)).first).toBe('ap:draft:send')
     expect(await rowKeys(band)).toEqual([])
-    expect(await band.find({ key: 'compact:open' })).toBeUndefined()
+    expect(await band.find({ key: 'compact:search' })).toBeUndefined()
     // Contact A's and Dev Team's drafts: two chats wait.
     expect(await status(band)).toBe('● 2 chats waiting')
     expect(await bandKeyProblems(band)).toEqual([])
     await band.unmount()
   })
 
-  test('no card in Wide or Hidden; the plugins beneath still draw', async ($, on) => {
+  test('no card in Wide or Hidden; the plugins beneath still draw as they drew', async ($, on) => {
     beneathCard(on)
     const { seen } = await compact($, on, happy, { mode: 'hidden' })
     const band = await mount($)
@@ -2119,8 +2219,9 @@ describe('the compact card above the prompt (§10.7, T15)', () => {
   })
 
   test('⏎ on a row opens the pane Wide on that chat', async ($, on) => {
-    const { seen } = await compact($, on, mentioned([1004]))
+    const { seen } = await compact($, on, happy)
     const band = await mount($)
+    for (const _ of [1, 2, 3]) await band.press({ key: 'compact:down' })
     await band.press({ key: 'compact:1004' })
     expect(seen.store.get('mode')).toBe('open')
     expect(seen.opened).toEqual(['tg', 'tg'])

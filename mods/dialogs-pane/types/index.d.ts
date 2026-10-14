@@ -702,6 +702,13 @@ export type GuardArmed = { at: number; taskIds: number[] }
  */
 export type ActivityView = { rows: PeerRef[]; cursor: number }
 
+/**
+ * The compact card's own place (dialogs-pane-ux.md §10.7): its page (`[`/`]`), the
+ * folder `f` cycles to (null: the pane's folder), its search text and its ringed row.
+ * Apart from the pane's `nav`, so the card never moves what the pane shows.
+ */
+export type CompactNav = { page: 'chats' | 'agentic'; folder: number | null; query: string; at: number }
+
 /** What the kill switch stopped, by name, and how many parts failed: the dock's strip row says it until `until`. */
 export type StopNotice = { names: string[]; failed: number; until: number }
 
@@ -762,8 +769,8 @@ declare module 'claude-code' {
       selection: Selection
       band: BandEvent | null
       queue: BandQueue
-      /** The compact card's ringed row, 0 or 1 (dialogs-pane-ux.md §10.7). */
-      compactAt: number
+      /** The compact card's page, folder, search and ringed row (dialogs-pane-ux.md §10.7). */
+      compact: CompactNav
       now: number
       triage: Triage
       // ── routing ──

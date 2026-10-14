@@ -248,22 +248,41 @@ function HiddenNav(els: Els, props: BandProps, hidden: readonly ('o' | 'e')[]): 
 }
 
 export type CompactActions = {
-  /** ⏎ on the status line, where no row is drawn: the pane, Wide. */
+  /** ⏎ on the status line of the one-line form: the pane, Wide. */
   open: () => void
   /** `q`: the card goes, the footer label stays (Hidden). */
   hide: () => void
-  /** `j` (+1) and `k` (-1) between the two rows. */
+  /** `j` (+1) and `k` (-1) along the page's chats. */
   move: (by: 1 | -1) => void
+  /** `f`: the next folder. */
+  folder: () => void
+  /** A change in the search field: the page lists what matches. */
+  search: (text: string) => void
+  /** ⏎ in the search field: the first match opens, the search empties. */
+  submit: () => void
 }
 
 export type CompactProps = {
   /** The band's `bodyColumns`. */
   width: number
+  /** `[` `]`: every chat of the folder, or the chats an agent is on. */
+  page: 'chats' | 'agentic'
+  /** The one-line form's words, and the card's under a band item. */
   status: CompactStatus
   /** `▰▰▱▱▱ 12/50` (T14's `gaugeSegs`) and its pair for the one-line form, while an agent is on; `segs` null with no limit (`on`). */
   gauge: { segs: readonly Seg[] | null; pair: string } | null
-  /** The chat rows, drawn for `compactInner(width)` cells, the ringed one a Button; left out under an item and in one line. */
+  /** The search field's text. */
+  query: string
+  /** The folder's title, for the 📁 row. */
+  folder: string
+  /** The page's window of chat rows, drawn for `compactInner(width)` cells, the ringed one a Button. */
   rows: readonly RenderElement[]
+  /** The page's chats in all: `j` and `k` while there are two or more. */
+  count: number
+  /** What the card says where no row matches. */
+  empty: string
+  /** The person's chord for the band's keys, short (`^x^x`), in the top border's right end; null: the border plain (`focusHint` off). */
+  focus: string | null
   /** A band item shows above: the card keeps its status line, and ⏎ `j` `k` are the item's. */
   isUnderItem: boolean
   on: CompactActions
@@ -279,36 +298,48 @@ export function compactInner(width: number): number {
   return compactWidth(width) - 4
 }
 
+/** The card's title in its top border: the page it shows (§10.7). */
+export const COMPACT_TITLE = { chats: ' tg ─chats', agentic: ' tg ─agentic─chats' } as const
+export const COMPACT_KEYS = ' ⏎ open · [ ]: page · q: hide '
+
 /**
- * The compact card above the prompt (§10.7): right-aligned and narrow, as
- * statuspane's, `tg` in its top border and `⏎ open · q: hide` in its bottom
- * one (P2's absolute Boxes, P3). A status line, then the two chat rows. Under
- * 40 columns, one borderless line. Exactly one ring stop: the ringed row, else
- * the status line; under a band item, none (⏎ is the item's). `q` is a hidden
- * Button; `j` and `k` are hidden ones while two rows show (§6, no digits: §11).
+ * The compact card above the prompt (§10.7): right-aligned and 46 wide, as
+ * statuspane's, its page in the top border (`tg ─chats`, `tg ─agentic─chats`),
+ * the focus chord at the border's right end, the keys in the bottom one (P2's
+ * absolute Boxes). Then the search field, the folder, and three chat rows.
+ * Ring stops: the field, then the ringed row (`autoFocus`; the field takes it
+ * where no row is). `q`, `j`, `k` and `f` are hidden Buttons; `[` and `]` are
+ * the person's keybindings to /tg-prev and /tg-next. Under a band item the card
+ * is its status line alone, with no ring stop; under 40 columns one
+ * borderless line, itself the ring stop.
  */
 export function CompactCard(els: Els, colors: Colors, props: CompactProps): RenderElement {
   const { Box, Text, Button } = els
+  const Input = 'Input' in els ? els.Input : undefined
   const isNarrow = props.width < COMPACT_NARROW
   const status = compactStatusText(props.status, isNarrow)
   const dot = status.role === null ? null : <Text color={colors[status.role]}>{status.text.slice(0, 1)}</Text>
   const words = <Text color={status.role === null ? colors.dim : colors.text}>{status.role === null ? status.text : status.text.slice(1)}</Text>
-  // One line has no room for rows, and under an item the card is its status line alone.
-  const rows = isNarrow || props.isUnderItem ? [] : props.rows
-  const isStatusStop = rows.length === 0 && !props.isUnderItem
+  const isFull = !isNarrow && !props.isUnderItem
+  const isMoving = isFull && props.count > 1
   const keys = (
     <Box key="compact:keys" display="none">
       <Button key="compact:hide" plain hotkey="q" onPress={props.on.hide}>
         hide
       </Button>
-      {rows.length > 1 ? (
+      {isMoving ? (
         <Button key="compact:down" plain hotkey="j" onPress={() => props.on.move(1)}>
           down
         </Button>
       ) : null}
-      {rows.length > 1 ? (
+      {isMoving ? (
         <Button key="compact:up" plain hotkey="k" onPress={() => props.on.move(-1)}>
           up
+        </Button>
+      ) : null}
+      {isFull ? (
+        <Button key="compact:folder" plain hotkey="f" onPress={props.on.folder}>
+          folder
         </Button>
       ) : null}
     </Box>
@@ -337,7 +368,8 @@ export function CompactCard(els: Els, colors: Colors, props: CompactProps): Rend
     )
   }
   const width = compactWidth(props.width)
-  // One Text, so the line also reads as a Button's label: ● and its words, then the gauge three cells on.
+  const inner = compactInner(props.width)
+  // Under an item: ● and its words, then the gauge three cells on, as the card's one line.
   const statusRow = (
     <Text wrap="truncate-end">
       {dot}
@@ -352,29 +384,91 @@ export function CompactCard(els: Els, colors: Colors, props: CompactProps): Rend
           ))}
     </Text>
   )
+  // 🔍 and 📁 are two cells each in the engine and in tmux (P-d), as the rows' columns count them.
+  const search =
+    Input === undefined ? (
+      <Text key="compact:search" color={colors.dim} wrap="truncate-end">{`🔍 ${props.query === '' ? 'search…' : props.query}`}</Text>
+    ) : (
+      <Input
+        key="compact:search"
+        label="🔍"
+        placeholder="search…"
+        value={props.query}
+        submitLabel="open"
+        autoFocus={props.rows.length === 0 ? true : undefined}
+        onInput={value => props.on.search(value)}
+        onSubmit={() => props.on.submit()}
+      />
+    )
+  const folderRow = (
+    <Box key="compact:folder-row" width={inner} flexDirection="row" justifyContent="space-between">
+      <Text wrap="truncate-end">{`📁 ${props.folder}`}</Text>
+      <Text color={colors.dim}>f ›</Text>
+    </Box>
+  )
+  const body = isFull
+    ? [
+        search,
+        folderRow,
+        ...(props.rows.length === 0
+          ? [
+              <Box key="compact:empty">
+                <Text color={colors.dim} wrap="truncate-end">
+                  {props.empty}
+                </Text>
+              </Box>,
+            ]
+          : props.rows),
+      ]
+    : [<Box key="compact:status">{statusRow}</Box>]
+  // statuspane's wrapper pads one column on the right: ours too, so the two cards end in one column.
   return (
-    <Box key="compact" justifyContent="flex-end" paddingRight={1}>
+    <Box key="compact" paddingRight={1}>
       <Box key="compact:card" width={width} flexDirection="column">
         <Box width={width} flexDirection="column" borderStyle="round" borderColor={colors.surface} paddingX={1}>
-          {isStatusStop ? (
-            <Button key="compact:open" plain autoFocus onPress={props.on.open}>
-              {statusRow}
-            </Button>
-          ) : (
-            <Box key="compact:status">{statusRow}</Box>
-          )}
-          {...rows}
+          {...body}
           {keys}
         </Box>
         <Box position="absolute" top={0} left={2}>
           <Text color={colors.accent} bold>
-            {' tg '}
+            {COMPACT_TITLE[props.page]}
           </Text>
         </Box>
+        {isFull && props.focus !== null ? (
+          <Box position="absolute" top={0} right={2}>
+            <Text color={colors.dim}>{` ${props.focus}: focus `}</Text>
+          </Box>
+        ) : null}
         <Box position="absolute" bottom={0} left={2}>
-          <Text color={colors.dim}>{' ⏎ open · q: hide '}</Text>
+          <Text color={colors.dim}>{isFull ? COMPACT_KEYS : ' ⏎ open · q: hide '}</Text>
         </Box>
       </Box>
+    </Box>
+  )
+}
+
+/**
+ * Above the prompt (§10.7, the compact card contract): a band item at full
+ * width on top, then one row of cards, ours last, right-aligned, wrapping onto
+ * a new line where the next card has no room, each line's cards standing on
+ * the prompt. `below` is what the plugins beneath drew (statuspane's card);
+ * without a card of ours it is drawn as they drew it.
+ */
+export function AboveRow({ Box }: Els, parts: { item: RenderElement | null; below: RenderElement | null; card: RenderElement | null }): RenderElement | null {
+  const cards =
+    parts.card === null ? (
+      parts.below
+    ) : (
+      <Box key="above:cards" flexDirection="row" flexWrap="wrap" justifyContent="flex-end" alignItems="flex-end" columnGap={1}>
+        {parts.below}
+        {parts.card}
+      </Box>
+    )
+  if (parts.item === null || cards === null) return parts.item ?? cards
+  return (
+    <Box key="above" flexDirection="column">
+      {parts.item}
+      {cards}
     </Box>
   )
 }

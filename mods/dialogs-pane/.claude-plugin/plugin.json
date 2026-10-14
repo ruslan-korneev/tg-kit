@@ -41,6 +41,12 @@
         "kanagawa256"
       ],
       "default": "tokyo-night"
+    },
+    "focusHint": {
+      "title": "Focus hint on the card",
+      "description": "Show the chord that gives the band the keys (^x^x: focus) at the top right of the compact card",
+      "type": "boolean",
+      "default": true
     }
   }
 }

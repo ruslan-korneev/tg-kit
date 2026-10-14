@@ -3,11 +3,11 @@
 // queue of what needs the owner. A packet's transcript row stays as the engine
 // draws it (decision 10). Pure: register.tsx reads the state and makes every
 // `$` call.
-import type { ApNote, ApUndoWindow, BandEvent, DgStatus, PeerRef } from '../../types'
+import type { ApNote, ApUndoWindow, BandEvent, DgStatus, PeerRef, TgDialog } from '../../types'
 import { LEVEL_GLYPH } from '../autopilot/config'
 import { undoLeft } from '../autopilot/ledger'
 import type { DraftView } from './drafts'
-import { GLYPH, cells, oneLine, peerConfirmLabel } from './model'
+import { GLYPH, cells, dialogLabel, oneLine, peerConfirmLabel } from './model'
 
 // --- the footer label (SessionMode) ---
 
@@ -194,8 +194,8 @@ export function draftFits(text: string, width: number): boolean {
 /** The card's width at most, as statuspane's; under `COMPACT_NARROW` body columns it is one line (§10.7). */
 export const COMPACT_WIDTH = 46
 export const COMPACT_NARROW = 40
-/** The rows the card lists: For you's first two, else the current folder's first two unread. */
-export const COMPACT_ROWS = 2
+/** The chat rows the card draws at once: a window over its page, kept on the ringed row. */
+export const COMPACT_ROWS = 3
 
 /**
  * The card's status line (§10.7): the chats in For you; with none, the unread
@@ -220,7 +220,48 @@ export function compactStatusText(status: CompactStatus, isShort = false): { tex
   }
 }
 
-/** The card's rows: For you's first two, else the first two of `folder` unread and not muted (as the status counts them), else none. */
-export function compactRows<T extends { unread: number; muted: boolean }>(forYou: readonly T[], folder: readonly T[]): T[] {
-  return (forYou.length > 0 ? forYou : folder.filter(row => row.unread > 0 && !row.muted)).slice(0, COMPACT_ROWS)
+/**
+ * The card's search (§10.7): the chats whose name or @username holds the text,
+ * any case. Only the chats the card already has; the pane's `s` asks tg for more.
+ */
+export function compactMatches<T extends { kind: TgDialog['kind']; title: string; username: string | null }>(rows: readonly T[], query: string): T[] {
+  const asked = query.trim().toLowerCase()
+  if (asked === '') return [...rows]
+  return rows.filter(row => dialogLabel(row).toLowerCase().includes(asked) || (row.username ?? '').toLowerCase().includes(asked.replace(/^@/, '')))
 }
+
+/** The first of the `COMPACT_ROWS` drawn: the ringed row second from the top while rows go on both sides of it. */
+export function compactStart(count: number, at: number): number {
+  return Math.max(0, Math.min(at - 1, count - COMPACT_ROWS))
+}
+
+/** `f` in the card: the folder after `current` in the strip's order, round to the first; null with no list held. */
+export function nextFolder(list: readonly { id: number }[] | null, current: number): number | null {
+  if (list === null || list.length === 0) return null
+  const at = list.findIndex(one => one.id === current)
+  return (list[(at + 1) % list.length] ?? list[0])?.id ?? null
+}
+
+/** The engine's chord for `abovePrompt:focus` as the person bound it, short (`^x^x`, `^x tab`), from keybindings.json's text. */
+export function focusChord(keybindings: string | null): string {
+  const fallback = 'ctrl+x tab'
+  let chord = fallback
+  try {
+    const parsed: unknown = keybindings === null ? null : JSON.parse(keybindings)
+    const blocks = isRecord(parsed) && Array.isArray(parsed.bindings) ? parsed.bindings : []
+    // The owner's own binding wins over the engine's default, which stays bound beside it.
+    for (const block of blocks) {
+      if (!isRecord(block) || !isRecord(block.bindings)) continue
+      for (const [key, action] of Object.entries(block.bindings)) if (action === 'abovePrompt:focus') chord = key
+    }
+  } catch {
+    chord = fallback
+  }
+  return chord
+    .split(' ')
+    .map(part => part.replace(/^ctrl\+/, '^'))
+    .join(' ')
+    .replace(/\^(\w) \^/g, '^$1^')
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)

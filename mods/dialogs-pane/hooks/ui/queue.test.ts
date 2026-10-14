@@ -6,9 +6,12 @@ import { KEYS, helpLines } from './keys'
 import {
   NOTHING_ON_SCREEN,
   bandQueue,
-  compactRows,
+  compactMatches,
+  compactStart,
   compactStatus,
   compactStatusText,
+  focusChord,
+  nextFolder,
   draftFits,
   footerLabel,
   hintTail,
@@ -46,8 +49,6 @@ describe('the Hidden line, the footer label (§10.8)', () => {
 })
 
 describe('the compact card (§10.7)', () => {
-  const row = (id: number, unread: number, muted = false) => ({ id, unread, muted })
-
   test('the status: chats waiting, else unread chats, else all read', () => {
     expect(compactStatus(3, 15)).toEqual({ kind: 'waiting', chats: 3 })
     expect(compactStatus(0, 15)).toEqual({ kind: 'unread', chats: 15 })
@@ -60,12 +61,35 @@ describe('the compact card (§10.7)', () => {
   })
 
 
-  test("the rows: For you's first two, else the folder's first two unread and not muted, else none", () => {
-    const forYou = [row(1, 2), row(2, 1), row(3, 1)]
-    const folder = [row(10, 0), row(11, 4, true), row(12, 1), row(13, 2), row(14, 1)]
-    expect(compactRows(forYou, folder).map(one => one.id)).toEqual([1, 2])
-    expect(compactRows([], folder).map(one => one.id)).toEqual([12, 13])
-    expect(compactRows([], [row(10, 0), row(11, 4, true)])).toEqual([])
+  test('the search: a name or @username holding the text, any case; Saved Messages by its name', () => {
+    const chat = (title: string, username: string | null = null, kind: 'user' | 'self' = 'user') => ({ kind, title, username })
+    const rows = [chat('Contact A'), chat('Example Bot', 'example_bot'), chat('Me', null, 'self')]
+    expect(compactMatches(rows, '').length).toBe(3)
+    expect(compactMatches(rows, 'CONTACT').map(one => one.title)).toEqual(['Contact A'])
+    expect(compactMatches(rows, '@example_').map(one => one.title)).toEqual(['Example Bot'])
+    expect(compactMatches(rows, 'saved').map(one => one.title)).toEqual(['Me'])
+    expect(compactMatches(rows, 'nobody')).toEqual([])
+  })
+
+  test('the window: three rows, the ringed one second while rows go on both sides', () => {
+    expect([0, 1, 2, 3, 9].map(at => compactStart(10, at))).toEqual([0, 0, 1, 2, 7])
+    expect(compactStart(2, 1)).toBe(0)
+  })
+
+  test('f: the next folder in the strip, round to the first; none without a list', () => {
+    const list = [{ id: 3 }, { id: 0 }, { id: 7 }]
+    expect(nextFolder(list, 3)).toBe(0)
+    expect(nextFolder(list, 7)).toBe(3)
+    expect(nextFolder(list, 99)).toBe(3)
+    expect(nextFolder(null, 0)).toBeNull()
+  })
+
+  test("the focus chord: the person's binding of abovePrompt:focus, short; the engine's ctrl+x tab without one", () => {
+    const bound = (key: string) => JSON.stringify({ bindings: [{ context: 'Chat', bindings: { 'ctrl+g': 'chat:externalEditor', [key]: 'abovePrompt:focus' } }] })
+    expect(focusChord(bound('ctrl+x ctrl+x'))).toBe('^x^x')
+    expect(focusChord(bound('ctrl+x tab'))).toBe('^x tab')
+    expect(focusChord(null)).toBe('^x tab')
+    expect(focusChord('{ not json')).toBe('^x tab')
   })
 })
 
